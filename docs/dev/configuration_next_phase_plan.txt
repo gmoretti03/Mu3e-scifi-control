@@ -1,0 +1,115 @@
+====================================================================
+PLAN - Configuration section, next phase (NOT STARTED)
+Written 2026-08-20, from the planning-only discussion on 2026-08-17.
+Nothing below is implemented yet. Do not start without explicit go-
+ahead - this is a plan to pick up in a future session.
+====================================================================
+
+CONTEXT
+-------
+Configuration (built 2026-08-17, see LOGBOOK.md 2026-08-17 entry) is
+today a FEB -> Module -> MuTrig -> Channel drill-down with a PE-band
+picker and bulk mask/enable actions, all direct ODB writes. The plan
+below grows it into the detector's general hardware test/config hub,
+absorbing Readout and part of Calibration.
+
+Order of work (page-before-code applies throughout: design/mockup the
+page section first, backend Python second):
+
+1) MOVE CONFIGURATION IN THE TAB ORDER
+   - Configuration takes Readout's current tab position (before
+     Calibration). This happens together with step (4) since Readout
+     is being eliminated - don't move the tab and leave Readout
+     stranded elsewhere.
+
+2) GENERAL CONTROLS ABOVE THE FEB TABLE
+   - 4 SwitchingFibre commands (already used internally by
+     prepare_switching()/restore_switching() in
+     sequencer_scripts/scifi_scripts/detector/scifi.py): Set Bypass,
+     Unset Bypass, Set FEBs into idle, Set FEBs into running. Exposed
+     as direct controls so the system can be put into bypass and the
+     MuTrigs configured independently of a live run.
+   - Reset Counters (SwitchingFibre) - OPEN DECISION, user hasn't
+     decided yet whether to include it. It's generic (not Mupix-
+     prefixed like most of SwitchingFibre's ~45 other commands, which
+     are pixel_scripts territory). Likely resets the FCC* count
+     variables below - resolve this open question before building.
+   - SciFiFibre commands: audited live against ODB, confirmed exactly
+     3 exist (MutrigConfig, MutrigConfigAllOff, TestPulsesTDC) -
+     nothing missing, already all usable today.
+   - SciFiFibre count Variables: only FCCR is read/shown today. 5
+     more exist in the real ODB (FCCH, FCCF, FCCE, FCLS, FCCP) and
+     are not exposed anywhere on the page yet. Meaning of each not
+     yet discussed with the user - clarify before exposing.
+
+3) NEW TESTS INSIDE CONFIGURATION
+   a) PRBS test
+      - Settings/ASICs/Global/tx_mode = 1 (user's own recollection,
+        "mi sembra" - NOT verified). MuTrig2 had a documented 2-bit
+        tx_mode mapping in Mutrig2Config.cpp (0=normal, 1=
+        prbs_single, 2=prbs_debug, 3=short_event_mode), but the real
+        hardware is MuTrig3, whose Mutrig3Config.cpp passes tx_mode
+        straight through as a raw register with no C++-side decode
+        table documented anywhere in this repo (pll_scan.py itself
+        uses tx_mode=4 for short/PLL mode, a value that doesn't even
+        exist in MuTrig2's table).
+      - ACTION NEEDED: confirm the real MuTrig3 tx_mode bit mapping
+        with Marius/Yfeng before implementing anything.
+   b) TDC test
+      - No existing procedure found anywhere in online/ (checked
+        switching_pc/slowcontrol/mutrig/*.cpp/h thoroughly). Needs to
+        be designed from scratch.
+      - Two existing hardware hooks to reuse: the TestPulsesTDC
+        command (MutrigFEB::ChangeTDCTest(), FEB-level test-pulse
+        injection toggle, same command pll_scan.py already uses) and
+        the per-channel tdctest_n bit.
+      - Pass/fail criteria not yet discussed - likely "does every
+        channel/TDC register the injected pulses" (coverage check),
+        as opposed to PLL test's timing-distribution check, but this
+        is a guess, not confirmed with the user.
+   c) PLL test relocation
+      - Moves from Calibration into Configuration. Calibration keeps
+        only ScanVbr/ScanThr (the calibrations that produce physics
+        constants).
+      - Loses its ROOT/CDB save path (build_root_report,
+        ResultSaverROOT/ResultSaverRunDB) and its ODB Result/*
+        persistence entirely - becomes a fully live/transient check,
+        verdict and histogram computed and shown on demand, nothing
+        written to ODB or saved anywhere. User confirmed explicitly
+        ("resta live, non persistito").
+      - Verdict logic already fixed 2026-08-17 (flat histogram =
+        locked, see pll_scan.py) - that part carries over unchanged,
+        only the persistence/tab location changes.
+
+4) READOUT TAB ELIMINATION - MERGE INTO CONFIGURATION
+   - Readout disappears as a separate tab entirely, folded into
+     Configuration, which takes its old tab position (see step 1).
+   - What Readout has today that Configuration doesn't yet and needs
+     to survive the merge:
+     - The readout-branch status pills (ROSWBF/ROSWBC/ROSWBDS + the
+       "SciFi readout" Run Parameter, READOUT_BRANCH_SIGNALS in
+       SciFi_Readout.js).
+     - The per-MODULE (not per-FEB) table view: Link / Data flow /
+       ASIC active / channels-unmasked / VBR / actions - Configuration
+       today only goes down to FEB -> Module -> MuTrig -> Channel,
+       with no flat per-module summary row the way Readout has.
+   - NOT YET RECONCILED: how Readout's per-module summary table
+     coexists with Configuration's FEB-centric drill-down structure.
+     Same open question as the earlier (retracted) idea of putting
+     IV-scan info at MuTrig level in Configuration - IV scan is
+     module-scoped, don't assume the two views merge trivially. Work
+     out the actual layout before building anything here.
+
+OPEN QUESTIONS TO RESOLVE BEFORE STARTING
+------------------------------------------
+- Real MuTrig3 tx_mode bit values for PRBS (Marius/Yfeng).
+- TDC test pass/fail criteria (user).
+- Whether to include Reset Counters, and what exactly it resets
+  (user).
+- Meaning of FCCH/FCCF/FCCE/FCLS/FCCP count variables (user).
+- Layout reconciliation between Readout's per-module flat view and
+  Configuration's FEB-centric drill-down (design pass needed, page-
+  before-code).
+
+See todo.txt, section "PENDING FOR NEXT SESSION(S), 2026-08-17" for
+the original discussion this plan was distilled from.

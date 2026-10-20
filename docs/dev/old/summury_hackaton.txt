@@ -1,0 +1,476 @@
+SESSION SUMMARY Pixel Hackathon / sequencer_scripts
+====================================================================
+Written for whoever set up pixel_scripts/common_scripts originally (you
+already know the codebase - this is a precise change log + rationale, not
+a tutorial). If anything here contradicts your intent, that's a signal to
+revert it, not that it's necessarily correct.
+
+
+0. CONTEXT
+----------
+2026-07-16/17 hackathon: pixels team discussing the new PySequencer
+approach. Goal: shared scripts/ODB structure between scifi and pixel
+where it genuinely overlaps, but two separate custom mhttpd control pages
+(one per subdetector). A parallel, still-undecided effort
+(`scifi_scripts`, see section 7) is exploring porting scifi-userfiles to
+the same class-based architecture pixel_scripts already uses - explicitly
+a hackathon experiment, only replaces scifi-userfiles if it works out.
+
+This document covers only the `common_scripts` / `pixel_scripts` work:
+what got promoted to `common/`, why, what was explicitly NOT promoted and
+why, two bugs found (one fixed, one left alone), and what's still open.
+
+
+1. REPO LAYOUT AS OF TODAY
+---------------------------
+`pixel_scripts` and `common_scripts` were found already existing as real
+Bitbucket repos (`mu3e/pixel_scripts.git`, `mu3e/common_scripts.git`) on
+mu3ebe, under `~/sequencer_scripts/`, inside a submodule superproject
+(`mu3e/sequencer_scripts.git`) that was NOT cloned locally (it stays on
+mu3ebe only). Both were cloned for real (full history + origin) to:
+
+    /Users/gmoretti/Work/Mu3e/sequencer_scripts/common_scripts/
+    /Users/gmoretti/Work/Mu3e/sequencer_scripts/pixel_scripts/
+
+A third folder, `scifi_scripts/`, was created fresh and empty (git init,
+branch main, no commits, no remote) at the same location - see section 7.
+
+IMPORTANT: `/Users/gmoretti/Work/Mu3e/sequencer_scripts/` itself is NOT a
+git repository. It's a plain local folder containing three independent
+git repos as siblings. There is no unified "push sequencer_scripts" -
+each of the three has to be pushed separately. As of writing, nothing has
+been pushed or committed anywhere - all changes described below are only
+in the local working trees. Do not assume anything here is on Bitbucket
+yet.
+
+
+2. THE common/ PROMOTION RULE THAT WAS APPLIED
+-----------------------------------------------
+Same rule already documented in scifi-userfiles/README.md's "Rules for
+this repo" section (reused verbatim as the working principle here):
+`common/` is for code that is genuinely IDENTICAL everywhere it's used
+TODAY, not code that "will probably be reused." Nothing gets promoted on
+a guess - only once a second real caller needs the exact same code. This
+was applied strictly throughout, including to things that "felt" generic
+but had no confirmed second caller yet (see section 5).
+
+
+3. WHAT WAS MOVED INTO common_scripts/common/ (all today, 2026-07-16)
+-----------------------------------------------------------------------
+Directory layout after today's changes:
+
+    common_scripts/
+      common/
+        setup.py           (new)
+        odb.py             (moved from pixel_scripts/utils/odb.py)
+        power_supply.py    (new, absorbed classes previously in
+                            pixel_scripts/core/power_supply.py)
+        command_mixin.py   (new)
+        status_message.py  (new)
+
+3.1) common/odb.py
+  Moved pixel_scripts/utils/odb.py here verbatim (that file no longer
+  exists in pixel_scripts). Contains: `ODBCommandType` (enum: WRITE/READ/
+  WRITE_AND_READ), `ODBCommand` (the general write/read/wait-for-ack
+  primitive - takes a client, a command type, an ODB key, a value or
+  value-producing callable, optional wait_key/wait_condition/max_wait_time
+  for the "write then poll until a condition on another key flips" case),
+  `ODBBooleanCommand` (specialization: write True, wait for the same key
+  to revert to its original value - the "trigger a command bit and wait
+  for the frontend to flip it back" pattern), `ODBSelection` (wraps a
+  boolean ODB key read once at construction, for user-selection masks),
+  and `find_channel_number_from_power_partition_name()` (looks up a
+  channel index by searching a `Names` array under
+  `/Equipment/<name>/Settings/<subfolder>` for an exact match).
+  Zero pixel-specific content - no hardcoded equipment names or paths
+  anywhere in this file.
+
+3.2) common/setup.py
+  Three execution-mode flags that used to live mixed into
+  pixel_scripts/globals/setup.py alongside pixel-specific settings:
+  `is_odb_available`, `can_send_commands_to_odb`, `run_from_sequencer`.
+  These are read by common/odb.py's `ODBCommand.execute()` (to decide
+  whether to hit real ODB or fall back to the `odb_write_test`/
+  `odb_read_test` print-only stubs) and by common/power_supply.py's
+  `PowerSupply.initialise_by_power_partition_name()`. Moving odb.py to
+  common/ without moving these too would have created a real bug: code
+  that sets `globals.setup.is_odb_available = X` (e.g.
+  pixel_scripts/scripts/run_calibration.py, several of the test*.py
+  scripts) would silently stop affecting what odb.py actually reads,
+  because they'd be two different module objects holding two different
+  copies of the same flag. Fixed by making common.setup the single
+  source of truth and updating every caller (see section 4 for the full
+  file list) to import common.setup instead of globals.setup wherever
+  only these 3 flags were needed. pixel_scripts/globals/setup.py keeps
+  only the pixel-specific fields (`odb_entry_path`, `read_febs_from_odb`,
+  `read_power_partitions_from_odb`, `power_distribution_equipment_name`,
+  `lv_supply_equipment_name`, `hv_supply_equipment_name`).
+
+3.3) common/power_supply.py
+  Went through two rounds today.
+
+  Round 1: moved the `PowerSupply` base class (equipment_name/
+  equipment_path/client bookkeeping, `initialise_by_power_partition_name`,
+  `intialise_commands`/`is_initialized`, `read_all`, the reads-completeness
+  check) plus `ODBPowerSupplyReadCommand` and
+  `ODBPowerSupplyReadAndCheckCommand` (both `common.odb.ODBCommand`
+  subclasses - the first auto-populates `ps.readables[key]` on read, the
+  second additionally runs a caller-supplied `check_func` and populates
+  `ps.readables_check[key]` with a pass/fail + message). At this point the
+  concrete supply types (DCDC/HVboxN/MPDC) and the Factory stayed in
+  pixel_scripts, deliberately NOT moved yet - no confirmed identical ODB
+  paths on the scifi side at that point.
+
+  Round 2 (explicit user request, after confirming the criterion should be
+  "usable by both scifi and pixel", not just "already called by both"):
+  moved `LVPowerSupply`, `HVPowerSupply` (the readables-declaring category
+  classes) and the concrete `DCDCPowerSupply`, `HVBoxNPowerSupply` classes
+  too. Justification, verified against real code (not just equipment
+  names): pixel_scripts/globals/setup.py has
+  `lv_supply_equipment_name = "DCDCCrates"` and
+  `hv_supply_equipment_name = "HV"`. Read the actual
+  scifi-userfiles/scripts/lv_power.py and hv_power.py source - they talk
+  to `/Equipment/DCDCCrates/Settings|Variables/...` and
+  `/Equipment/HV/Settings|Variables/...`, the SAME shared, unsplit
+  (no Labor/Fibre variant) equipment trees. DCDCPowerSupply/
+  HVBoxNPowerSupply just build ODBCommand objects addressing one channel
+  of those trees by index - nothing pixel-topology-specific inside them.
+
+  Deliberately NOT moved: `PowerSupplyType` (enum), `LVPowerDistribution`,
+  `MPDCPowerSupply` (power-distribution concept - no confirmed scifi
+  equivalent, scifi's dry-run findings never mentioned anything like
+  PowerDistStaging/MPDC), and `PowerSupplyFactory` (it directly
+  instantiates PowerSupplyType.MPDC's pixel-only branch, so it can't move
+  without either moving MPDC too or splitting the factory - not done).
+  These four all still live in pixel_scripts/core/power_supply.py, now
+  importing `common.power_supply as base_ps` for the base class/read
+  commands they still need.
+
+  Type hints on `supply_type` parameters were dropped (was
+  `supply_type: PowerSupplyType`) in the moved classes, since
+  `PowerSupplyType` itself stays pixel-only and common/ can't reference
+  it - this is a documentation-only change, no behavioral effect (Python
+  doesn't enforce annotations at runtime here).
+
+3.4) common/command_mixin.py (new)
+  `CommandMappable` - `execute_command(name, *args)` (looks up name in
+  `self.commands`, calls `.execute(*args)`, returns the real result) and
+  `map_commands_to_self()` (turns every key in `self.commands` into a
+  same-named bound method on the instance, e.g. so `ps.turn_on()` works
+  instead of `ps.execute_command("turn_on")`).
+  Extracted because this exact pattern was duplicated ALREADY 3 times
+  inside pixel_scripts alone before today: in `PowerSupply`
+  (core/power_supply.py), `DAQBase` (core/daq.py), and `FEB`
+  (core/feb.py) - a genuine repeat-caller situation per the promotion
+  rule in section 2, not a guess. `PowerSupply`, `DAQBase`, and `FEB` now
+  all inherit `CommandMappable` instead of redefining these two methods.
+  Fixed while unifying: 2 of the 3 original copies (DAQBase's and FEB's)
+  had a copy-pasted error message referencing `self.equipment_name` - an
+  attribute that only `PowerSupply` actually has. Would have raised
+  `AttributeError` if that "command not recognized" branch had ever
+  actually executed on a DAQBase or FEB instance. The shared version uses
+  `type(self).__name__` instead, which always exists.
+  Also standardized behavior: `PowerSupply`'s original `execute_command`
+  always returned `True` regardless of the underlying command's actual
+  result (and printed an extra debug line the other two didn't).
+  `DAQBase`/`FEB`'s original versions returned the real result. Per
+  explicit user decision, standardized on "return the real result" (the
+  2-of-3 majority behavior) - this is a small behavior change to
+  PowerSupply-derived instances specifically: any caller checking a
+  truthy/falsy return from e.g. `power_supply.turn_on()` now sees the
+  actual outcome instead of always True. Worth being aware of if
+  anything downstream relied on the old always-True behavior (a search
+  of pixel_scripts didn't find one, but this wasn't exhaustively traced
+  through every caller).
+
+3.5) common/status_message.py (new)
+  `StatusMessage(odb_location)` - `send(result, msg="Nothing")` writes
+  `<odb_location>/Result` and `<odb_location>/Message` to ODB, overriding
+  the message to `"Success"` whenever `result`'s enum member is literally
+  named `SUCCESS` (checked via `getattr(result, "name", None) ==
+  "SUCCESS"`, so it works with any Enum-like type without common/ needing
+  to import it - deliberately duck-typed instead of taking a
+  success-sentinel parameter). `send_monitoring(msg)` writes only the
+  Message field, for an in-progress update that shouldn't touch Result.
+  Extracted from `ActionMessage` (actions/actions.py) and
+  `CalibrationMessage` (calibrations/calibration.py), which were
+  near-duplicates: same two ODB fields, same "Success" override logic,
+  same debug print. Both classes are now thin subclasses that only supply
+  their own `odb_location` default and (for ActionMessage/
+  CalibrationMessage's own enum-typed default arguments) forward into
+  `super().send(...)`. `CalibrationMessage.send_monitoring` needed no
+  override at all - it's identical to the inherited one.
+  Two dead instance attributes were dropped in the process
+  (`self.action_result`, `self.message` as a plain string) - both were
+  set in `__init__` and never read anywhere else in either repo
+  (confirmed via `grep -rn "\.action_result\b"` /
+  `grep -rn "message\.message\b"` across both repos before removing
+  them).
+
+
+4. FULL LIST OF FILES CHANGED IN pixel_scripts TODAY
+-------------------------------------------------------
+  core/power_supply.py
+    - PowerSupply, ODBPowerSupplyReadCommand, ODBPowerSupplyReadAndCheckCommand,
+      LVPowerSupply, HVPowerSupply, DCDCPowerSupply, HVBoxNPowerSupply all
+      removed (now live in common.power_supply, imported as `base_ps`)
+    - remaining: PowerSupplyType, LVPowerDistribution, MPDCPowerSupply,
+      PowerSupplyFactory (factory's DCDC/HVBOXN branches now return
+      `base_ps.DCDCPowerSupply(...)`/`base_ps.HVBoxNPowerSupply(...)`)
+  core/power_partition.py
+    - import utils.odb -> common.odb
+    - type hints on assign_lv_supply/assign_hv_supply updated from
+      core.power_supply.LVPowerSupply/HVPowerSupply to
+      common.power_supply.LVPowerSupply/HVPowerSupply (those classes no
+      longer exist in core.power_supply - this would have raised
+      AttributeError at import time if left unfixed; caught by an actual
+      import test, not just py_compile, see section 6)
+  core/chip.py
+    - import globals.setup -> common.setup; import utils.odb -> common.odb
+  core/detector.py
+    - import utils.odb -> common.odb
+    - added `import common.setup as common_setup`; the
+      `if setup.run_from_sequencer:` check now reads
+      `common_setup.run_from_sequencer` (globals.setup import kept for
+      the pixel-specific fields still used elsewhere in this file)
+  core/daq.py
+    - import utils.odb -> common.odb
+    - DAQBase now inherits common.command_mixin.CommandMappable; its own
+      execute_command/map_commands_to_self removed
+  core/feb.py
+    - import utils.odb -> common.odb
+    - FEB now inherits common.command_mixin.CommandMappable; its own
+      execute_command/map_commands_to_self removed (and the stale
+      "TODO: this is getting a recursive thing, it should become some
+      sort of base class" comment that predicted exactly this refactor)
+  calibrations/calibration.py
+    - import utils.odb -> common.odb; added import common.status_message
+    - CalibrationMessage now subclasses status_message.StatusMessage
+  actions/actions.py
+    - import utils.odb -> common.odb; added import common.status_message
+    - ActionMessage now subclasses status_message.StatusMessage
+  globals/setup.py
+    - is_odb_available/can_send_commands_to_odb/run_from_sequencer
+      removed (now only in common.setup); pixel-specific fields unchanged
+  scripts/run_calibration.py
+    - import globals.setup -> common.setup (this file only ever touched
+      is_odb_available/can_send_commands_to_odb, both now generic flags -
+      note: it also `register_param`s "read_febs_from_odb" but never
+      actually assigns it to setup.read_febs_from_odb in sequence() -
+      that looks like a pre-existing incompleteness, left untouched,
+      unrelated to today's changes)
+  test1.py, test2.py, test3.py, test4.py, test6.py
+    - import globals.setup -> common.setup (test1.py also:
+      import utils.odb -> common.odb)
+    - NOT touched: test1.py calls `ps.LVPowerDistribution(ps.
+      PowerSupplyType.TDK, "LV_Supply_1")` - `PowerSupplyType.TDK` does
+      not exist (only DCDC/HVBOXN/MPDC do) and the constructor call is
+      also missing the `client` argument. This was already broken before
+      today - left as-is, out of scope for this refactor.
+  utils/odb.py
+    - DELETED (contents now common/odb.py)
+
+Not changed, for the record: core/detector.py's own logic,
+core/power_partition.py's own logic, core/chip.py's own logic,
+core/feb.py's mask-building logic, core/daq.py's DAQCommands/
+DAQSCReads/DAQSCReadsArray/DAQLVDSErrorStats/DAQMupixSCReadBack/
+DAQControl logic, globals/folders.py, globals/operation_parameters.py,
+utils/positional_functions.py (still a stub - get_feb_start_id always
+returns 0), utils/results.py, actions/poweractions.py,
+actions/daqactions.py, actions/actionfactory.py,
+calibrations/calibrationfactory.py, calibrations/ivscan.py,
+calibrations/smoketest.py, config/detector.json - all confirmed
+pixel-topology-specific, see section 5 for the two borderline cases that
+were considered and deliberately deferred.
+
+
+5. CANDIDATES CONSIDERED AND DELIBERATELY NOT MOVED (yet)
+---------------------------------------------------------
+Two pieces of code are structurally generic (no pixel-specific ODB paths
+or topology inside them) but have NO second real caller today, so per
+section 2's rule they were left in pixel_scripts rather than moved on
+spec:
+
+  - utils/results.py: `ResultSaver`/`ResultSaverLocal`/`ResultSaverODB`
+    (still an empty stub - stores odb_folder but never actually reads/
+    writes ODB)/`ResultSaverRunDB`/`ResultSaverMultiple`. Only couples to
+    pixel via type hints (`det: detector.Detector`,
+    `daqc: daq.DAQControl`) and by calling `det.power_partitions`,
+    `pp.is_selected()`, `chip.get_positional_id()`,
+    `det.get_all_user_selected_chips()`. Moving it now would mean
+    pre-committing scifi_scripts's future core/ classes to expose that
+    exact method vocabulary before that design work has even started -
+    deferred until scifi_scripts/core/ exists for real (see section 7).
+
+  - core/daq.py's `DAQSCReads`/`DAQSCReadsArray` base classes (NOT the
+    concrete `DAQLVDSErrorStats`/`DAQMupixSCReadBack`, which stay -
+    those hardcode Mupix SC variable names like "Disparity Errors",
+    "8b/10b Errors" and the "PCLS"/"PVSC" equipment suffixes). The base
+    classes build their ODB paths generically via
+    `getattr(self, "odb_" + equipment + "_path")` and expose
+    before/after-diff + per-chip/per-link extraction hooks that default
+    to returning `None` - zero pixel-specific content. Same reasoning as
+    results.py: no scifi equivalent exists yet to confirm against, so
+    left alone.
+
+Also evaluated and confirmed genuinely NOT shareable: core/detector.py,
+core/power_partition.py, core/chip.py (pixel's DAC names/topology),
+actions/*.py and calibrations/{calibrationfactory,ivscan,smoketest}.py
+(pixel-specific sequences/dispatch), globals/folders.py and
+globals/operation_parameters.py (pixel-specific values). The
+prepare/execute/finalise orchestration shape in
+CalibrationFactory.perform_calibration (and, more loosely,
+ActionFactory.perform_action) IS the generic pattern described in
+scifi-userfiles/docs/HACKATHON.txt section 5.3, but it's written inline
+in one place each, not duplicated 2x+ like command_mixin/status_message
+were - no second real caller, so not extracted either.
+
+
+6. VERIFICATION METHODOLOGY
+----------------------------
+Every changed/new file was checked with `python3 -m py_compile`
+individually (syntax only). That was NOT enough on its own - it missed
+core/power_partition.py's stale type hints pointing at classes that had
+just moved out of core.power_supply (would have raised AttributeError
+the first time anything actually imported that module, since Python
+evaluates function-signature annotations eagerly at class-definition
+time unless `from __future__ import annotations` is used, which this
+codebase doesn't). Caught by building throwaway stub packages for `zmq`
+(`from enum import Enum`) and `midas.client` (a no-op `MidasClient` with
+stub `odb_get`/`odb_set`) - neither is installed in this shell - and then
+actually importing every module in pixel_scripts and common_scripts with
+both repo roots added to `sys.path` as siblings. All imports succeeded
+after the power_partition.py fix. This is NOT proof that the real
+PySequencer loader resolves `import common.odb` the same way - see the
+open item in section 8 - but it does prove the code is internally
+self-consistent under that assumption, which py_compile alone can't.
+
+Separately, one real (not import-time) bug was found by reading actual
+scifi-userfiles source and comparing byte-for-byte against what got
+moved into common/power_supply.py:
+`HVBoxNPowerSupply.turn_on`'s ODB path is
+`.../Settings/Ouput On[ch]` (typo, missing the "t" - should be "Output")
+while its own `turn_off` and `is_on` correctly use
+`.../Settings/Output On[ch]`, and scifi-userfiles/scripts/hv_power.py's
+real code confirms "Output On" is the correct key
+(`/Equipment/HV/Settings/Output On[{ch}]`). As written, calling
+`turn_on()` on an HVBoxNPowerSupply writes to a key that `is_on()` never
+reads back from - the channel probably never actually turns on via this
+code path. This is a PRE-EXISTING bug in pixel_scripts (not introduced
+today), just carried along verbatim when the class was moved.
+**Deliberately NOT fixed** - flagged for you to decide, since it affects
+real hardware behavior and wasn't part of today's refactor scope.
+One more, much more minor, unverified-but-probably-harmless observation:
+DCDCPowerSupply writes to `.../Settings/Channel on[ch]` (lowercase "on")
+while scifi-userfiles' lv_power.py uses `.../Settings/Channel On[ch]`
+(capital). MIDAS ODB key lookups are believed to be case-insensitive, so
+this is likely a non-issue, but it was not verified live against a real
+ODB.
+
+
+7. scifi_scripts STATUS (separate, currently on hold)
+-------------------------------------------------------
+Explicitly a hackathon experiment - replaces scifi-userfiles only if it
+works out, not a committed migration. Decision made: mirror
+pixel_scripts's top-level folder skeleton (actions/ calibrations/
+config/ core/ globals/ scripts/ utils/) for architectural alignment, but
+do NOT copy core/'s classes 1:1 - pixel's
+Detector->PowerPartition->PowerSupply x3, FEB->Chip->DataLink hierarchy
+encodes pixel's own hardware topology (ladder as power partition, MPDC+
+DCDC+HVboxN triplet) which scifi doesn't have (scifi is
+FEB->ASIC(mutrig)->fibre, no MPDC, no power-partition concept). Instead,
+core/ should be designed around scifi's real topology using classes
+named Feb/Asic/Channel (name chosen in the 2026-07-16 hackathon
+brainstorm, HACKATHON.txt section 5.2), reusing pixel's PATTERN
+(ODBCommand-based dispatch, prepare/execute/finalise, dependency-injected
+MidasClient) rather than its literal classes.
+As of this writing: only the 7 empty folders exist
+(mkdir -p actions calibrations config core globals scripts utils inside
+scifi_scripts/) - no files, no design started. User explicitly said to
+leave this on hold and look at what's actually inside scifi-userfiles
+first before continuing.
+
+
+8. CROSS-CHECK AGAINST scifi-userfiles/docs/HACKATHON.txt
+-------------------------------------------------------------
+(gitignored personal notes file, gone through in detail today; see
+section 5 there for the full 2026-07-16 hackathon brainstorm, numbered
+5.1-5.11)
+
+Already satisfied by pixel_scripts's existing design (pattern, not code,
+still needs porting to scifi_scripts when that resumes): 5.3
+(prepare/execute/finalise, calibrations/calibration.py's
+CalibrationBase), 5.5 (globals module), 5.7 (utils/ layout), 5.10
+(ResultSaver), 5.11 (dependency-injected MidasClient throughout).
+
+Directly implemented today: 5.8 (an ODBCommand family "always in odb.py,
+not scattered across scripts", with exactly the ODBBooleanCommand/
+ODBPowerSupplyReadCommand/ODBPowerSupplyReadAndCheckCommand subclasses it
+names) - that's common/odb.py + common/power_supply.py.
+
+Confirmed but NOT acted on: HACKATHON.txt section 1 asked "does pixel
+actually use DCDCCrates/HV?" as the precondition for a "same-day merge"
+of lv_power.py/hv_power.py. Answer, confirmed today: YES (see section
+3.3 above). The merge itself was not attempted - pixel's actual power-on
+flow (actions/poweractions.py's ActionPowerOn: step LV to minimum, turn
+on, wait; then HV to 10V, turn on, wait) is a staged OOP sequence, not a
+simple "find every matching channel by name, turn them all on, check
+current" flat script like scifi's lv_power.py/hv_power.py - so this
+isn't a trivial 1:1 file merge even though the underlying equipment
+classes are now shared.
+
+Separately verified today (not itself a HACKATHON.txt item, but directly
+relevant to whether any of this sharing is real): read
+/Users/gmoretti/Work/Mu3e/midas/python/midas/sequencer.py directly.
+`SequenceClient` (the class behind every PySequencer script's `seq`
+argument) is declared `class SequenceClient(midas.client.MidasClient):`
+at line 33, and does NOT override `odb_get`/`odb_set`/`odb_exists`
+anywhere in that file (checked via grep) - so `seq` IS a real MidasClient
+via inheritance, not a wrapper around one. Practical consequence:
+common.odb.ODBCommand and common.power_supply's classes can be handed
+`seq` directly as their `client` argument from a real PySequencer script
+- not just from pixel_scripts's own Detector/DAQControl object graph -
+with no adapter needed. This directly de-risks any future attempt at the
+lv_power.py/hv_power.py merge mentioned above.
+
+Still just brainstormed, no design or code in either repo: 5.1
+(per-channel selection, not just ASICMask), 5.2 (Feb/Asic/Channel
+classes - the actual open design work for scifi_scripts/core/), 5.4
+(per-power-partition scan ranges in ODB), 5.6/5.9 (result destinations -
+pixel's own ResultSaverODB is still an unimplemented stub, see section
+5).
+
+Section 6 of HACKATHON.txt (open question about sequencer/ git
+structure) is partially answered by events, not decision: pixel_scripts/
+common_scripts turned out to already be separate Bitbucket repos (like
+scifi-userfiles), not tracked inside `online`. New wrinkle that section
+didn't anticipate: there are now two different scifi repos - the
+original scifi-userfiles (inside online/online/userfiles/sequencer/, own
+Bitbucket remote, and as of 2026-07-16 STILL has an uncommitted change to
+scripts/hv_power.py - confirmed still uncommitted today, don't lose it)
+and the new, empty scifi_scripts (section 7).
+
+
+9. OPEN ITEMS
+-------------
+  - The "Ouput On" typo bug (section 6) - not fixed, needs a decision.
+  - sys.path resolution for `import common.odb` from inside pixel_scripts
+    (or eventually scifi_scripts) is verified only at the Python-import
+    level with stub modules (section 6), NOT against the real
+    PySequencer/mu3ebe loader. First live dry-run should confirm this
+    actually resolves.
+  - utils/results.py and core/daq.py's DAQSCReads/DAQSCReadsArray remain
+    real common/ candidates, deliberately deferred until scifi_scripts
+    has its own Detector/DAQControl-equivalent to confirm against
+    (section 5).
+  - The lv_power.py/hv_power.py-on-common.odb merge (section 8) is
+    confirmed technically feasible (equipment paths match, seq/client
+    compatibility confirmed) but not attempted - not a trivial 1:1 port
+    given pixel's staged power-on flow.
+  - scifi-userfiles/scripts/hv_power.py has an uncommitted local change
+    predating today - don't lose it if/when work resumes there.
+  - Nothing in common_scripts or pixel_scripts has been committed or
+    pushed - user has explicitly said not to commit until told to.
+  - scifi_scripts is on hold at "7 empty folders, no design" per user's
+    explicit instruction - next step there is to look inside
+    scifi-userfiles first, not to keep building the skeleton blind.

@@ -1,0 +1,19 @@
+# separate repos / external clones
+midas/
+online/
+sequencer_scripts/
+mu3especbook/
+
+# local / machine-specific
+.DS_Store
+.claude/
+.vscode/
+*.log
+
+# heavy data (keep locally)
+data/
+odb_*.json
+*.root
+
+# personal documents
+docs/personal/

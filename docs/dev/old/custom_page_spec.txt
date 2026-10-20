@@ -1,0 +1,689 @@
+SCIFI CONTROL PAGE - POWER SECTION - IMPLEMENTATION SPEC
+====================================================================
+Reference document for whoever implements the HTML/JS. Organised by
+topic, not chronology - for the day-by-day reasoning/narrative behind
+each decision, see custom_page.txt (sections 3, 3.1, 3.2, next to this
+file) and todo.txt (docs/, one level up). A companion clean mockup of
+what a shifter would actually see is custom_page_mockup.html, next to
+this file.
+
+SCOPE: this is "Page 2" of the two-page control-page proposal
+(custom_page.txt section 3) - the technical/control page, covering only
+the power surfaces that exist today as PySequencer scripts: FEB-crate
+power, LV (DCDCCrates) power, HV (SiPM-bias) power, plus the global
+safety/status panel above them. Detector geometry is "Page 1", a
+genuinely separate page - REVISED 2026-07-22: PURE DIAGNOSTIC now, not
+an editor/masking tool - not built here, but its EXISTENCE is now
+reserved visually on this page (section 0). Readout (general ASIC/
+channel activation and masking for ordinary data-taking, distinct from
+calibration-specific selection) and Calibration control are later,
+separate design tasks - not designed yet, but both are already reserved
+as empty mega-section placeholders (section 0), so the real content can
+slot in later without a structural rework.
+
+STATUS: design only. Nothing in this document is built. Every action
+described here requires code changes listed in "KNOWN BUGS & CODE
+TODOS" below before it will work end to end.
+
+
+0) OVERALL PAGE STRUCTURE (added 2026-07-22, after the mockup existed)
+====================================================================
+Two-column layout, exactly 50/50 width:
+  LEFT column: everything in sections 1-3 below (safety panel, Power,
+    Readout, Calibration).
+  RIGHT column: an empty "Geometry view" placeholder card, sticky
+    (stays in view while the left column scrolls) - reserves the space
+    and communicates that Page 1 exists elsewhere, without pretending
+    to build it. No content, no interactivity - just a labeled empty
+    panel ("Geometry view - Page 1, separate page, not built yet").
+    REVISED 2026-07-22: Page 1's eventual role is PURE DIAGNOSTIC (color-
+    coded status map, click an element to see info aggregated from
+    Power/Readout/Calibration) - it is explicitly NOT where masks/params
+    get edited, that lives in Readout/Calibration instead. Not a
+    behavior change to this placeholder card itself (still empty, still
+    not built) - just a note on what it will and won't do once built.
+
+Inside the LEFT column, content is organised as collapsible "mega-
+sections", one level above the FEB/LV/HV tabs:
+  "Power" - contains today's tab bar (FEB/LV/HV) and everything in
+    section 3 below, unchanged. Expanded by default (it's the real,
+    working content - shouldn't need an extra click to reach).
+  "Readout" - MOCKUP BUILT 2026-07-23, expanded by default (real content
+    now, same rule as Power) - full field-by-field detail in
+    custom_page.txt 3.5, kept there rather than duplicated here since
+    this document is meant to stay topic-organised, not a second
+    narrative. Short version: rows are 24 MODULES (=SMB, spec book Fig.
+    6.1/6.2), grouped US/DS same as FEB/LV; expanding a module goes
+    straight to a 4-row (ASIC) x 32-column (channel) grid - not a
+    separate ASIC-then-channel drill-down, since Fig. 6.2 shows no
+    physical 2D structure inside a single ASIC (it's a linear strip),
+    only across the whole module. Its masking is the BASELINE for
+    ordinary running; Calibration's own masking/selection layers on top
+    of it, not instead of it. The mask-persistence-across-a-calibration
+    question that used to be flagged here as a required fix was CLOSED
+    2026-07-23 (user's own call) - ScanThr's existing unconditional
+    reset-to-0 at scan start is correct/intended, no code change needed.
+    STILL AWAITING MARIUS'S SIGN-OFF - built ahead of the Zoom call this
+    was meant to gate on.
+  "Calibration" - EMPTY placeholder, collapsed by default (nothing
+    real inside yet, no reason to show it open on load). Contains its
+    own small tab bar with 2 stub tabs, "IV scan" and "Threshold scan",
+    each just a one-line placeholder note today. Reserves the shape
+    (2 sub-areas, matching the 2 known calibration types from todo.txt)
+    without designing their actual content - that's explicitly future
+    work (todo.txt section 5 item 3).
+All three mega-sections use the same click-header-to-expand/collapse
+pattern as the geometric groups (section 3.4) - a chevron, collapsed
+state hides content entirely.
+
+The safety panel (section 2) is a 4-card grid (auto-wrapping, not a
+fixed 4-across layout): Emergency, Required Programs, Service Status,
+PySequencer status - see section 2 for what each card contains. At the
+page's actual (halved) column width these 4 cards wrap 2-by-2, which is
+why PySequencer's card ends up positioned next to Service Status and
+below Required Programs - not a coincidence, a direct consequence of
+where it sits in the grid's source order (placed 4th, right after
+Service Status).
+
+
+1) HOW EVERY ACTION ON THIS PAGE WORKS
+====================================================================
+There is exactly one mechanism, reused by every button on the page.
+PySequencer (midas/python/midas/sequencer.py) exposes it via ODB:
+
+  1. Write /PySequencer/State/Path and /PySequencer/State/Filename -
+     selects which script to run.
+  2. Write /PySequencer/Param/Value/<name> - one write per parameter,
+     BEFORE starting. (Values written here survive the script reload
+     that "Start script" triggers - register_param() keeps an existing
+     ODB value instead of resetting it to the script's own default.)
+  3. Write /PySequencer/Command/"Start script" = true.
+
+Feedback: poll/watch /PySequencer/State/{Running,Finished,Message,
+Error}. The Message field is exactly what each script's seq.msg() calls
+produce (done/skipped lists, per-channel offender lists, etc.) - the
+page should display that text directly, not recompute pass/fail itself.
+
+Concurrency: /PySequencer is ONE shared sequencer instance for the whole
+experiment (or a named one, e.g. /PySequencerTest, via the "-c" flag).
+While State/Running is true, every action button on this page must be
+disabled - writing Command/"Start script" again mid-run stomps on
+whatever is already executing. This is not SciFi-specific.
+
+Gate: BUILT 2026-07-22 (was a TODO when this line was first written -
+now DONE, and refined the same day). Before powering ON, each of the
+three power scripts checks common/services.py's check_shared_equipment()
+(TDK + DCDCCrates health); if unhealthy, the script refuses to power on
+and reports why via seq.msg(). REFINEMENT (same day, caught during
+self-review): the gate does NOT apply when powering OFF - turning off is
+the safety de-escalation action, it must stay available precisely when
+shared equipment is unhealthy, not be blocked by it. This matters
+directly for the page: "Turn Off All SciFi Power" (2.1) and the 3
+per-category "Turn off FEB/LV/HV" buttons call these same scripts with
+power_on=False, and must keep working even when Service Status (2.3) is
+red - if the page ever disables those buttons based on Service Status,
+that must be UX-only advisory styling, never an actual block, or the
+emergency-stop path would be defeated exactly when it's needed most.
+This check is SERVER-SIDE, in Python, inside each script - never
+reimplemented in JS. The page's Service Status panel (section 2 below)
+should reflect the same information so a shifter sees it before
+clicking an ON action, but the real refusal happens in the script
+regardless of what the page displays.
+
+is_odb_available / can_send_commands_to_odb: every script also takes
+these two parameters (dry-run flags). This page ALWAYS writes both as
+True - it is the production control page, not a dry-run tool. Do not
+expose them as page controls.
+
+
+2) ZONE 1 - GLOBAL CONTROL / SAFETY PANEL
+====================================================================
+
+2.1) Emergency stop
+--------------------------------------------------------------------
+Main button: "Turn Off All SciFi Power". Must turn off FEB-crate power,
+LV, and HV together. At the Python level this means calling all three
+of:
+  SciFiDetector.turn_off_all_feb_power()
+  SciFiDetector.turn_off_all_lv()
+  SciFiDetector.hv.turn_off()
+Not yet decided: whether this is one new aggregating script, or the
+page triggering the three existing scripts (feb_power.py, lv_power.py,
+hv_power.py with power_on=False) one after another. Either way, the
+concurrency rule in section 1 applies - these can't run in parallel
+through the shared /PySequencer instance.
+
+ADDED 2026-07-22: 3 smaller secondary buttons below the main one -
+"Turn off FEB" / "Turn off LV" / "Turn off HV" - each just calls its
+own single existing script (feb_power.py/lv_power.py/hv_power.py with
+power_on=False), no new code needed for these three specifically (only
+for the main all-in-one button above, per the "not yet decided" note).
+Gives a shifter a faster path to killing one category without waiting
+for/affecting the other two.
+
+2.2) Required Programs for Operation
+--------------------------------------------------------------------
+Read-only status list, one row per required frontend, no button. Pure
+ODB read of /Programs/<name> (MIDAS' own program-alive tracking) - no
+Python change needed, this can be built as-is today. Confirmed real
+list for SciFi (cross-checked against every SciFi-relevant equipment's
+own /Equipment/<name>/Common/"Frontend name" field, not guessed or
+copied from pixel's own list):
+
+  Program              Serves                          Host
+  --------------------------------------------------------------
+  mhttpd                base MIDAS                      -
+  SW Fibre               LinksFibre, SciFiFibre,        mu3esw3
+                          SwitchingFibre (all three)
+  DCDC Frontend           DCDCCrates (LV)                mu3ebe
+  HV Frontend             HV                             mu3ebe
+  Febcrate Frontend       FEBCrates                      mu3ebe
+  Powerrack Frontend      TDK                            mu3ebe
+  Sequencer / PySequencer  (needed to run the actions
+                            on this page at all)
+
+2.3) Service Status
+--------------------------------------------------------------------
+Read-only status, backed directly by common_scripts/common/services.py
+(already written and tested, never wired to any frontend before this
+page). Two checks:
+
+  TDKService.check_status() - OK if, for every Enabled channel:
+    /Equipment/TDK/Settings/"Fault Register"[i] == 0 AND
+    /Equipment/TDK/Settings/"Interlock Trigger"[i] == 0
+    (reads Settings/Names, Settings/Enabled too, for reporting)
+
+  DCDCCratesService.check_status() - OK if every Enabled crate is also
+  Crate On:
+    /Equipment/DCDCCrates/Settings/Enabled[i] == True implies
+    /Equipment/DCDCCrates/Settings/"Crate On"[i] == True
+    (reads Settings/"Device Names" too, for reporting)
+
+How the page should get this data: not yet decided as a hard rule, but
+recommended - mirror this same simple logic directly in client-side JS,
+reading the same raw ODB arrays. Unlike the UNVERIFIED current/voltage
+tolerance checks elsewhere on this page (section 3), this TDK/DCDCCrates
+logic has no made-up constants - it is a small, stable boolean check, so
+duplicating it in JS carries much less drift risk. This is a
+recommendation, not a locked decision.
+
+This panel is purely informational for the page - the actual gate on
+power actions (section 1) runs server-side regardless of what this
+panel shows.
+
+2.4) PySequencer status card
+--------------------------------------------------------------------
+UPGRADED 2026-07-22: no longer a plain text line - a 4th card in the
+same safety-panel grid as Emergency/Required Programs/Service Status
+(section 0), so it reads with the same visual weight as the other three
+instead of a faint caption easy to miss. Content is unchanged in
+substance: a colored status pill reading /PySequencer/State/Running -
+green ("idle - actions available") when false, a different color when
+true (busy - the concurrency rule from section 1 is why buttons
+disable then). Deliberately NOT a full duplicate of PySequencer's own
+Sequencer/Run status panels (those already exist globally in mhttpd's
+own left-hand navigation) - this page only needs enough to explain to a
+shifter why the action buttons might be greyed out.
+
+2.5) What is deliberately NOT on this page
+--------------------------------------------------------------------
+Watchdog Status: no SciFi-equivalent exists to Pixel Watchdog (checked
+/Programs - only a generic "Watchdog" and "Pixel Watchdog" exist).
+Confirmed (via Pixel Watchdog's own "Enabled Power Partitions" list,
+which only ever contains pixel's own 8 partitions) that SciFi is not
+even passively covered by it. SciFi currently has NO continuous safety
+interlock, for anything - not Helium, not TDK, not temperature, not
+required-programs-down. This is a real, standing gap, out of scope for
+this page (it would need its own always-on daemon/frontend). Noted here
+so it is not silently assumed to be someone else's solved problem.
+
+
+3) ZONE 2 - POWER CONTROL (tabs: FEB / LV / HV)
+====================================================================
+Selection model used throughout: a "Sel." checkbox column per row, plus
+ONE shared batch action button per operation (e.g. "Power ON selected
+FEBs"), not an independent live button inside every row. Reason: the
+single shared /PySequencer instance (section 1) means N independent
+per-row clicks would be N sequential launches, not parallel - a
+selection + one batch launch avoids needing a client-side launch queue.
+This also matches how write access was described as "limited to a
+handful of channels" - a deliberate, bounded selection, not free-for-all
+per-item control.
+
+Every "Sel." column also gets a select-all / deselect-all control -
+applies to FEB, LV, and HV (once it gets one). NOT the DCDC crate block
+(section 3.2.1) - that table has no "Sel." column at all, see its own
+section for why. Pure UI, no backend change needed.
+
+3.1) FEB tab
+--------------------------------------------------------------------
+Rows: one per Feb with FEBType==3 in /Equipment/LinksFibre/Settings
+(currently 12 - READ LIVE, do not hardcode the count).
+
+Columns (all read-only, plain ODB reads, refreshed on a poll/watch):
+  FEBName                 LinksFibre/Settings/FEBName[i]
+  feb_index                position in LinksFibre's own arrays (0-11)
+  link_feb                 LinksFibre/Settings/LinkFEB[i] (global id,
+                            144-155 for LinksFibre)
+  crate / slot              FEBCrates/Settings/FEBCrate[link_feb] +
+                            FEBSlot[link_feb] - show "unmapped" if
+                            either equals 255
+  active channels           count of Feb.get_active_channels()
+                            (ASICMask-derived)
+  FEBPower                  FEBCrates/Settings/FEBPower[crate*15+slot]
+                            - on/off, real flag, color-code freely
+  CrateControllerConnected  FEBCrates/Variables/CrateControllerConnected
+                            [crate] - real flag, color-code freely
+  monitoring (informational only, NOT color-coded - no known-good value
+  exists for any of these):
+    crate_voltage_20/3_3/5   FEBCrates/Variables/SCFC[crate*20+1..3]
+    crate_cc_temperature     FEBCrates/Variables/SCFC[crate*20+4]
+    feb_temperature          FEBCrates/Variables/SCFC[crate*20+5+slot]
+
+Actions:
+  "Power ON selected FEBs" / "Power OFF selected FEBs"
+    -> scripts/feb_power.py
+    params: power_on (bool), target_febs (list[int] of feb_index - NEW
+            param, not in the script today), is_odb_available=True,
+            can_send_commands_to_odb=True
+
+3.2) LV tab
+--------------------------------------------------------------------
+Rows: mirrors the FEB list above (a Feb whose FEBName does not parse as
+"<side> SM <n>" has no LV supply - show that as an explicit row state,
+not a blank cell).
+
+Columns:
+  LV channel name       DCDCCrates/Settings/Names[ch] pattern
+                         "SMB_<side>_<2n>-<2n+1>"
+  active channels        same value as the FEB tab (a Feb's LV rail
+                         powers exactly its own channels)
+  on/off                 DCDCCrates/Settings/"Channel on"[ch] - real
+                         flag
+  Current                DCDCCrates/Variables/Current[ch]
+  Adjust                 DCDCCrates/Variables/"Voltage Adjust"[ch] -
+                         EDITABLE per row (input field directly in the
+                         table, not just a display value) - this is the
+                         setpoint's own echo, and this page both shows
+                         and writes it.
+  Sense                  DCDCCrates/Variables/"Vdd MuPix"[ch] (field
+                         name is a historical/pixel-era label, reused
+                         generically for every channel on this shared
+                         equipment tree, SciFi's included)
+  Temperature             DCDCCrates/Variables/Temperature[ch]
+  fault flags (7, all real hardware flags, color-code freely):
+    Alert, Power Good, Over Temperature, Vin Under-voltage,
+    Over Current, Vout Over-voltage, Interlock
+    -> DCDCCrates/Variables/<FlagName>[ch]
+
+Actions:
+  "LV ON selected" / "LV OFF selected"
+    -> scripts/lv_power.py
+    params: power_on (bool), target_febs (list[int] - NEW param),
+            settle_seconds (default 5), expected_current_a (default
+            6.5, UNVERIFIED against real hardware), current_tolerance_a
+            (default 3.0, UNVERIFIED), is_odb_available=True,
+            can_send_commands_to_odb=True
+
+Selection: "Sel." checkbox per row, plus a select-all/deselect-all
+control - see section 3, granularity model.
+
+  "Adjust selected"
+    per-row: editable input directly in the Adjust column (above) - one
+      value per row, independent of any other row.
+    bulk: one shared value field + an "Adjust selected" button next to
+      "LV OFF selected" - writes that single value into every currently
+      selected row's Adjust field at once (overwrites each row's own
+      per-row value). Per-row and bulk coexist - not either/or.
+    Mirrors HV's own per-row-plus-bulk pattern for Demand (section 3.3)
+    exactly, except for one deliberate difference: NO range validation
+    anywhere for this one, client-side or server-side - user's explicit
+    decision (see KNOWN BUGS 5.1 and 5.4), unlike HV where the frontend
+    itself enforces a real limit. Blocked on the same real bug either
+    way - see 5.1.
+
+3.2.1) DCDC crate status (sub-block on the LV tab, NOT per-Feb)
+--------------------------------------------------------------------
+A separate, smaller table below the per-Feb LV table. These 3 fields
+are CRATE-level (8 DCDC crates total), not per-channel - do not add
+them as columns on the per-Feb table above.
+
+Crate index for a given LV channel = channel_index // 16
+("Channels per device" = 16, confirmed in ODB). Example: SMB_US_2-3
+(channel 6) -> crate 0 = DCDC_C_1. SMB_DS_8-9 (channel 121) -> crate 7
+= DCDC_C_8.
+
+Rows: 8, one per DCDCCrates/Settings/"Device Names"[i] (DCDC_C_1 ..
+DCDC_C_8).
+
+Columns:
+  Crate name    DCDCCrates/Settings/"Device Names"[i]
+  Crate On       DCDCCrates/Settings/"Crate On"[i] - real flag,
+                 color-code freely. This is the exact field behind a
+                 known, still-open anomaly: DCDC_C_3 (crate index 2)
+                 has shown Enabled=True / Crate On=False since
+                 2026-07-17 - and that crate hosts 2 real SciFi FEBs'
+                 LV channels (SMB_US_8-9, SMB_US_6-7).
+
+Selection: "Sel." checkbox per row + select-all/deselect-all + the
+group-level select-all from section 3.4 (grouped US/DS, 2x4 crates).
+Re-added 2026-07-22 after being tried, reverted, then explicitly
+requested back by the user, built 1:1 like Adjust/Demand's per-row-plus-
+bulk shape - here "per-row" is the existing inline button (Reset/Clear
+Fault aren't values, there's no per-row input field the way Adjust/
+Demand have), "bulk" is the new Sel.+batch pair.
+
+Actions: BOTH per-row INLINE "Reset"/"Clear Fault" buttons AND bulk
+"Reset selected"/"Clear Fault selected" buttons, side by side.
+  Reset       -> writes DCDCCrates/Settings/Reset[crate_index] = true
+  Clear Fault -> writes DCDCCrates/Settings/"Clear Fault"[crate_index]
+                 = true
+Neither is wired into any script today - see KNOWN BUGS & CODE TODOS.
+
+Note kept for context (no longer the deciding factor, but still true):
+both are crate-CONTROLLER-level operations, confirmed against the real
+frontend source (mdev_pdcc.cxx) - writes to Settings/Reset[i] and
+Settings/"Clear Fault"[i] pass straight through to the MSCB crate
+controller's own "Reset"/"ClrFlt" registers, nothing to do with channel
+power. A batch "reset several crates at once" doesn't correspond to a
+common real workflow (a genuine power cycle already resets the
+controller electronics at the hardware level) - flagged to the user,
+who chose to build the bulk control anyway.
+
+3.3) HV tab
+--------------------------------------------------------------------
+Rows: every index in /Equipment/HV/Settings/Names whose value contains
+the substring "SciFi CH" (currently 24 - READ LIVE, do not hardcode).
+Sort by ODB index ascending, not by name - keeps row order stable
+across the eventual FEB-mapping rename described below.
+
+Columns:
+  channel name (raw)   HV/Settings/Names[i] AS-IS (e.g. "US Top SciFi
+                        CH3") - do not reformat
+  index                  i
+  FEB                    placeholder column, EMPTY until the ordered
+                         HV-channel-to-SMB mapping is confirmed
+                         (topology.txt section 4c - still open with
+                         Marius; only the total count, 24, is confirmed
+                         1:1, not the order). Add the column now so the
+                         table doesn't need a redesign later.
+  Output On               HV/Settings/"Output On"[i] - real flag
+  Enabled                 HV/Settings/Enabled[i] - real flag
+  Demand                  HV/Variables/Demand[i]
+  Current                 HV/Variables/Current[i]
+  Voltage                 HV/Variables/Voltage[i]
+
+Selection: NONE today. ScifiHv has no per-channel target method (see
+KNOWN BUGS & CODE TODOS) - per-channel HV selection is explicitly
+WANTED (matching FEB/LV), not just a hypothetical extension, but is
+blocked on that Python work. Until then the table is read-only at row
+level. Once selection exists, it also gets the select-all/deselect-all
+control (section 3).
+
+PER-ROW DEMAND VALUES: once selection exists, each selected row should
+get its own inline demand-voltage input, not one shared value for the
+whole selection - confirmed safe to write directly to ODB, no script
+parameter needed. The real HV frontend (online/backend_pc/midas_fe/
+hv_control/src/mdev_hv4.cxx, lines 179-193) already validates any write
+to Variables/Demand[ch] against a per-channel voltage_limit, clamping
+and raising a MIDAS error if exceeded - regardless of who writes it.
+So: the page can write Variables/Demand[i] directly per selected
+channel (before or independent of clicking "HV ON selected"), and the
+eventual per-channel turn-on script just flips Output On and verifies
+the readback against whatever Demand value is already sitting in ODB.
+(Contrast with LV's Adjust action, section 3.2 - DCDCCrates' own
+frontend has NO equivalent bounds check. Adjust came back as an action
+after all (3.2), built without any validation - a real, accepted
+difference from HV, not just a historical note anymore.)
+
+BULK CONTROL: in addition to the per-row input above, one shared value
+field + a "Set demand for selected" button, placed next to "HV OFF
+selected" - writes that one value into Variables/Demand[i] for every
+currently selected row (overwrites each row's own per-row value).
+Per-row and bulk coexist. Mirrors LV's "Adjust selected" bulk control
+(3.2) exactly - both tabs share one identical interaction pattern.
+
+Actions:
+  "HV ON all" (needs a demand_voltage input, default 56.0V; the page
+  should warn/clamp at 60V for UX, but the real refusal is enforced
+  server-side by ScifiHv.MAX_DEMAND_VOLTAGE - never rely on the client-
+  side clamp as the actual safety gate)
+  "HV OFF all"
+    -> scripts/hv_power.py
+    params: power_on (bool), demand_voltage (float, ignored if
+            power_on=False), settle_seconds (default 10),
+            expected_current_ua (default 1.5, UNVERIFIED),
+            current_tolerance_ua (default 1.0, UNVERIFIED),
+            is_odb_available=True, can_send_commands_to_odb=True
+
+3.4) Geometric grouping (FEB, LV, HV, DCDC crate tables - 2026-07-22)
+--------------------------------------------------------------------
+On top of individual row selection (section 3), rows on all four
+selectable tables are grouped by physical detector section. Collapsed
+by default - click a group's header row to expand it and reveal its
+rows at today's row-level granularity. NOT the same grouping on every
+tab - matches each equipment's REAL physical structure (checked against
+topology.txt), not a uniform scheme forced onto all of them:
+
+  FEB / LV: 2 groups, US and DS (6 rows each). Confirmed - topology.txt:
+    LV's 12 channels split exactly 6 US / 6 DS, one per FEB. No
+    confirmed Top/Bottom subdivision at the FEB/SMB level - don't add
+    one.
+  HV: 4 groups, US Top / US Bottom / DS Top / DS Bottom. Confirmed real
+    physical crates (topology.txt, Mu3eSpecBook.pdf section 3.5.2,
+    Tables 3.12-3.15 - 4 HV crates named exactly this way, not just a
+    naming convention).
+  DCDC crate block: 2 groups, US (DCDC_C_1..4) and DS (DCDC_C_5..8) -
+    each crate's own "hosts" list is entirely one side or the other,
+    a clean split from the crate/channel mapping already in 3.2.1.
+
+CAVEAT specific to HV group counts: the raw ODB array has 32 HV
+channels (8 per crate group), but only 24 are real/intended - the other
+8 are provisioned spare boards, confirmed via Marius/spec book
+cross-reference (topology.txt), with no confirmed list of exactly WHICH
+8 are spares. Because of this, HV group summaries must NOT show a fixed
+denominator like "6/8" or claim a specific expected count - show only
+live counts of real ODB flags (e.g. "5 enabled, 3 on"), since a
+never-wired spare channel likely already reads Enabled=False on its
+own, without the page needing to know which index is a spare.
+CONFIRMED 2026-07-23 (live ODB, docs/odb_*.json Equipment/HV/Settings/
+Board): each crate group's 8 raw channels are physically 2 boards of 4
+(e.g. US Top = S30-1..S30-4, then S31-1..S31-4; US Bottom = S32/S33; DS
+Top = S34/S35; DS Bottom = S36/S37) - one physical HV+ box per board,
+matches code_design.txt's "8 physical HV+ boxes x 4 channels". Board[]
+is the real per-channel identifier and IS shown in the mockup (a "board"
+column, replacing an earlier fabricated running index) - but checking
+which of the 8 are the real 6 vs the 2 spares against other candidate
+ODB fields came up empty: Settings/Enabled[] is uniformly True across
+all 8 channels in every group (not a real/spare signal), and Settings/
+Group[] is only a MIDAS display-grouping flag (True on each group's
+first row, for the equipment page's own UI), not hardware semantics.
+Still open with Marius - the mockup shows all 8 real ODB rows rather
+than guessing which 2 to hide.
+
+Per-group summary line (computed only from fields already shown at row
+level - nothing new to calculate):
+  FEB group:  "<N>/<rows> on . <N>/<rows> crate connected"
+  LV group:   "<N>/<rows> on . <N> flagged . <total>A total" - ADDED
+              2026-07-22: total current, summed only over "on" rows'
+              Current values (the same field the row itself already
+              shows) - a genuinely useful at-a-glance load figure, zero
+              new data.
+  HV group:   "<N> enabled . <N> on . <total>uA total" - same addition,
+              summed over "on" rows' Current (no denominator on the
+              enabled/on counts either, see caveat above).
+  DCDC crate group: "<N>/<rows> crate on"
+
+Selection is now 3 levels, not 2:
+  1. table-wide select-all (section 3, existing)
+  2. per-group select-all - one checkbox in each group's header row,
+     checks/unchecks every row within just that group/section
+  3. per-row select (existing)
+  All three feed the SAME action buttons ("Power ON selected", "LV ON
+  selected", bulk demand/adjust controls, "Reset selected", etc.) - no
+  new actions, just more ways to build the same selection.
+
+IMPLEMENTATION PITFALLS (found building the mockup, both easy to miss):
+  1. Table-wide select-all must ALSO set every group's own select-all
+     checkbox to match - not just the row checkboxes underneath it.
+     Otherwise "select all" leaves every group header's checkbox
+     unchecked despite every row inside actually being checked.
+  2. A group's expand/collapse must ONLY affect the summary/main rows,
+     never a row's own detail panel (FEB's temperatures, LV's sense/
+     fault-flag panel, section 3.1/3.2). If expand/collapse is
+     implemented as one shared "visible" flag applied to everything
+     tagged as part of the group, and a row's detail panel carries that
+     same tag, expanding the group forces every detail panel open too,
+     with no way to see just the summary. Keep two independent visibility
+     states: "is this group open" (summary rows only) vs "did the user
+     click this specific row" (detail panel, independent) - but DO force
+     any open detail panels closed when their group collapses, so
+     nothing is left in a stale state.
+
+
+4) WHAT IS DELIBERATELY NOT BUILT ON THIS PAGE (UPDATED 2026-07-22 -
+   both now have a reserved, empty placeholder - see section 0 - but
+   neither has real content or logic)
+====================================================================
+Detector geometry / masking: a separate page ("Page 1" in the two-page
+proposal, custom_page.txt section 3) - the right-column placeholder
+(section 0) only reserves the space and says so, it does not attempt
+the geometry widget itself.
+Calibration control: a later, separate design task, not designed yet
+(todo.txt tracks it as the next item) - the "Calibration" mega-section
+(section 0) reserves the shape (2 stub tabs, IV scan/threshold scan)
+but has no real fields, actions, or ODB paths behind it yet.
+
+Also NOT added, considered and declined 2026-07-22: a dedicated
+Adjust/Demand input directly in each geometric group's own header row
+(section 3.4), on top of the per-row input and the table-wide bulk
+control that already exist. Rejected as redundant, not just unbuilt -
+selecting a group's own checkbox (3.4) and then using the existing bulk
+field already reaches every row in that group in two steps; a third,
+separate input would raise a real ambiguity (does it apply to the whole
+group regardless of row selection, or only to selected rows within it?)
+without unlocking any capability the existing two levels don't already
+cover.
+
+
+5) KNOWN BUGS & CODE TODOS
+====================================================================
+Nothing below is built. All of it must exist before the corresponding
+part of this spec will actually work.
+
+5.1) REAL BUG (shared with pixel_scripts, ACTIVE BLOCKER again - the
+     Adjust action it blocks was dropped, then reinstated same day)
+  common_scripts/common/power_supply.py's DCDCPowerSupply.set_voltage()
+  writes to Settings/Adjust[ch] - a 40-element ODB array. SciFi's 12 LV
+  channels have indices from 6 to 121 - every one of them would be out
+  of bounds for that array. Checked against the real frontend source
+  (online/backend_pc/midas_fe/dcdc_control/mdev_pdcc.cxx): the correct,
+  hardware-connected, watched path is Variables/"Voltage Adjust"[ch] (a
+  128-element array, dev*16+j indexed, covering the full channel range).
+  FIX: change set_voltage()'s write target to Variables/"Voltage
+  Adjust"[ch] (or write that path directly, bypassing set_voltage(), if
+  the page ends up writing ODB directly the way it does for HV Demand -
+  either way, the WRONG path must not be used). Must happen before
+  "Adjust selected" (3.2) works at all, for either detector. Affects
+  pixel_scripts too (same class) - worth reporting there regardless of
+  who fixes it first.
+
+5.2) Script param additions (small changes, no detector/ work - the
+     underlying per-Feb methods already exist)
+  scripts/feb_power.py: add a target_febs param (list[int]), loop over
+    only those feb_index values instead of always looping over every
+    Feb.
+  scripts/lv_power.py: same target_febs param.
+
+5.3) Gating - DONE 2026-07-22 (was a TODO, now built - see section 1's
+     updated gate description for the exact, refined behavior)
+  scripts/feb_power.py, lv_power.py, hv_power.py, thr_run.py, vbr_run.py
+  all call common/services.py's check_shared_equipment() now (factored
+  into that one free function, CalibrationFactory's own copy delegates
+  to it too). feb_power.py/lv_power.py/hv_power.py only gate power_on=
+  True - power_on=False (shutdown) always proceeds regardless of shared-
+  equipment health, refined same day after being caught in review
+  (turning off must never be blocked). thr_run.py/vbr_run.py gate
+  unconditionally (no on/off duality - pure "start a scan" actions).
+
+5.4) New surface: LV Adjust action (dropped, then reinstated same day)
+  Needs the same target_febs-style targeting as FEB/LV power (or,
+  following HV's resolution, may not need a script at all - the page
+  could write Variables/"Voltage Adjust"[ch] directly per selected row,
+  same as HV's Demand). Either way, blocked on 5.1's bug fix first.
+  Explicitly built WITHOUT range validation, client or server-side -
+  user's own call, not an oversight (see custom_page.txt 3.2 for the
+  full reasoning). No script exists for this today, for either detector.
+
+5.5) New surface: DCDC crate Reset / Clear Fault
+  DCDCPowerSupply's command dict has no "reset" or "clear_fault" entry
+  today (only turn_on/turn_off/set_voltage/is_on/4 read_*/7 fault-flag
+  checks). Adding them is not just two dict entries - every existing
+  DCDCPowerSupply instance is indexed by _channel_number (0-127, one
+  per LV channel), but Reset/Clear Fault/Crate On need a CRATE index
+  (0-7) instead, a different, smaller index space the class has no
+  representation for today. Three options, NOT decided:
+    (a) a new, separate small class for "one DCDC crate" (own
+        crate_index, wraps just Crate On/Reset/Clear Fault) - cleanest
+        separation, but a 2nd class for the same equipment tree.
+    (b) add crate-level commands to the existing DCDCPowerSupply class,
+        having a per-channel instance compute crate_index =
+        _channel_number // 16 internally just for these 3 commands -
+        one class, but mixes two index spaces inside it.
+    (c) read/write crate-level state directly wherever it's needed
+        (mirrors how FEBCrates' own crate/slot handling already works
+        in detector/feb.py, without going through a PowerSupply-style
+        class at all) - skips DCDCPowerSupply for this entirely.
+  Also needed regardless of which option: a Feb/LV-channel -> crate
+  index helper (channel_index // 16) somewhere in detector/, which does
+  not exist today.
+
+5.6) New surface: HV per-channel targeting (explicitly requested,
+     matching FEB/LV, not just a hypothetical)
+  detector/hv.py's ScifiHv has only the bulk turn_on()/turn_off() loop.
+  Needs turn_on_channel(index) / turn_off_channel(index) before HV can
+  get the same "Sel." + batch pattern as FEB/LV (section 3.3). Signature
+  does NOT need a demand_voltage argument (unlike the bulk turn_on()
+  today) - per section 3.3's per-row demand resolution, the page writes
+  Variables/Demand[i] directly per channel before calling this, and the
+  frontend's own voltage_limit check (mdev_hv4.cxx) is the real safety
+  gate; turn_on_channel() just needs to flip Output On and verify the
+  readback. Until this method exists, HV stays bulk-only on the page.
+
+
+5.7) ASIC enable/disable write path - DONE 2026-07-23 (was a TODO, now
+     built - needed for Readout's ASIC-row toggle, section 0)
+  detector/asic.py's Asic.is_enabled() was read-only - no way to flip
+  the ASICMask bit Readout's grid ASIC row is meant to control. Added
+  Asic.set_enabled() (local state only) and Feb.set_asic_mask_bit(
+  position_in_feb, enabled) - a read-modify-write of ASICMask[feb_index]
+  (ONE bitmask integer per Feb, not a per-Asic array like Channel's own
+  mask[], so this can't be a single WRITE the way Channel.set_mask is;
+  the other 7 bits must be preserved), write-then-readback verified same
+  as __set_feb_power(), skips the write if the bit is already correct.
+  tests/test_asic_mask.py added (disable+readback, re-enable+readback,
+  no-op skip-write, out-of-range rejection) - full suite (12 files) still
+  passing.
+
+
+6) OPEN QUESTIONS (not blocking, tracked so they aren't rediscovered)
+====================================================================
+- How the Emergency stop (2.1) is actually implemented - one new
+  aggregating script vs the page sequencing the three existing scripts
+  - implementer's call.
+- Whether Service Status (2.3) should mirror services.py's logic
+  directly in client-side JS, or get its data some other way (e.g. a
+  periodic script writing a live status flag to ODB) - JS mirroring is
+  recommended (low drift risk, no UNVERIFIED constants involved in this
+  particular check) but not locked in as a hard rule.
+- The exact ORDERED HV-channel-to-SMB/FEB mapping (section 3.3's "FEB"
+  placeholder column) - only the total count (24, 1:1) is confirmed,
+  not the order. Open with Marius.
+- Which 2 of each HV crate group's 8 raw channels are the real spares
+  (section 3.4's CAVEAT, confirmed 2026-07-23 that Enabled[]/Group[]
+  don't resolve it) - open with Marius.
+- Whether the ODB's flat Asic/Channel index order matches the spec
+  book's physical layout 1:1 (topology.txt 132-135; also affects
+  whether Readout's grid, section 0/custom_page.txt 3.5, is rendering
+  cells in true physical position or just a self-consistent ODB order) -
+  open with Marius.

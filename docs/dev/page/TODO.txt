@@ -1,0 +1,2590 @@
+SciFi custom page - open items (2026-07-31)
+============================================
+
+1) [x] DONE 2026-08-03: Re-verify power-on/off conditions across the WHOLE page
+   - FEB, LV, HV done 2026-07-31: gated on check_shared_equipment() (TDK/DCDCCrates
+     health), mirroring feb_power.py/lv_power.py/hv_power.py exactly.
+   - TDK done 2026-07-31: gated on Interlock Trigger (write doesn't stick if up).
+   - Power distribution (channels + devices): confirmed NO real precondition
+     exists in scifi_scripts (no turn_on() implementation at all for PowerDist),
+     so deliberately left ungated - re-check this is still true if PowerDist
+     backend code ever gets written.
+   - AUDIT 2026-08-03: read the real frontend C++ (dcdc_control/mdev_pdcc.cxx,
+     hv_control/src/mdev_hv4.cxx, powerrack_control/mdev_tdk.cxx+mdev_mpdc.cxx,
+     febcrate_control/febcratefe.cpp - local online/ checkout, not re-verified
+     live on mu3ebe) for what each driver actually gates a write on. Findings:
+       - DCDCCrates: per-channel "confirm" hook exists but its real callback
+         (mupix_confirm in dcdc_fe.cxx) is a disabled stub - no real interlock
+         on channel-on today. Current/fault bits are read-only telemetry.
+       - HV: Demand IS clamped to Voltage limit by the frontend (the one real
+         hardware-enforced clamp in the whole set). Current limit is stored,
+         never compared against measured Current here (enforcement is
+         scifi_scripts/calibrations' own, script-side).
+       - TDKStaging: a single equipment-wide "Allow write access" flag silently
+         no-ops BOTH Output On and Demand writes for every channel when false -
+         not surfaced on the page before. Also: mdev_tdk.cxx's periodic loop()
+         never re-polls OUTP:STAT? (only init() does), so Output On has no live
+         hardware verification the way Demand/Voltage/Current do.
+       - PowerDistStaging: Enabled-only gate, same "current limit stored, never
+         enforced" pattern as HV.
+       - FEBCrates: the one real hardware-adjacent auto-interlock found -
+         febcratefe.cpp force-sets FEBPower=0 for a whole crate if CC temp
+         exceeds 70C (SWITCHOFF_FEBCrate_TemperatureThreshold, alarm_levels.h),
+         independent of the page. Warning at 60C, ODB alarm at 65C. Also found:
+         "FEB temp" (per-slot, SCFC offset+slot) is a placeholder the frontend
+         always writes as 0 ("To be added here: Temperature RO if working") -
+         not real telemetry, unlike CC temp.
+   - PAGE CHANGES MADE 2026-08-03 from the above (the real, previously-unsurfaced
+     conditions - deliberately did NOT add fake JS gates for the stubbed/absent
+     ones, e.g. DCDC confirm, PowerDist/TDK current limits - see design note in
+     this session, no separate doc):
+       - SciFi_PowerSupply.js: TDK "Allow write access" now queried, shown via a
+         table message + disabled buttons/tooltip on Output On and Demand.
+       - SciFi_PowerHV.js + SciFi_main.html: Voltage limit / Current limit added
+         as read-only columns on the HV table.
+       - SciFi_PowerFEB.js + SciFi_main.css: CC temp in the FEB detail row now
+         color-flagged at the real 60/65/70C thresholds; FEB temp gets an
+         honest tooltip flagging it as an unimplemented placeholder (always 0).
+     NOT tested in a live browser (no browser access from here) - verify
+     rendering/columns on mu3ebe or locally before treating as final.
+   - PowerDistService (common/services.py) is still missing - flagged
+     separately, backend Python work, not page work.
+   - CORRECTED 2026-08-03 (user caught it): the shared-equipment gate
+     (TDK/DCDCCrates) on HV's power-on was itself wrong, not just
+     unsurfaced - HV has no real physical dependency on either (mdev_hv4.cxx
+     talks to its own MSCB submaster, no DCDCCrates reference anywhere;
+     TDKStaging's real channels are "SciFi & Tile"/"FE Crates"/"Pixel", none
+     of them HV). Removed from BOTH scripts/hv_power.py (scifi_scripts) and
+     SciFi_PowerHV.js.
+   - REPLACED WITH THE REAL DEPENDENCY, same day (user-supplied): HV's
+     actual precondition is PowerDistStaging - each side x top/bottom group
+     is fed by its own "<side> HV <Top/Bottom>" + "<side> WEATHER
+     <Top/Bottom>" channel pair (ch102/103/118/119 + ch100/101/116/117,
+     confirmed 1:1 against the live ODB names). SciFi_PowerHV.js now gates
+     per-group (each of the 4 US/DS Top/Bottom buttons checks only its own
+     2 PowerDist channels' Output On + Power good). detector/hv.py's
+     ScifiHv gained check_power_distribution() (checks all 8 channels at
+     once, since hv_power.py/turn_on() has no per-group granularity) and
+     scripts/hv_power.py now gates on it before powering on. New test
+     coverage in tests/test_hv_power.py (healthy baseline + a faulted
+     channel case) plus PowerDistStaging mock data added to
+     tests/test_mock_odb_data.py. Full local suite re-run clean (one
+     pre-existing, unrelated failure in test_calibration_factory.py -
+     TDKService's default "/Equipment/TDK/..." path was never in the mock,
+     confirmed via git stash that it fails identically without today's
+     changes - not fixed, out of scope).
+   - Re-audit after any backend script/frontend changes, since this whole page
+     mirrors script/frontend behavior and will drift if they change underneath it.
+   - REAL BUG FOUND AND FIXED 2026-08-03 (user caught it live: "i fault
+     register sono tutti zero ma ancora non posso attivare"): SciFi_Utils.js's
+     checkSharedEquipmentHealth() (used by FEB and LV, since HV no longer has
+     this gate) checked TDK's Fault Register/Interlock Trigger with a plain
+     truthy check - but those fields arrive as hex STRINGS ("0x0000"), and any
+     non-empty string is truthy in JS, so "0x0000" (zero, no fault) was read
+     as a fault, permanently blocking power-on regardless of real TDK health.
+     SciFi_PowerSupply.js's own TDK table already had the correct fix
+     (hexTrue()) - just never applied here. Fixed: both fields now go through
+     hexTrue() before the check. DCDCCrates' "Crate On" is a real bool (TID_BOOL
+     in mdev_pdcc.cxx), not affected - left as a plain check.
+   - SCOPED TO SCIFI, same day (user: "il check deve essere solo sulle cose
+     che mi interessano: scifi e crates"): checkSharedEquipmentHealth() was
+     checking ALL 6 TDK channels including "Pixel US/DS" - a Pixel-only TDK
+     fault was blocking SciFi's own FEB/LV power-on. Filtered to only
+     "SciFi & Tile"/"FE Crates" channels (same filter SciFi_PowerSupply.js's
+     Supply tab already uses). DCDCCrates deliberately NOT filtered - checked
+     live (odb_300726_112101.json): all 8 crates host at least one real
+     SciFi SMB channel, so every crate is already SciFi-relevant, nothing to
+     narrow down.
+   - NOT done (flagged, cross-repo): scripts/feb_power.py and lv_power.py
+     still call common_scripts/common/services.py's check_shared_equipment(),
+     which has this SAME unfiltered-TDK-channels behavior - shared with
+     pixel_scripts, needs a deliberate decision before touching (unlike
+     hv.py's check_power_distribution(), which is scifi_scripts-only).
+   - SPLIT PER SIDE, same day (user: "in base al registro che non va, si
+     spengono i bottoni... come per HV"): checkSharedEquipmentHealth() now
+     takes a side ("US"/"DS") and only counts that side's TDK channels
+     (name ends with the side) and DCDCCrates (crate index 0-3=US, 4-7=DS,
+     fixed MSCB wiring order in dcdc_fe.cxx). FEB and LV each now track
+     febSharedEquipmentHealthBySide/lvSharedEquipmentHealthBySide instead of
+     one tab-wide verdict - a fault on one side's TDK/DCDC no longer blocks
+     the other side's buttons (per-row AND per-side group buttons both
+     check only their own side), same reasoning as HV's per-group
+     PowerDistStaging gate. Page-side JS only - the underlying Python
+     scripts (feb_power.py/lv_power.py) still check unfiltered, same flag
+     as above.
+   - SUPPLY TAB REVIEWED, same day ("rifacciamo dei check insieme, partiamo
+     da Supply"): TDK confirmed fine as-is (Allow write access + Interlock
+     Trigger) - deliberately NOT adding a Fault Register gate, since unlike
+     Interlock (bit 7, documented remote-inhibit behaviour) we don't know
+     what the register's other bits mean for this TDK-Lambda model; gating
+     on an unverified condition risks blocking healthy operation on a false
+     positive. PowerDistStaging: found the SAME class of gap as TDK's
+     Allow-write-access - mdev_mpdc.cxx gates BOTH "Device on" and
+     per-channel "Output On" on a device-level "Enabled" flag (devices 0/3
+     here), never queried or checked by the page before. Fixed:
+     SciFi_PowerSupply.js now queries Enabled, blocks per-channel/per-device
+     buttons (tooltip + table message, same treatment as TDK), and the
+     US/DS group action filters to only Enabled-device channels when
+     turning on (a "side" spans BOTH devices - SMB/LDO on device 0, crate
+     mains/HV/weather on device 3 - so one device's fault must not block
+     the other's channels). Added missing message-rows to pd-supply-table/
+     pd-device-table in SciFi_main.html (only tdk-supply-table had one
+     before).
+   - "Enabled" MADE VISIBLE, same day (user: "l'indicazione enabled mettila
+     anche nella custom page, sia in tdk che in power distribution"): a
+     status pill column added to all 3 Supply tables - tdk-supply-table
+     (TDK's own per-channel Enabled, queried for the first time here - was
+     already used by FEB/LV's shared-equipment check via a different path,
+     never shown on this table itself), pd-supply-table (the channel's own
+     device's Enabled, next to "role"), pd-device-table (next to "device").
+     Column counts/colspans updated in SciFi_main.html to match.
+   - PILL+BUTTON MERGED ON SUPPLY, same day (user: "gli indicatori
+     enabled/disable off/on rendili cliccabili... elimina i bottoni azione
+     blu" - item 3's design finally landed here, Supply only for now):
+     new shared actionPill() in SciFi_Utils.js - a status pill that IS the
+     click target (color/text shows state, greyed + un-clickable with a
+     tooltip when blocked). Replaces the separate on/off pill + blue button
+     pair on tdk-supply-table (Output On), pd-supply-table (channel Output
+     On), and pd-device-table (Device on). Deliberately NOT applied to
+     "Enabled" - REAL BUG FOUND while considering it: mdev_mpdc.cxx's
+     init() skips m_mscb.push_back() entirely for a disabled device, so
+     m_mscb's indices stop aligning with device numbers once any device's
+     Enabled state changes live - toggling Enabled from the page could
+     write to the WRONG device's MSCB connection, not just fail silently.
+     "Enabled" stays a plain, non-clickable statusPill everywhere. Demand
+     Set button (TDK) and the bulk US/DS group toggle button (PD) are NOT
+     pills, so kept as normal buttons.
+   - TWO MORE GATES CLOSED, same day (user asked to re-verify "Enabled" and
+     Fault/Over current as candidate gates; agreed: TDK Enabled - yes, gate
+     it; PD Fault/Over current - no, stays informational, same as LV's own
+     near-identical per-channel flags, and we don't know if they latch):
+       1. TDK "Enabled" (per-channel) - real oversight, same class as the
+          "Allow write access" bug: mdev_tdk.cxx checks Enabled
+          unconditionally in BOTH the Output On and Demand watch callbacks
+          (blocks both directions, unlike Interlock which only matters for
+          turning on). Was shown as an info-only pill but never wired into
+          tdkOutputAction/tdkDemandAction - fixed, now blocks (+ table
+          message, + actionPill greyed out) same as write access/interlock.
+       2. User asked to double-check the C++ frontends (not the .py
+          scripts) for anything else of this class - full re-audit of all
+          5 drivers for "stale telemetry when disabled" found ONE more
+          real gap: detector/hv.py's check_power_distribution() and
+          SciFi_PowerHV.js's hvPowerDistHealth() (HV's PowerDistStaging
+          dependency, added earlier today) only checked Output On/Power
+          good - never PowerDistStaging's own device-level Enabled.
+          mdev_mpdc.cxx's get_all() returns early without refreshing ANY
+          telemetry when a device is disabled, so those fields could show
+          stale, misleadingly-"good" frozen values instead of a real
+          fault. Fixed in both places (device = ch // 32, all 8 dependency
+          channels are device 3). New test in tests/test_hv_power.py
+          (device 3 disabled -> reported once, doesn't also re-check the
+          stale per-channel values) + PD_ENABLED added to
+          tests/test_mock_odb_data.py. Full suite re-run clean (same
+          pre-existing, unrelated test_calibration_factory.py failure as
+          before).
+   - Fault/Over current on pd-supply-table: briefly gated then REVERTED same
+     day - the user's message reads as a statement but was meant as a
+     question ("era una domanda la mia"); asked again, answer stands as
+     informational-only (same reasoning as before: consistency with LV's
+     near-identical flags, uncertainty over whether these bits latch).
+     Reverted cleanly to the pre-gate state.
+   - REQUIRED PROGRAMMES (item 4 below) - decided for Supply, same day (user:
+     "non metterli mai come gate, ma solo come messaggio di errore... ad ogni
+     tabella il suo programma di riferimento"): message-only, never disables
+     a button. TDKStaging AND PowerDistStaging are served by ONE frontend
+     process (powerracks_fe.cxx registers both mdev_tdk and mdev_mpdc in the
+     same frontend_init()) - used "Powerrack Frontend" as the program name
+     (SciFi_Programs.js's own Required Programmes card already uses this,
+     live-verified against real ODB; the source file itself disagrees -
+     powerracks_fe.cxx's frontend_name is "Powerrack Staging Frontend" - the
+     already-live-verified name wins, per the known online/ checkout-staleness
+     issue). Queries /Programs/"Powerrack Frontend"/First failed (same
+     0=ok convention as the existing Required Programmes card); if nonzero,
+     shows a SIMPLE banner ("\"Powerrack Frontend\" is not running" - user
+     corrected the first version, which over-explained consequences instead
+     of just stating it, the way the Required Programmes card itself does)
+     on all 3 Supply tables (tdk-supply-table, pd-supply-table,
+     pd-device-table) at the TOP of each one's existing message priority -
+     doesn't replace or gate on top of the other checks.
+   - REAL BUG FOUND AND FIXED same day (user testing locally: "non lo vedo
+     il messaggio" - this system has never run "Powerrack Frontend" even
+     once, so /Programs/"Powerrack Frontend" doesn't exist in ODB at all
+     yet): mjsonrpc.cxx's js_db_get_values returns JSON null (not 0) for a
+     path that doesn't exist (db_find_key failure path); the check was
+     `!!programFirstFailed`, and !!null is false, so supplyProgramDown
+     silently stayed false - the ONE case (program never even registered)
+     where the banner is most needed. Fixed: `programFirstFailed !== 0`
+     (anything other than the literal number 0, including null/undefined,
+     now means "not confirmed running"). Verified against the real MIDAS
+     source (alarm.cxx's al_check(): first_failed is set once when the
+     program stops checking in and reset to 0 the moment it reconnects -
+     confirms the field is live/continuous, not a one-time historical flag,
+     so polling it every 2s and re-showing the banner is the correct,
+     already-planned behaviour once the null bug is fixed).
+     Still to do: same pattern for FEB (Febcrate Frontend), LV (DCDC
+     Frontend), HV (HV Frontend) - not started yet, Supply only for now.
+
+3b) HV gates reviewed, same day (user: "quali sono i gate?" -> "si esatto,
+    poi implementa anche qui il sistema di turn on e off con dis[t]inguo
+    bottone di Supply")
+--------------------------------------------------------------------
+  - "Enabled" (per-channel) is now a real gate, same class of fix as TDK's:
+    mdev_hv4.cxx checks Enabled unconditionally in BOTH the Output On and
+    Demand watch callbacks (blocks both directions). Was an info-only pill
+    before - now blocks hvOutputAction/hvDemandAction, and
+    hvGroupToggleAction/hvGroupDemandAction filter out disabled channels
+    (some channels in a US/DS Top/Bottom group can be Enabled while others
+    aren't) instead of hard-blocking the whole group, reporting a skipped
+    count same as Supply's PowerDist group action.
+  - actionPill (Supply's merged pill+button, SciFi_Utils.js) now used for
+    HV's Output On too - replaces the separate status pill + "Turn on/off"
+    button. Blocked reasons, in priority order: channel not Enabled >
+    power distribution not healthy for the group. The group toggle button
+    (bulk US/DS) stays a plain button (not a pill) - same as Supply's own
+    group buttons.
+  - Not changed: Voltage limit/Current limit stay informational (same
+    reasoning as TDK's Current limit/HV's Current limit already decided).
+  - Required Programmes banner ADDED same day: queries
+    /Programs/"HV Frontend"/First failed (hv_fe.cxx's own frontend_name
+    matches exactly, no Supply-style naming discrepancy), same null-vs-0
+    fix applied from the start this time, simple banner ("\"HV Frontend\"
+    is not running") at the TOP of hv-table's message priority, message-only
+    (never gates a button) - same pattern as Supply.
+  - Still to do: same Required Programmes pattern for FEB (Febcrate
+    Frontend) and LV (DCDC Frontend).
+
+3c) GATING PHILOSOPHY SIMPLIFIED, same day (user: "io disabilitare e
+    abilitare on/off per supply e hv lo gaterei solamente con enable,
+    rimanendo fedele agli script .cxx. gli extra gate che abbiamo
+    aggiunto li toglierei come gate e li lascerei come messaggi (stesso
+    modo dei programmi)")
+--------------------------------------------------------------------
+  Only "Enabled" (per-channel for TDK/HV, per-device for PowerDistStaging)
+  now disables a button anywhere on Supply/HV - it's the one condition
+  that's identical across every driver (mdev_tdk.cxx, mdev_hv4.cxx,
+  mdev_mpdc.cxx) and blocks the write unconditionally at the frontend.
+  Everything else stays visible (table message/banner or plain pill,
+  same treatment as the Required Programmes banner) but no longer blocks
+  a click:
+    - TDK: "Allow write access" and Interlock Trigger - removed from
+      tdkOutputAction/tdkDemandAction's alert-blocks and from the
+      actionPill/Demand-button disabled state. Still shown: the table
+      message banner (unchanged), the Interlock status pill.
+    - HV: PowerDistStaging dependency health - removed from
+      hvOutputAction/hvGroupToggleAction's alert-blocks and from the
+      actionPill/group-button disabled state. Still shown: the table
+      message banner (unchanged).
+  PowerDistStaging's own device "Enabled" (pd-supply-table/pd-device-table)
+  was NOT touched - it already only gated on Enabled, nothing to simplify
+  there. Fault/Over current on pd-supply-table were already message-only/
+  no gate at all (reverted earlier the same day) - also untouched.
+
+3d) FULL RE-AUDIT vs the .cxx, same day (user: "siamo allineati con HV e
+    Supply? facciamo un check generale con anche i .cxx")
+--------------------------------------------------------------------
+  Re-read mdev_hv4.cxx, mdev_tdk.cxx, mdev_mpdc.cxx one more time: HV and
+  PowerDistStaging are now 100% Enabled-only, matching the .cxx exactly
+  (no other condition blocks a write in either driver). TDK's one
+  deliberate divergence (Allow write access demoted to message) was
+  double-checked too: Interlock was NEVER a software gate in mdev_tdk.cxx
+  to begin with (not checked in either watch callback - it's a pure
+  hardware override on the PSU's own ILC pin), so demoting it was actually
+  MORE faithful to the .cxx than the earlier gated version, not a
+  divergence at all.
+
+  Also checked mdev_pdcc.cxx (DCDCCrates/LV) for the first time this pass
+  - found a REAL STRUCTURAL DIFFERENCE from the other three drivers:
+  Crate On/Reset/Clear Fault/Channel On/Voltage Adjust watch callbacks
+  check `m_mscb[dev] != nullptr`, NOT the live "Enabled" ODB value.
+  m_mscb[dev] is assigned ONCE in init() - nullptr forever if Enabled was
+  false at frontend startup, a real connection forever otherwise. Toggling
+  Enabled AFTER startup has NO EFFECT on whether these writes reach
+  hardware - the opposite situation from TDK/HV/PowerDistStaging, where
+  Enabled is re-read live on every single write. Gating LV on Enabled the
+  same way as the others would be MORE restrictive than reality (would
+  block writes that would actually still work). Decided: no gate added for
+  DCDC crates - matches "no gate" that was already the status quo there.
+
+3e) DCDC crate table (LV) - message banner + single-button, same day
+--------------------------------------------------------------------
+  - New dcdcCrateMainsHealth() (SciFi_PowerLV.js) - mirrors
+    SciFi_ServiceStatus.js's own "TDK - interlock"/"PowerDist - crate
+    mains" rows (same TDK "SciFi" substring filter - excludes "FE Crates"
+    since that's FEBCrates not DCDC crates, and "Pixel"; same
+    PD_CRATE_MAINS channel group) but rebuilt with the hexTrue() fix
+    (Service Status's own plain !==true/1 comparison would miss the hex-
+    string encoding, same bug class found earlier today in
+    checkSharedEquipmentHealth() - NOT fixed in Service Status itself,
+    only avoided here; flagged, not touched, out of scope) and an Enabled
+    skip for TDK channels. Message-only banner on dcdc-crate-table, added
+    a message-row to its HTML (didn't have one before).
+  - Crate On: merged pill+button into a single actionPill (same as
+    TDK/PowerDist/HV), matching the per-row style everywhere else -
+    always clickable (no gate here, per 3d above), the "also hosts"
+    tooltip preserved on the pill itself. Reset/Clear Fault stay plain
+    buttons (nothing to merge - momentary triggers, no on/off state of
+    their own).
+  - Bulk "Clear fault: all X crates" button - colon removed ("Clear fault
+    all X crates"), matching "Turn on all"/"Reset all"'s own phrasing.
+
+3f) HV bulk demand button text, same day
+--------------------------------------------------------------------
+  "Set all demand" -> "Set all demand <group>" (e.g. "Set all demand US
+  Top") - now matches the bulk Output On button's own naming convention
+  ("Turn on all US Top"), previously the only bulk button without the
+  group name in its label.
+
+3g) "Set" button aesthetic, same day (user: "mettilo sempre a destra del
+    menu di selezione del demand... non metterlo di colore blu, attenualo
+    con un colore tendente all'azzurro")
+--------------------------------------------------------------------
+  New CSS classes in SciFi_main.css: .set-btn (light sky-blue bg + dark
+  blue text, same light-bg/dark-text language as .status-pill, instead of
+  the solid saturated #2563eb every other action button uses) and
+  .row-adjust (per-row equivalent of the existing .group-adjust -
+  guarantees input+Set never wrap onto separate lines, inline-flex +
+  white-space: nowrap). Applied everywhere a Demand/Adjust "Set" exists:
+  TDK per-row Set (SciFi_PowerSupply.js), HV per-row Set + bulk "Set all
+  demand" (SciFi_PowerHV.js), LV per-row Set + bulk "Set all adjust"
+  (SciFi_PowerLV.js). Every input+button pair now wrapped in a span (row-
+  adjust for per-row, the pre-existing group-adjust for bulk) rather than
+  appended straight into the table cell.
+  CORRECTED same day (user: "i bottoni generali per sezioni vanno bene del
+  colore turn on e off" - bulk/section buttons should stay the strong
+  blue, only per-row buttons get the light treatment): reverted .set-btn
+  on HV's bulk "Set all demand" and LV's bulk "Set all adjust" back to
+  plain .row-action-btn. Extended .set-btn to the DCDC crate table's
+  PER-ROW Reset/Clear Fault buttons (renderDcdcCrateTable) - the bulk
+  "Reset all X crates"/"Clear fault all X crates" in dcdcSideHeaderRow
+  stay unchanged, per the user's explicit "lasciando invariato il
+  generale". Rule going forward: per-row secondary actions (Set, Reset,
+  Clear Fault) = light .set-btn; bulk/section buttons (Turn on/off all,
+  Reset all, Clear fault all, Set all demand/adjust) = plain strong blue.
+
+3h) Required Programmes banner for LV, same day ("per i programmi?")
+--------------------------------------------------------------------
+  Same pattern as Supply/HV: queries /Programs/"DCDC Frontend"/First
+  failed (dcdc_fe.cxx's own frontend_name matches exactly, no Supply-style
+  naming discrepancy), same null-vs-0 fix applied from the start, simple
+  banner ("\"DCDC Frontend\" is not running") at the TOP of BOTH lv-table
+  and dcdc-crate-table's message priority (DCDC Frontend serves both -
+  same DCDCCrates equipment), message-only, never gates a button.
+  Required Programmes now done for Supply (Powerrack Frontend), HV (HV
+  Frontend), LV (DCDC Frontend). Still to do: FEB (Febcrate Frontend).
+
+  REAL CSS BUG FOUND AND FIXED same day (user: "in dcdc crate, il
+  messaggio non e full colonne, e limitato a crate"): the message-row
+  wasn't spanning all 5 columns like every other table's banner does.
+  Cause: #dcdc-crate-table tr:not(.side-header) td:last-child { display:
+  flex; ... } - written for the actions cell's Reset/Clear Fault buttons -
+  also matched the message row, since its single <td colspan="5"> is
+  simultaneously :first-child and :last-child (same failure mode the
+  rule's own comment already called out for .side-header, written before
+  the message row existed here - the exclusion just wasn't extended when
+  the message row was added). Fixed by adding :not(.table-message-row) to
+  the selector.
+
+  RESOLVED (turned out to be a design decision, not a bug): the "not
+  seeing PowerDist-related messages" report was the if/else-if PRIORITY
+  chain working as designed - Required Programmes was masking the
+  health message underneath it whenever the program was down (true almost
+  everywhere on this local system, since none of these frontends can
+  reach real hardware). User's verdict once this was explained: "non va
+  bene, deve generare i messaggi sempre" - priority-masking is wrong,
+  every applicable message should show together, always.
+
+  FIXED same day: new combineTableMessages(tableId, messages) in
+  SciFi_Utils.js - takes an array of message-or-null values, joins every
+  non-null one with " | ", shows the combined string if any are present,
+  clears otherwise. Replaces the if/else-if priority chains on ALL 6
+  message-bearing tables: tdk-supply-table, pd-supply-table,
+  pd-device-table (SciFi_PowerSupply.js), hv-table (SciFi_PowerHV.js),
+  lv-table, dcdc-crate-table (SciFi_PowerLV.js). feb-table not touched -
+  it only has one message source today (no Required Programmes banner
+  yet), nothing to combine until that's added.
+
+  READABILITY FIX same day (user: "in HV e tutto mischiato, riusciresti a
+  stampare in modo ordinato?"): combineTableMessages() now joins with a
+  real "\n" instead of " | ", and .table-message-row td got white-space:
+  pre-line (SciFi_main.css) so the line break actually renders instead of
+  collapsing like normal HTML text - one problem per line everywhere, not
+  just HV. Also fixed a real redundancy in hvPowerDistHealth(): hv+weather
+  channels of a group share the same PowerDistStaging device, so the old
+  per-channel Enabled check produced the near-identical "device not
+  Enabled" sentence twice per group - now checked once per group. HV's
+  per-group blocked messages are now separate array entries (one line
+  each) instead of being flattened into one "Power-on blocked for: A (...);
+  B (...); ..." sentence.
+
+  WORDING CLEANUP same day, extended to LV and Supply (user: "cambia da
+  power on blocked. adesso non sono gatetati, togli direttamente e lascia
+  quello dopo i due punti"): removed the "Power-on blocked for:"/"Writes
+  blocked for:" prefix everywhere it no longer describes a real gate -
+  tdk-supply-table (write access, Enabled, interlock), pd-supply-table,
+  pd-device-table, hv-table (per-group), lv-table (per-side). Each message
+  now reads as plain "<what> - <reason>" rather than claiming to block
+  something it doesn't anymore. dcdcCrateMainsHealth() (SciFi_PowerLV.js)
+  changed to return the raw problems array instead of a pre-joined
+  string, so dcdc-crate-table also gets one problem per line instead of a
+  semicolon-flattened sentence, same as HV/LV.
+
+  NEW MESSAGE ADDED same day, pd-supply-table (user: "devices on e off
+  sono legati ai canali... mettiamo un messaggio come per LV quando i
+  crate sono off"): a device's "Device on" is a real precondition for its
+  own channels, same idea as DCDCCrates' "Enabled but not Crate On" check
+  - a channel's Output On is meaningless if the whole device it lives on
+  has no power. New check: Enabled-but-Device-on-is-OFF (a disabled
+  device already has its own separate message) flags the device by name
+  on pd-supply-table, where individual channels don't otherwise show
+  which device they belong to's on/off state. NOT added to
+  pd-device-table - that table already shows each device's own on/off pill
+  directly per row, a banner there would be redundant.
+
+3i) LV channel table pill+button merge, same day ("cambia i bottoni turn
+    on e off")
+--------------------------------------------------------------------
+  Per-row Channel On (lv-table, renderLvPowerTable) now uses the shared
+  actionPill instead of a separate status pill + "Turn on/off" button -
+  same merge already done for TDK/PowerDist/HV/DCDC crate. Gating
+  UNCHANGED - still blocked by the per-side shared-equipment health check
+  (lvSharedEquipmentHealthBySide), deliberately NOT touched here (that's a
+  separate decision from the aesthetic merge - didn't assume the user
+  wanted it demoted to message-only too, unlike TDK/HV's Enabled-only
+  simplification). Message printing (one-per-line, no "blocked for"
+  wording) was already done for lv-table/dcdc-crate-table in the earlier
+  LV+Supply pass - nothing left to fix there.
+
+3k) LV gate REMOVED entirely, same day (user: "allora togli in LV i gate",
+    after re-reading mdev_pdcc.cxx together for Channel On specifically)
+--------------------------------------------------------------------
+  Confirmed: Channel On's only real condition is m_mscb[dev] != nullptr,
+  fixed once at frontend init() from Enabled's startup value, never
+  re-checked live; the per-channel "confirm" hook exists but its real
+  callback (mupix_confirm, dcdc_fe.cxx) is a disabled stub always
+  returning true. No live-checkable condition exists in this driver at
+  all - same conclusion as Crate On, which was already ungated. Removed
+  the shared-equipment-health block from lvChannelPowerAction,
+  lvGroupToggleAction, lvSideHeaderRow's bulk button, and
+  renderLvPowerTable's per-row actionPill (now always clickable, same as
+  Crate On). The health check itself stays - lv-table's banner message is
+  untouched, it just no longer blocks anything.
+
+  MESSAGE FIX same day (user: "controlla i messaggi perche vedo ancora i
+  ;"): checkSharedEquipmentHealth() (SciFi_Utils.js, shared with FEB) now
+  also returns a "problems" array alongside its pre-joined "message"
+  string - "message" stays for tooltips/alerts, but lv-table's banner now
+  flatMaps every side's individual problems into separate lines instead
+  of joining them with "; " within a side. FEB (SciFi_PowerFEB.js) has the
+  exact same semicolon-flattening pattern and hasn't been fixed yet - not
+  touched today, only LV was in scope.
+
+3l) Shared-equipment check REMOVED ENTIRELY from lv-table, same day (user:
+    "togli il check in LV", after establishing FE Crates -> FEBCrates,
+    not DCDCCrates)
+--------------------------------------------------------------------
+  Not just de-gated (3j) - the check itself no longer runs on lv-table:
+  no lvSharedEquipmentHealthBySide, no updateSharedHealthBadge() call/pill
+  next to the LV title, no banner contribution from it. Two reasons
+  together: (1) the check had nothing left to gate since 3j (Channel On's
+  only real .cxx condition, m_mscb[dev] != nullptr, is fixed at frontend
+  init(), not live); (2) chain_and_monitoring.txt's FEB bring-up sequence
+  shows TDK's "FE Crates" channel (the one checkSharedEquipmentHealth()
+  filters on) actually feeds FEBCrates' crate controllers via
+  PowerDistStaging's FEC channels, NOT DCDCCrates - so the check was
+  reporting on equipment LV has no real relationship to, gate or no gate.
+  DCDC_HEALTH_PATH queries (Device Names/Enabled/Crate On) removed from
+  updateLvPowerTab's mjsonrpc call too, now unused. dcdc-crate-table's OWN
+  message (dcdcCrateMainsHealth, TDK "SciFi & Tile" + PowerDist crate
+  mains) is untouched - different function, different TDK filter, still
+  valid. checkSharedEquipmentHealth()/updateSharedHealthBadge()
+  (SciFi_Utils.js) still exist and are still used by FEB - only removed
+  from LV's own call sites.
+
+3m) LV "Present" gate ADDED, same day (user: "in LV metti il gate su
+    present o non present per turn on e off")
+--------------------------------------------------------------------
+  A deliberate page-level safety choice, NOT derived from mdev_pdcc.cxx
+  (which doesn't check Present before writing either) - Present is still
+  a genuine hardware readback (the PDCC's own per-channel detection
+  bitmask), just not one the driver itself gates writes on. Applies to
+  BOTH directions, as asked. New lvPresenceReason(r): traces WHY a channel
+  isn't present back to its own crate's state - "Crate Disabled" (crate
+  not Enabled) or "Crate Enabled but Off" (Enabled, Crate On false) -
+  since a channel is only ever not-present because its crate isn't really
+  up. Wired into lvChannelPowerAction (alert + block), lvGroupToggleAction
+  (filters to present channels, reports skipped count, same pattern as
+  HV/PowerDist's Enabled filtering), lvSideHeaderRow's bulk button
+  (disabled if no channel in the group is present), and the per-row
+  actionPill. Each LV channel row now also carries crateEnabled/crateOn
+  (read from the same per-crate Enabled/Crate On arrays already queried
+  for dcdc-crate-table, indexed by the channel's own crateIndex).
+
+  WORDING FIXES to dcdcCrateMainsHealth(), same day:
+    - TDK problem lines now include the channel index ("TDK ch2"), same
+      format as checkSharedEquipmentHealth() (user: "il messaggio segui
+      quelli in LV riportando anche il canale") - previously missing it.
+    - PowerDist crate-mains "off" -> "Crate Enabled but Off" (user's own
+      wording), matching DCDCCrates' "Enabled but not Crate On" phrasing
+      convention used elsewhere on this page.
+
+3n) dcdcCrateMainsHealth() wording REVERTED, same day (user: "per i crate
+    lascia Crate OFF, lascia stare la questione enable disable")
+--------------------------------------------------------------------
+  3m's "Crate Enabled but Off" wording for PD_CRATE_MAINS problems was
+  reverted back to a plain "Crate OFF" - that function has no
+  DCDCCrates-Enabled array to correctly distinguish Enabled-but-off from
+  fully-disabled (it only has PowerDistStaging's own on/good), so it
+  can't make that distinction honestly; only lvPresenceReason() (which
+  DOES have DCDCCrates' own Enabled/Crate On per channel) keeps the
+  Disabled vs Enabled-but-Off split.
+
+3o) LV "Present" gate now has a matching banner MESSAGE, same day (user:
+    "mancano i messaggi in LV channels" - after confirming HV's Enabled
+    gate and LV's Present gate were the only two real gates on the page
+    with no corresponding banner, unlike Supply's Enabled gate)
+--------------------------------------------------------------------
+  lv-table's combineTableMessages() call moved from right after the
+  program-down check to after `rows` is fully built, so it can report
+  not-present channels too (previously it only ever carried the
+  program-down message). Not-present rows are grouped by
+  lvPresenceReason(r) ("Crate Disabled" / "Crate Enabled but Off") and
+  printed as "name1, name2 - reason", one line per reason, same
+  "names - reason" convention as every other table's messages (TDK's
+  "channel not Enabled", PowerDist's "not Enabled", etc.). The
+  now-Array.isArray(names) false early-return path also got its own
+  combineTableMessages("lv-table", [lvProgramDown ? ... : null]) so the
+  program-down banner still shows even when there's no row data yet.
+  HV's Enabled gate still has NO matching banner message - not done in
+  this pass, flagged to the user as the remaining gap but not yet
+  addressed.
+  RESOLVED 2026-08-03 (user: "chiudi il gap in HV") - hv-table's own
+  combineTableMessages() call gained a "<names> - channel not Enabled"
+  line (SciFi_PowerHV.js, computed from `rows` so it only reports on the
+  32 channels this tab shows) - this note was left stale when it
+  happened; caught 2026-08-04 while explaining the open-items list.
+
+3p) 3p ATTEMPTED then REVERTED same day (user: "in LV channels non vedo
+    i messaggi dei crate off e di tdk" -> tried adding
+    crateMainsHealth.problems to lv-table's banner too -> user: "però i
+    messaggi dei crate si basano sul fatto che leggono crate off nella
+    tabella sotto. era così nelle versioni precedenti" -> asked, user
+    confirmed: "va tolto, è ridondante/sbagliato")
+--------------------------------------------------------------------
+  Reverted: lv-table's combineTableMessages() no longer spreads
+  crateMainsHealth.problems (that stays dcdc-crate-table-only, as it
+  already was). lv-table's own "crate off" signal for a channel is -
+  and per the user, always was, even in versions before today - meant
+  to come strictly from the crate table below (dcdc-crate-table's own
+  Enabled/Crate On, i.e. exactly what lvPresenceReason/3o already
+  reads), NOT from crateMainsHealth's separate TDK/PowerDist-crate-mains
+  check. Net result of 3o+3p together: lv-table's banner only carries
+  presenceProblems (grouped "not present" reasons) + the program-down
+  message - crateMainsHealth remains exclusively dcdc-crate-table's.
+
+3q) HV "Enabled" gate now has a matching banner message, same day (user:
+    "chiudi il gap in HV" - the gap flagged in 3o/3p's recap: Supply and
+    LV both banner their own real gate, HV didn't)
+--------------------------------------------------------------------
+  combineTableMessages("hv-table", ...) call moved from right after
+  hvPowerDistHealthByGroup is computed to after `rows` is built and
+  sorted (same restructure LV went through for its own Present gate),
+  so it can report disabled channels by name. disabledNames is computed
+  from `rows` (only the 32 channels HV_BOARDS actually maps), not the
+  raw Enabled array, so it never reports on anything this tab doesn't
+  show. Line format matches Supply's TDK wording exactly: "<names> -
+  channel not Enabled". The array-not-ready early-return path also got
+  its own combineTableMessages call (program-down + blockedGroups only,
+  no disabledNames yet since there's no row data).
+
+  Re-checked mdev_hv4.cxx (online/backend_pc/midas_fe/hv_control/src/)
+  end to end for any OTHER real dependency worth a banner, same question
+  asked for TDK's "Allow write access": none found. Output On and Demand
+  watch callbacks check nothing besides per-channel Enabled - no
+  equipment-wide write-access flag exists for this driver. Demand IS
+  clamped to Voltage limit when exceeded, but that clamp happens inside
+  the SAME watch callback that writes it (mdev_hv4.cxx lines ~187-193) -
+  by the time this page polls Demand back, the ODB value is already the
+  clamped one, so there is nothing "stuck" or wrong to flag; the
+  frontend does raise its own cm_msg(MERROR) alarm at the moment of the
+  clamp, but that belongs to MIDAS's own Messages/alarm system, not this
+  page's table banners. No new message added for it.
+
+3r) LV crate-mains (PowerDist) problems ADDED to lv-table too, same day
+    (user, after 3p's revert: "in lv channels voglio un messaggio tipo
+    quello di power distribution in dcdc crate, ma con riferimento al
+    dcdc crate nella tabella sotto ... con riferimento a crate 0 al
+    posto del channel power")
+--------------------------------------------------------------------
+  Different from 3p (which spread crateMainsHealth.problems verbatim,
+  including TDK, and was rejected): confirmed today, against
+  docs/old/odb_300726_112101.json, that PD_CRATE_MAINS's 8 channels
+  map 1:1 IN ORDER to DCDCCrates' own crate indices 0-7 - PD's own names
+  "US DCDC C1".."C4" (ch96-99) / "DS DCDC C5".."C8" (ch112-115) line up
+  exactly with DCDCCrates Device Names "DCDC_C_1".."DCDC_C_8". So
+  PD_CRATE_MAINS.forEach's own array index IS the crate index - no
+  separate lookup table needed.
+  dcdcCrateMainsHealth() now also returns pdProblemsByCrate: the exact
+  same PD_CRATE_MAINS on/good check as `problems` (still used verbatim
+  by dcdc-crate-table), just formatted as "<name> (crate N)" instead of
+  "<name> (PowerDist chN)". lv-table's combineTableMessages() now
+  spreads crateMainsHealth.pdProblemsByCrate (TDK still excluded - it's
+  side-level only, can't be tied to one crate). Wired into both the
+  array-not-ready early-return path and the normal path, same pattern as
+  presenceProblems.
+
+3s) TDK fault/interlock messages ADDED to lv-table too, same day (user:
+    "inserisci anche in LV channels i messaggi di check per tdk come
+    quelli in dcdc crates")
+--------------------------------------------------------------------
+  dcdcCrateMainsHealth() now also returns tdkProblems - the exact same
+  TDK "SciFi & Tile US/DS" Fault Register/Interlock Trigger lines
+  already in `problems` (still used verbatim by dcdc-crate-table), just
+  exposed as their own array. No crate-index translation needed here
+  (unlike the PD part in 3r) - TDK is side-level (US/DS), not per-crate,
+  so "SciFi & Tile US/DS" already means the same thing in both tables.
+  lv-table's combineTableMessages() now spreads
+  crateMainsHealth.tdkProblems too, in both the array-not-ready
+  early-return path and the normal path. lv-table's banner now carries,
+  in order: program-down, TDK fault/interlock, PD crate-mains (by crate
+  index), not-present reasons.
+
+3t) 3r's pdProblemsByCrate was READING THE WRONG EQUIPMENT - fixed same
+    day (user: "non va bene così... questi leggono da power
+    distribution... questi devono leggere dal registro dcdc crate. sono
+    due cose diverse")
+--------------------------------------------------------------------
+  3r's mistake: pdProblemsByCrate reused dcdcCrateMainsHealth's
+  PowerDistStaging on/good check (pdOn/pdGood) for lv-table too, just
+  relabeled "(PowerDist chN)" -> "(crate N)" - same DATA SOURCE as
+  dcdc-crate-table, just different display key. The user's point: these
+  are two genuinely different checks that happen to look similar -
+  dcdc-crate-table's answers "is the mains feeding this crate OK?"
+  (PowerDistStaging); lv-table's is supposed to answer "is DCDCCrates'
+  OWN crate register on?" (DCDCCrates' own Enabled/Crate On - the exact
+  same enabled[]/crateOn[] arrays lvPresenceReason() already reads).
+  Fixed: removed pdProblemsByCrate from dcdcCrateMainsHealth() entirely
+  (dcdc-crate-table's own crateMainsHealth.problems is untouched/still
+  PowerDistStaging-only). Added a NEW, separate function
+  dcdcCrateRegisterProblems(pdNames, enabled, crateOn) - same
+  PD_CRATE_MAINS-index-is-crate-index correlation from 3r, but used only
+  to pick pdNames' human-readable "US DCDC C1" label; the actual
+  Crate OFF condition checked is `!(enabled[crateIdx] && crateOn[crateIdx])`,
+  100% DCDCCrates data, confirmed with the user before implementing
+  ("esatto"). lv-table's combineTableMessages() now spreads this
+  instead of the old pdProblemsByCrate, in both call sites.
+
+3u) FEB TAB AUDITED against febcratefe.cpp, same day (user: "ora andiamo
+    a feb", then "aggiungi di unire in un unico pulsante turn on e off e
+    per shared equipment curarsi solo di fe crate e non scifi and tile")
+--------------------------------------------------------------------
+  Read febcratefe.cpp (online/backend_pc/midas_fe/febcrate_control/) end
+  to end - the only frontend that writes FEBPower. Findings:
+    - The ONLY real, live-checked gate on a FEBPower write is
+      febpower_changed()'s "if(connections[crate]==0) continue" -
+      connections[] IS live-reconnectable (CrateControllerEnabled/MSCB/
+      Node are all .watch()'d -> recreate_connections()), unlike
+      DCDCCrates where m_mscb[dev] is fixed forever at init(). This is
+      already exactly the page's own "connected" column
+      (CrateControllerConnected), refreshed every 5s straight from live
+      comms in read_febcrates() - actually a slightly SAFER superset
+      (also goes false on a live read failure, not just a missing
+      connection). No change needed to this gate - already correct.
+    - Nothing in febcratefe.cpp ever references TDK or DCDCCrates -
+      the "shared equipment health" check
+      (checkSharedEquipmentHealth, TDK+DCDCCrates) that was blocking
+      power-on here mirrors common_scripts/common/services.py's
+      check_shared_equipment() (feb_power.py's own pre-check), not
+      hardware. Demoted from a real gate to message-only, same
+      treatment every other extra check on this page got this session.
+    - "Febcrate Frontend" (frontend_name) matches SciFi_Programs.js's
+      Required Programmes list exactly - no discrepancy. Added the same
+      message-only banner every other tab has.
+
+  Changes made:
+    - SciFi_Utils.js's checkSharedEquipmentHealth(): TDK filter narrowed
+      from "SciFi & Tile" OR "FE Crates" down to ONLY "FE Crates"
+      (user's explicit call). Matches chain_and_monitoring.txt's FEB
+      bring-up sequence: TDK "FE Crates US/DS" -> PowerDistStaging "FEC"
+      device -> FEBCrates' own crate controllers - "SciFi & Tile" feeds
+      DCDCCrates (SMB/LDO ASIC power) instead, unrelated to whether a
+      FEB board itself can power on. (This function now has only one
+      caller, FEB - LV removed its own call back in 3l.)
+    - SciFi_PowerFEB.js: added FEB_REQUIRED_PROGRAM="Febcrate Frontend" +
+      programFirstFailed query/check, same null-vs-0 fix as every tab.
+    - feb-table's banner switched from updateSharedHealthBadge() (a
+      title-pill, now removed entirely - LV already dropped its own
+      equivalent in 3l, FEB was the last holdout) + showTableMessage()
+      with a "; "-joined sentence, to combineTableMessages() with one
+      line per side-prefixed problem (checkSharedEquipmentHealth()
+      already exposes .problems, just wasn't being used that way here).
+    - febToggleAction()/febGroupToggleAction(): removed the
+      "Blocked: shared equipment not healthy..." alert-and-return -
+      message-only means it never blocks the write, same as every other
+      message-only condition on this page (TDK write-access, HV/PD
+      dependency, LV crate-mains, etc).
+    - febSideHeaderRow(): removed blockedByShared from btn.disabled;
+      only gate left is eligible.length === 0 (no connected/mapped FEB
+      in that side), matching every other tab's bulk-button pattern.
+    - Per-row power cell: merged the separate statusPill + Turn on/off
+      button into a single actionPill(r.power, !r.connected, "crate not
+      connected", ...) (user: "unire in un unico pulsante turn on e
+      off") - same merge Supply/HV/LV already went through. "connected"
+      is the only gate left on this pill.
+
+  NOT changed / still open:
+    - DCDCCrates half of checkSharedEquipmentHealth() (the "Enabled but
+      not Crate On" check) is untouched - FEB's own power path
+      (FEBCrates) has nothing to do with DCDCCrates (SMB/LDO ASIC
+      power) either, by the same reasoning that removed TDK's "SciFi &
+      Tile" - but the user only asked to fix the TDK filter this round,
+      so the DCDCCrates part was left as-is pending an explicit ask.
+    - crateLinkCell's separate "connected"/"not connected" statusPill
+      (column 7) was left alone - it's read-only telemetry, not an
+      action, so no pill+button merge applies there.
+
+3v) FEB "status" flag column ADDED, same day (user: "aggiungi per feb
+    una flag status tipo per lv che legge le flag datapath sfle
+    febfirmware e da fault se anche solo una e fault")
+--------------------------------------------------------------------
+  New 9th column "status" in feb-table (colspan bumped 8->9 everywhere:
+  header, message row, febSideHeaderRow, showFebError, detail row).
+  Per row, r.ok/r.flags computed the same way SciFi_PowerLV.js's own
+  r.ok/r.flags are (badFlags -> ok = no bad flags) - null when the FEB
+  has no onboard data at all (unpowered), rendered as a neutral "n/a"
+  pill rather than a false "fault".
+  Confirmed with the user before implementing (FEBFirmware has no
+  fault semantics of its own - Arria fw/Max10 fw/FEB version are just
+  version strings): the 7 flags checked are the 5 existing Datapath
+  booleans (PLL locked, RX ready, DPA locked, Buffer full, Frame
+  desync - already used for the now-removed dead `linkOk`, which
+  computed the exact same thing but was never actually read/rendered
+  anywhere - replaced outright rather than kept alongside the new
+  r.ok) plus 2 new ones from SFLE: LOL count > 0, Error count > 0.
+  FEBFirmware itself contributes nothing to the fault check.
+  Also refactored the "Datapath · SFLE · FEBFirmware" detail block to
+  render r.flags via a .map() instead of 5 hardcoded flagPill() calls -
+  LOL count/Error count now show as pass/fail pills there too (were
+  previously just plain numbers), consistent with them now being part
+  of the fault check.
+
+3w) LV channel-level PowerDist (SMB/LDO) messages ADDED, same day (user:
+    "a lv channels dobbiamo aggiungere un altro set di messaggi... deve
+    leggere la power distribution dei smb e ldo")
+--------------------------------------------------------------------
+  A THIRD, separate check for lv-table, one level down from 3r/3t's
+  crate-level ones: PowerDistStaging's PD_SMB_LDO group (device 0, 14
+  channels) feeds each individual DCDCCrates SMB_/LDO_ line, upstream of
+  DCDCCrates' own regulation - same upstream-vs-local-register split as
+  the crate-mains checks, just per-channel instead of per-crate.
+  Confirmed against docs/old/odb_300726_112101.json: PowerDist's own SMB
+  names are IDENTICAL to DCDCCrates' ("SMB_US_2-3" in both); only the two
+  LDO channels differ in word order ("US_LDO"/"DS_LDO" in PowerDist vs
+  "LDO_US"/"LDO_DS" in DCDCCrates) - handled by a small
+  lvDcdcNameToPdName() translation, everything else matched by exact
+  name via a pdNames-keyed lookup built from PD_SMB_LDO.
+  New pdSmbLdoProblems(pdNames, pdOn, pdGood, lvNames) in
+  SciFi_PowerLV.js: for each LV row name, looks up the matching
+  PowerDist channel and pushes "<name> (PowerDist chN): off"/"not good"
+  if not on-and-good. lv-table's combineTableMessages() now spreads
+  this too (called with rows.map(r => r.name), after rows is built).
+  Banner order is now: program-down, TDK fault/interlock (3s), DCDCCrates
+  crate register (3t), PowerDist SMB/LDO (this), not-present reasons.
+
+3x) HV messages FIXED (one problem per line), same day (user: "sistema i
+    messaggi in HV")
+--------------------------------------------------------------------
+  hvPowerDistHealth() was still returning a pre-joined `message` string
+  (problems.join(", ")) instead of a `problems` array - the same
+  flattening bug every other health check on this page already got
+  fixed for (dcdcCrateMainsHealth, checkSharedEquipmentHealth, etc). In
+  practice: a group whose HV channel AND weather channel were both bad
+  at once produced one comma-joined sentence instead of two lines.
+  Fixed: hvPowerDistHealth() now returns { ok, problems } - each entry
+  already prefixed with its own group ("US Top: ...") and, for the
+  per-channel case, the PowerDist channel index too ("US HV Top
+  (PowerDist ch102): off"), matching the "(PowerDist chN)" wording
+  convention used everywhere else on this page. hv-table's
+  combineTableMessages() now spreads pdProblems (flatMap of every
+  group's own problems array) instead of
+  blockedGroups.map(g => g + ": " + ...message), in both call sites
+  (array-not-ready path and the normal path). hv-table's banner now
+  carries, in order: program-down, channel not Enabled (3q), PowerDist
+  HV/weather dependency (one line per actual problem).
+
+3y) FEB/DCDCCrates shared-equipment question RESOLVED (kept as-is), Power
+    tabs REORDERED to match the real bring-up chain, same day (user:
+    "le feb parlano con i crate? e necessario averli accesi per
+    accendere le feb?", then "ordinerei le tab dentro power in ordine
+    di operativita")
+--------------------------------------------------------------------
+  Answered the FEB/DCDCCrates dependency question first: electrically/
+  in firmware NO - febcratefe.cpp never references DCDCCrates, they're
+  separate MSCB crate controllers, and detector/feb.py's own turn-on
+  (feb.py:245) only guards on FEBCrates' own CrateControllerConnected/
+  Enabled. But chain_and_monitoring.txt's documented power branch lists
+  "DCDC crate power" (step 4) and "Per-Feb LV" (step 5) right before
+  "FEB power" (step 6) as the intended OPERATIONAL order - powering a
+  FEB whose SM has no LV yet gives no useful data, even though nothing
+  enforces the order in hardware. Unlike TDK's "SciFi & Tile" (genuinely
+  unrelated equipment), DCDCCrates' relationship to FEB is real, just
+  soft/procedural rather than electrical - so the DCDCCrates half of
+  checkSharedEquipmentHealth() for FEB was KEPT as a message (already
+  message-only since 3u, not a gate) rather than removed.
+
+  Power tab/panel order in SciFi_main.html changed from FEB, LV, HV,
+  Supply (arbitrary/backwards relative to the chain) to Supply, LV,
+  FEB, HV - matching chain_and_monitoring.txt section 1's power branch
+  (Supply=TDK+PowerDistStaging is the root everything depends on; LV=
+  DCDCCrates is steps 4-5; FEB=step 6, right after Per-Feb LV). HV
+  placed last per the user's own call, after being asked to choose
+  between "Supply, LV, HV, FEB" and "Supply, LV, FEB, HV": bring up
+  monitoring/readout (FEB) before ramping HV, the slower/more delicate
+  step - also consistent with the doc's separately-documented
+  "LV-before-HV pre-check" (code_design.txt 5.4, referenced at
+  chain_and_monitoring.txt line 273).
+  "active" (default-shown) tab/panel moved from FEB to Supply, matching
+  its new first position. .mtabs/.mpanel tab-switching logic
+  (SciFi_Utils.js's initMtabs()) is order-agnostic (matches purely by
+  data-target/id), so the reorder needed no JS changes - HTML only.
+  Section hint text updated: "FEB · LV · HV control" -> "Supply · LV ·
+  FEB · HV control".
+
+3z) FINAL REVIEW PASS over the whole Power section, same day (user:
+    "possiamo chiudere la sezione power? manca qualche check? vuoi fare
+    una passata generale?")
+--------------------------------------------------------------------
+  Grepped all 4 tabs for leftover dead code/old patterns first (clean:
+  no stray updateSharedHealthBadge/showTableMessage/clearTableMessage/
+  blockedByShared/linkOk anywhere; every real gate uses actionPill,
+  every non-action indicator uses statusPill).
+
+  REAL BUG FOUND AND FIXED - Supply's PowerDist Enabled gate only
+  blocked turning ON, never turning OFF (`!r.on && !r.deviceEnabled` /
+  `!r.on && !r.enabled`, in pd-supply-table AND pd-device-table: single-
+  row action+pill, bulk toggle action, bulk button disabled state - 4
+  spots total). Re-read mdev_mpdc.cxx's Device on/Output On watch
+  callbacks to confirm: both check "if (!Enabled[dev]) continue"
+  UNCONDITIONALLY, before any mirror-diff check - same as TDK/HV, not
+  turn-on-only. Worse: get_all() ALSO returns early while disabled, so
+  it never re-syncs Output On/Device on from real hardware either -
+  meaning the old code let an operator click "Turn off" on a disabled
+  device, which would write Settings/Output On=0 straight to the ODB
+  (modbset doesn't care whether the frontend forwards it), while the
+  real channel/device stayed exactly as it was, with NOTHING ever
+  correcting the resulting ODB/hardware mismatch. Fixed to block/filter
+  both directions everywhere, matching TDK/HV's own (already-correct)
+  unconditional pattern:
+    - pdChannelOutputAction()/pdDeviceOnAction(): `if (!r.deviceEnabled)`
+      / `if (!r.enabled)`, no more `!r.on &&` prefix.
+    - Per-row actionPill calls: same, dropped the now-unused
+      blockedByEnabled intermediate variable.
+    - pdGroupToggleAction(): the eligible.filter(r => r.deviceEnabled)
+      that only ran `if (turnOn)` now always runs; skippedNote follows.
+    - pdSideHeaderRow(): noneEnabled no longer gated on willTurnOn.
+
+  Minor UX inconsistency also found and fixed in HV (not a hidden-write
+  bug like Supply's - hvGroupToggleAction/hvGroupDemandAction already
+  filtered correctly both ways): hvSideHeaderRow's bulk "Turn on/off
+  all" button's disabled state was still `willTurnOn && ...` (button
+  looked clickable even with zero Enabled channels, click would just
+  immediately hit the function's own alert) - dropped the willTurnOn
+  gate to match. The "Set all demand" bulk button next to it had NO
+  disabled state at all before now - every other bulk button on this
+  page disables when nothing is eligible; added one, reusing the same
+  blockedByEnabled condition.
+
+  Checked, found ALREADY CORRECT (no fix needed): LV's
+  lvGroupToggleAction/lvSideHeaderRow (present filter/noneCratePresent
+  are both already direction-unconditional) and FEB's per-row/bulk
+  connected-gated actionPill/button (already unconditional) - Supply
+  was the only tab with the turn-on-only bug, HV only had the milder
+  button-disabled-state mismatch.
+
+  Deliberately NOT touched: LV's Voltage Adjust (per-row and bulk "Set
+  all adjust") has no Present gate at all, unlike Channel On - checked
+  against mdev_pdcc.cxx again, Adjust's watch callback (like Channel
+  On's) only checks m_mscb[dev] != nullptr, no live condition - so
+  leaving Adjust fully ungated (matching Channel On's pre-3m state,
+  before Present was deliberately added as a page-level safety choice)
+  is consistent with the driver having nothing to gate on; not a bug,
+  just a different, already-deliberate policy than Channel On's.
+
+VERDICT ON "IS POWER DONE": all 4 tabs now share one consistent design -
+gate only on what the driver's own .cxx checks live (or, for LV's
+Channel On, one explicit page-level exception with its own documented
+reasoning), message-only banners for everything else with one line per
+problem, Required Programme banners everywhere, actionPill everywhere a
+real toggle exists. The known REMAINING gaps are all listed under item 1
+in the FEB/DCDCCrates note (3y) and this file's items 5-7 below (Geometry
+view, Readout section, MIDAS messages bug) - none of those are Power-tab
+correctness gaps, they're separate unbuilt features/bugs.
+
+3aa) Two last layout tweaks before closing Power, same day (user: "in LV
+     power metti prima i crate e poi i LV channels. in supply, per
+     sezione US e DS aggiungerei due tasti per accendere SMB e DCDC")
+--------------------------------------------------------------------
+  LV tab (SciFi_main.html): dcdc-crate-table moved before lv-table in
+  the DOM (was channels-then-crates, now crates-then-channels) - a
+  channel's own Present/not-present reason (lvPresenceReason()) reads
+  off its crate's Enabled/Crate On, so the crate table now gives the
+  context the channel table below it explains. No JS changes needed
+  (nothing in SciFi_PowerLV.js depends on DOM order between the two
+  tables - each is looked up by its own id).
+
+  Supply tab (SciFi_PowerSupply.js): pd-supply-table's side header row
+  gets two NEW bulk buttons per side, "Turn on/off all <side> SMB" and
+  "... DCDC" - added ALONGSIDE the existing "Turn on all <side> PD
+  channels" button (asked explicitly: 3 buttons per side, not a
+  replacement), each pre-filtered to one role ("SMB/LDO"/"crate mains")
+  via a new pdRoleToggleButton(side, rows, role, roleLabel) helper.
+  Reuses pdGroupToggleAction/pdGroupAllOn as-is (unchanged) - a
+  role-filtered eligible array was all they needed, no new action
+  function. HV/weather roles get no dedicated button (not asked for,
+  and only 2 channels per side each) - still covered by the general
+  "PD channels" button and by their own per-row actionPills.
+
+2) [x] RESOLVED 2026-08-03: Evaluate enabling/disabling HV channels and DCDC crates
+   - Settled by the full 3a-3x audit: "Enabled" stays INFORMATION ONLY
+     everywhere (TDK, PowerDistStaging, HV, DCDCCrates) - it's the real
+     write gate for TDK/PowerDist/HV (mdev_tdk.cxx, mdev_mpdc.cxx,
+     mdev_hv4.cxx all check it live), but DCDCCrates' own m_mscb[dev] is
+     fixed at frontend init() (mdev_pdcc.cxx), so toggling Enabled there
+     live has NO effect - confirmed NOT worth exposing as a settable
+     page control anywhere; stays a status pill, never a button.
+
+3) [x] RESOLVED 2026-08-03: Rethink the button/pill pattern
+   - Done across all 4 tabs this session: actionPill() (SciFi_Utils.js)
+     merges the status pill + action button into one clickable control -
+     Supply (3c), HV (3c), LV (3i), FEB (3u). The "genuinely different
+     single-control design" this item asked for turned out to be exactly
+     this: a status pill that IS the button, dashed border + hover
+     shadow for click affordance, greyed + tooltip when gated.
+
+4) [x] RESOLVED 2026-08-03: Consider "Required Programmes" in the
+   power-on conditions
+   - Done for all 4 tabs: Supply (3h), HV (3q's write-up covers it, added
+     alongside), LV (3h), FEB (3u) each got a message-only banner for
+     "<frontend> is not running", using /Programs/<name>/First failed
+     (the null-vs-0 fix from mjsonrpc.cxx applies everywhere). Two real
+     frontend_name discrepancies found and resolved by trusting the
+     live-verified page value: Supply's "Powerrack Frontend" (source
+     says "Powerrack Staging Frontend"); everything else matched exactly
+     (HV Frontend, DCDC Frontend, Febcrate Frontend).
+
+5) [x] BUILT 2026-08-04 (user: "facciamo la geometria? è sempre tutto
+   nella vecchia pagina") - Implement the Geometry view
+   - Ported from the already-designed, already-io-mapped mockup pair:
+     docs/page/geometry_view_mockup.html (SVG ring UI/interaction) +
+     docs/page/geometry_page_io_reference.txt (per-field real ODB
+     sourcing, filled in 2026-07-24) - same "page before code, build from
+     the already-approved design" pattern Readout used (3ab).
+   - New file SciFi_Geometry.js (?v=1): two SVG rings (US/DS, HARDCODED
+     usSequence/dsSequence topology - Spec Book Fig 6.1/6.2, confirmed no
+     ODB field carries ring position), 24 module dots (fill=LinkStatus,
+     stroke=HV status), 96 ASIC dots (fill=enabled, stroke=channel
+     summary), 12 SM health dots (crate-link/LV-fault/power derived).
+     Click -> detail panel cross-referencing the SAME real data Power/
+     Readout tabs already read (FEB crate/slot/power/temps, LV present/
+     on/current/adjust/sense/temp/flags, DCDC crate+hosts, HV demand/
+     current/voltage, Readout ASIC/channel summary + expandable per-ASIC
+     channel grid, Calibration IV/Thr eligibility) - own independent
+     poll, not sharing state with those tabs' own JS.
+   - PURE READ-ONLY as designed (geometry_page_io_reference.txt's own
+     OUTPUT SUMMARY: every field is NONE/display or PAGE-LOCAL/selection)
+     - zero modbset() calls anywhere in this file, confirmed while
+       writing it.
+   - Real field sourcing notes:
+       LinkStatus (module dot fill) = LinksFibre/Variables/LinkStatus[
+         feb_index], the REAL 4-value enum (Disabled/OK/Unknown/Fault) -
+         NOT the 5-raw-datapath-flags aggregate Readout's own "link"
+         column actually uses (see the SAFETY GAP entry above, found
+         while cross-checking this - the two tabs currently show
+         link health two different ways).
+       HV per-module lookup reuses SciFi_PowerHV.js's own real HV_BOARDS
+         board/module map as a global (not redeclared, not the mockup's
+         fake sequential hv index) - reverse lookup by (side, module
+         number) -> board+offset -> real HV channel index.
+       Every other field (FEB crate/slot/power/mon, LV present/on/
+         current/adjust/sense/temp/flags/crate+hosts, channel mask/
+         tthresh/tthresh_offset/FCCR) is the exact same field names/paths
+         SciFi_PowerFEB.js/SciFi_PowerLV.js/SciFi_Readout.js already use -
+         cross-checked against those files directly, not re-derived.
+       VBR: same confirmed gap as Power/Readout - no live ODB field
+         exists anywhere - shown as "—".
+   - HTML: container-container-setup is a single column here (not the
+     mockup's dedicated left-rings/right-detail two-column page), so
+     rings + legend + detail panel stack vertically instead of side by
+     side - same #container 3-column-grid-of-the-WHOLE-page from 3ak,
+     just Geometry's own internal layout adapted to fit its one column.
+   - CSS: restyled with this page's own established tokens (.detail-
+     block/.detail-kv/kv(), .flag-pill, the #22c55e/#ef4444 "vivid" pair
+     Readout's .ch-cell already set) instead of the mockup's own separate
+     --ok/--crit CSS-variable palette - same visual-consistency choice
+     Readout made (3ab). New .geo-channel-grid/.geo-channel-cell (16-col
+     wrapping grid, separate from Readout's own 32-col .readout-grid -
+     different layout need) adds the masked-BY-CASCADE (whole ASIC
+     disabled) vs masked-individually distinction Readout's simpler table
+     doesn't show, via a diagonal-stripe pattern (mockup's own idea).
+     SciFi_main.css bumped to ?v=25.
+   - Selection/open-detail-panel state kept in page-level vars (geoSelected
+     Kind/Side/Sm/Module, geoOpenAsics{}) so it survives the 2s poll-
+     driven full SVG rebuild, same reasoning as every other tab's own
+     poll-survival state this session (Readout's selectedChannels,
+     SciFi_Utils.js's openDetailKeys) - the detail panel also re-populates
+     from FRESH data on every poll while a selection is active, not just
+     once at click-time.
+
+5a) Page-wide density pass, same day, right after 5 (user: "riduci la
+    grandezza della pagina", then "di più di più. in generale riduci",
+    then "riduci anche i tasti", then "ancora")
+--------------------------------------------------------------------
+  4 rounds of across-the-board padding/font-size cuts, not scoped to any
+  one section - sequencer-container/container-container-setup padding,
+  every .mtable/#readout-table th/td + the small safety-grid widgets
+  (Alarms/Cooling/Watchdog/etc), side-header rows, row-detail rows,
+  inter-table spacing (Supply's stacked tables), .safety-grid/.estop-card/
+  .summary/.details/.power-readout-group, every button class (.button-
+  group, .row-action-btn, .estop-btn/.estop-split, .mtab, .mpanel),
+  .status-pill/.flag-pill, and the Geometry rings (max-width 420->300-
+  >240px) + their card/legend spacing. SciFi_main.css bumped v=25->v=30
+  across the 4 rounds. Landed near the readability floor (~9-10px font on
+  the smallest elements, e.g. .flag-pill/.status-pill/.row-action-btn) -
+  flagged here in case another "ancora" round is asked for next time,
+  worth checking with the user whether we're already too tight before
+  cutting further.
+
+5b) Readout module grid + Geometry channel grid shrunk further, same day
+    (user: "dentro i moduli con gli asics, riduci"), then Geometry rings
+    bumped back UP 340px (user confirmed after asking "pensi sia
+    proporzionata?" - the SVG's internal text/dots scale WITH the CSS
+    container width, so 5a's 240px made module/ASIC numbers inside the
+    rings illegible - a compounding-scale problem the flat HTML tables/
+    buttons don't have), then a real layout change (user: "compatta le
+    tabelle... celle piu o meno della grandezza del contenuto, sposta a
+    sinistra la visione geometrica... e all'estrema destra la tabella
+    delle informazioni"):
+  - Readout's .readout-grid/.ch-cell/.colbtn/.asic-row-header shrunk
+    further (cells 20->16px, row-label width 130->100px).
+  - Geometry's analogous .geo-channel-grid/.geo-asic-expand shrunk to
+    match, for consistency.
+  - Geometry rings: 240px (5a's last step) -> 340px, after confirming
+    with the user that 240px was over-reduced (SVG text is authored in
+    viewBox units, so shrinking the CSS-rendered width shrinks the text/
+    dots proportionally too - unlike table font-size, which has an
+    independent floor).
+  - REAL STRUCTURAL CHANGE: every .mtable (Power tabs + Readout) and the
+    small safety-grid widget tables (#alarms-table/etc) REVERTED from
+    width:100% (added 2026-08-03) back to midas.css's own native
+    shrink-to-fit/auto-centered .mtable behavior - now that 5a's density
+    pass made cells small enough, stretching to 100% just left empty
+    padding instead of a genuinely smaller table.
+  - Geometry's internal layout changed from stacked (rings above, detail
+    panel below) to side-by-side: new .geo-layout (flex row) wrapping
+    .geo-rings-col (rings + legend, left, fixed width) and .geo-detail-
+    col (detail panel, right, flex:1) - own media query at 720px to
+    stack again on a narrow container-container-setup, separate from the
+    page's existing 1000px one (that one governs the OUTER 3-column page
+    grid, not Geometry's own internal split). Rings' own margin:0 auto
+    centering removed (left-aligned within their column now).
+  SciFi_main.css bumped v=30->v=33 across this whole entry.
+
+5c) Two more density tweaks, same day: outer .container column split
+    (user: "allarga un po' la zona geometry e riduci la zona tabelle") -
+    grid-template-columns 1fr/1fr -> minmax(320px,0.8fr)/minmax(360px,
+    1.2fr), tables column narrower now that 5a/5b's shrink made its
+    content genuinely narrower, Geometry gets the freed width for its
+    side-by-side layout. Then click-to-expand detail panels (user:
+    "riduci la grandezza delle info... nelle doppie tab in readout lv e
+    feb") - .detail-block/.detail-block-label/.detail-block-note/
+    .detail-kv shrunk (these are the SAME shared classes FEB/LV/Readout/
+    Geometry detail panels all already reuse, so one edit covers all
+    four). SciFi_main.css bumped v=33->v=35.
+
+5d) Demand/Adjust Set inputs shrunk, same day (user: "riduci i bottoni
+    set e menu selezione nelle tabelle") - the number input paired with
+    every "Set"/"Set all demand" button (HV/Supply/LV, .group-adjust for
+    the bulk header version, .row-adjust for the per-row version): JS-set
+    inline width 56px->44px (SciFi_PowerHV.js x2, SciFi_PowerSupply.js,
+    SciFi_PowerLV.js x2) + new CSS padding/font-size/height reduction on
+    both wrapper classes' own <input>. .set-btn itself already covered by
+    5a's earlier .row-action-btn shrink, no separate change needed there.
+    SciFi_main.css bumped v=35->v=36.
+
+5e) Demand/Adjust input further shrunk, same day (user: "il menu di
+    selezione anche del demand") - the native type="number" up/down
+    spinner (a little selection control of its own) was hidden via
+    ::-webkit-inner/outer-spin-button + -moz-appearance:textfield, then
+    the inline width dropped again 44px->36px (same 5 spots as 5d) now
+    that the spinner isn't competing for space inside it.
+    SciFi_main.css bumped v=36->v=37.
+
+5f) Partial revert + Geometry rebalance, same day (user: "rimetti le
+    frecce e ingrandisci la parte di geometry riducendo le tabelle a
+    destra. in quest'ultima riduci la grandezza del contenuto")
+--------------------------------------------------------------------
+  5e's spinner-hiding reverted (native up/down arrows back, width back to
+  44px - same 5 spots) - explicit ask, not a mistake found, just a change
+  of mind.
+  Geometry's OWN internal .geo-layout (rings left / detail-panel right,
+  5b) rebalanced: .geo-detail-col capped at max-width:260px instead of
+  an uncapped flex:1 (was taking whatever space was left over, crowding
+  the rings on a wide container-container-setup), rings' own max-width
+  bumped 340->400px into the freed space. Then, scoped ONLY to .geo-
+  detail-col (NOT the shared .detail-block/.detail-kv/etc classes
+  themselves, which FEB/LV/Readout's own detail panels also use and
+  weren't asked to shrink further) - detail-block-label/detail-block-
+  note/detail-kv/detail-block/flag-pill/.geo-asic-row/.geo-ring-title all
+  get an extra size cut inside the detail column specifically.
+  SciFi_main.css bumped v=37->v=38.
+
+5g) Ring size pushed twice ("ingrandisci i ring", "di piu di piu" ->
+    max-width 480->640px), then found a real bug: the value read
+    "max-width: 400x;" (missing "px", invalid CSS unit) - browsers
+    silently discard an invalid declaration, so max-width wasn't applying
+    AT ALL, letting the SVG grow to fill whatever free space the flex row
+    gave it - that's what "troppo" was actually seeing, not the 640px
+    itself. Fixed the typo and set 480px (last confirmed-good size before
+    the two push-further rounds).
+    Then a layout change of mind: US/DS rings side by side instead of
+    stacked (.geo-rings flex-direction column->row, flex-wrap:wrap,
+    .geo-ring-card flex:1 1 260px/min-width:220px so they share the row
+    and wrap to stacked again if the column gets too narrow) - and the
+    color-key legend block removed entirely (HTML + the now-dead .geo-
+    legend-block/.geo-legend/.geo-sw CSS rules deleted, not just hidden).
+    SciFi_main.css bumped v=38->v=42 across 5g.
+
+5h) Detail panel DUPLICATED per side, same day (user: "ho bisogno di due
+    tabelle per la geometry view una sotto US e una sotto DS" - confirmed
+    identical content, just one copy per side: "le tabelle sono uguali a
+    quella gia presente condivisa per US e DS... devi solo duplicarla")
+--------------------------------------------------------------------
+  REPLACES the single shared .geo-detail-col (5b/5f) with two independent
+  copies, one under each ring - a US-ring click only ever populates/
+  highlights the US table, DS stays untouched, and vice versa.
+  HTML: every detail-panel id suffixed -us/-ds (geo-detail-header,
+  geo-detail-empty, geo-detail-content, geo-d-module, geo-d-sm, geo-d-feb,
+  geo-d-power, geo-d-hv, geo-d-dcdc, geo-d-readout, geo-d-calib) - two
+  full copies instead of one shared block. Layout restructured: .geo-
+  layout now holds two .geo-side-col (one per side), each a flex column
+  with its own ring card ABOVE its own detail table (replaces the old
+  .geo-rings-col [both rings together] + single .geo-detail-col [shared,
+  to the right] split from 5b/5f).
+  SciFi_Geometry.js: single global selection (geoSelectedKind/Side/Sm/
+  Module/geoOpenAsics) replaced with geoSideState = {US:{...}, DS:{...}},
+  one independent {kind,sm,module,openAsics} per side. Every function
+  that touched the shared state now takes an explicit side param and
+  targets that side's own suffixed element ids (geoCloseDetailPanel,
+  geoSelectSm, geoSelectModule, geoRefreshSelection, geoPopulateSmPanel,
+  geoPopulateModulePanel, geoRenderAsicExpand, geoExpandAsic,
+  geoCollapseAsic, geoToggleAsic) - new geoSideSuffix(side) helper maps
+  "US"/"DS" -> "us"/"ds" for id-building. updateGeometryTab() now calls
+  geoRefreshSelection() for BOTH sides after every poll (was one call),
+  so both tables independently stay live.
+  SciFi_main.css bumped v=42->v=43, SciFi_Geometry.js bumped v=1->v=2.
+
+5i) Two more tweaks, same day (user: "riduci la grandezza dei details
+    all'interno del readout... le tabelle dentro power e readout si
+    adattino alla tab riempiendo tutto lo spazio")
+--------------------------------------------------------------------
+  Readout's own expandable row-detail/ASIC-grid shrunk further (second
+  pass, first was "dentro i moduli con gli asics, riduci") - .row-detail
+  td padding, .grid-toolbar, .rowlabel-spacer/.asic-row-header width
+  (100->80px), .colbtn/.ch-cell (14x13/14x14px, from 16px), .asic-name/
+  .asic-state/.asic-sub font-sizes all cut again.
+  .mpanel table.mtable/#readout-table RE-REVERTED back to width:100%
+  (5b had dropped this to shrink-to-fit "creando le celle piu o meno
+  della grandezza del contenuto" - now undone specifically for Power/
+  Readout, filling the tab again). #alarms-table/etc (small safety-grid
+  widgets) NOT touched, stay shrink-to-fit - wasn't part of this ask.
+  SciFi_main.css bumped v=43->v=44.
+
+5j) Fine-tuning round on .ch-cell/.colbtn/.rowlabel-spacer/.asic-row-
+    header, same day ("dove posso allargare Dettagli Readout" -> "allarga
+    leggermente" -> "vai a 15" -> "riducia ancora un po' la griglia"):
+    80px->92px->78px label column, 14px->16px->15px->13px cells/colbtns,
+    row-detail td padding nudged along with it. Landed at: rowlabel-
+    spacer/asic-row-header 78px, .colbtn/.ch-cell 13px.
+    SciFi_main.css bumped v=44->v=47.
+
+5k) Real bug found from a screenshot, same day (user: "vorrei avere asics
+    numero e griglia fino a 31 tutto su una riga") - the 32-cell channel
+    grid itself was already one unbroken row; the actual problem was the
+    "ASIC 0"/"32/32 unmasked" label column wrapping mid-word ("ASIC" /
+    "0" on separate lines) - 5j's 78px label width was narrower than the
+    name+pill flex row's natural content size, so the browser shrank the
+    text span below its content width and wrapped it at the space.
+    Fixed: .rowlabel-spacer/.asic-row-header widened 78->120px,
+    white-space:nowrap added to .asic-name/.asic-sub as a safety net, and
+    .asic-name-row got explicit flex-wrap:nowrap.
+    SciFi_main.css bumped v=47->v=48.
+
+5l) Final fine-tuning on the Readout ASIC-row gap, same day ("riduci la
+    distanza tra asics e la griglia" -> "di piu" -> "lascia un po di
+    spazio all'interno dei details sopra e sotto"): .asic-row gap 4px->
+    2px->0, then .row-detail td top/bottom padding bumped back up 4px->
+    10px (left/right untouched) for a bit of breathing room around the
+    whole expanded block, even with the internal ASIC-row gap now at 0.
+    SciFi_main.css bumped v=48->v=51.
+
+5m) Two real layout bugs found from a Supply-tab screenshot, same day
+    (user: "non vorrei avere le unita di misura a capo e vorrei avere
+    numero menu selezione e set sulla stessa riga")
+--------------------------------------------------------------------
+  1) Short number+unit cells ("5.00 A", "21.48 V" - I limit/OVP/current
+     columns) were wrapping onto 2 lines once the density pass (5a)
+     shrank column width - added white-space:nowrap to the general
+     .mpanel table.mtable/#readout-table th/td rule (safe here, unlike
+     Readout's own 32-cell grid which genuinely needs to scroll rather
+     than force-fit). Had to explicitly reset white-space:normal on the
+     row-detail td override right after, since nowrap is inherited and
+     would otherwise break real wrapping needs (detail-kv values, DCDC
+     hosts lists, etc) inside the expanded detail panel.
+  2) TDK/HV/LV's Demand·Adjust "current value" text (e.g. "20.00 V") was
+     a separate text node living OUTSIDE the .row-adjust/.group-adjust
+     flex span (cell.textContent set first, then the input+Set wrapper
+     appended after) - normal inline flow wraps that whole flex span to
+     a new line once it doesn't fit alongside the text at the narrower
+     column width from 5a/5d. Fixed by moving the value into a <span>
+     INSIDE .row-adjust as its first child (SciFi_PowerHV.js/SciFi_
+     PowerSupply.js per-row demand cells, SciFi_PowerLV.js per-row
+     adjust cell) - .row-adjust already had display:inline-flex +
+     white-space:nowrap (from 5d), so value+input+button now share that
+     same guaranteed-one-line flex row. HV's bulk/group version wasn't
+     affected (no leading value text there to begin with).
+  SciFi_main.css bumped v=51->v=52, SciFi_PowerHV.js v=27->v=28,
+  SciFi_PowerSupply.js v=32->v=33, SciFi_PowerLV.js v=33->v=34.
+
+5n) .container column split direction fixed + HV Current limit unit,
+    same day ("sposta a destra la divisione della pagina" -> got the
+    direction backwards, shrank the tables column which actually moves
+    the divider LEFT (away from the rings), not right -> "ho sbagliato,
+    sposta a destra" -> flipped to 1.1fr/0.9fr (tables wider) -> "ora e
+    troppo... riducilo" -> settled at 0.95fr/1.05fr, gap 20px->10px)
+--------------------------------------------------------------------
+  Also: HV's "Current limit" column changed from uA to mA (user
+  confirmed "si mA" after I flagged that kA would round every real value
+  to 0.00) - checked the real ODB value (docs/old/odb_300726_112101.json
+  dump via live RPC call): Current limit reads 1000, same raw scale as
+  Current's own ~0.01 uA reading, i.e. 1000 uA = 1 mA - a physically
+  sane compliance ceiling, not itself a uA-scale number. Divides by 1000
+  before formatting (SciFi_PowerHV.js), with an explicit null guard so
+  fmtHvNum() still shows "n/a" instead of dividing null.
+  SciFi_main.css bumped v=52->v=55 (3 fr-split iterations), SciFi_
+  PowerHV.js v=28->v=29.
+
+5o) Two more nudges, same day ("aumenta un po' i details di asics in
+    readout e sposta leggermente a sinistra il divisore") - .ch-cell/
+    .colbtn back up 13->15px, .container split 0.95fr/1.05fr ->
+    0.88fr/1.12fr (tables narrower, divider moves left).
+    SciFi_main.css bumped v=55->v=56.
+
+5p) Geometry detail-panel readability pass, same day, from a screenshot
+    (user: "dobbiamo migliorare la leggibilita delle tabelle sotto
+    geometry") - two real issues found:
+      1) 5f's scoped .geo-detail-col shrink (8.5-9px) had gone BELOW the
+         rest of the page's own .detail-block/.detail-kv sizing (9.5/
+         10.5px, 5c) instead of just matching it - removed the whole
+         scoped font-size/spacing override, now inherits the shared size
+         like FEB/LV/Readout's own detail panels.
+      2) .geo-asic-row's justify-content:space-between (5f) was pushing
+         "ASIC 0" and its value to opposite edges of the FULL panel
+         width, leaving a large dead gap in between - hard to scan as
+         one row. Changed to justify-content:flex-start + gap:10px,
+         matching .detail-kv's own tight k/v rhythm.
+    SciFi_main.css bumped v=57->v=58.
+
+5q) Text clipping found right after, same day (user: "il riquadro taglia
+    le scritte") - .geo-asic-row inherited .asic-row's base nowrap
+    default, and once the row's content (label + longer value text like
+    "32/32 unmasked * 0 Hz avg") exceeded the column width, .collapsible-
+    container's own overflow:hidden silently clipped it instead of
+    wrapping. Added flex-wrap:wrap to .geo-detail-col .geo-asic-row.
+    SciFi_main.css bumped v=58->v=59.
+
+5r) "non va bene" -> screenshot -> real cause found: 5p removed .geo-
+    asic-row's font-size entirely (assumed inheritance from .detail-kv's
+    shared 10.5px), but the ASIC rows' .k/.v spans live directly under
+    .geo-asic-row, not inside a .detail-kv - the only CSS rule for .k
+    anywhere (.detail-kv .k) never reached them, so with zero font-size
+    in the cascade they fell back to the browser default (~16px),
+    visibly much bigger than the rest of the panel (screenshot: "ASIC 0
+    32/32 unmasked..." towering over "Module DS 7" etc at normal size) -
+    that size mismatch, not an actual clip, is what read as the box
+    "cutting" the text. Fixed: font-size:10.5px restored on .geo-detail-
+    col .geo-asic-row specifically (keeping 5f/5q's justify-content/gap/
+    flex-wrap fixes).
+    SciFi_main.css bumped v=59->v=60.
+
+5s) Six-part Geometry detail-panel polish pass, same day (user: "il
+    titolo mettilo con DS colorato come nel ring e poi module detail...
+    le info mettile una dopo l'altra a capo... lascia un po di margine
+    dal bordo della tab bianca. gli asics non si capisce che sono
+    cliccabili e inseriscili sotto readout. calibration toglila per ora")
+--------------------------------------------------------------------
+  1) Title: "US module detail"/"DS module detail" plain text -> reuses
+     the ring card's own <span class="side-tag us/ds"> colored badge +
+     "Module detail" (SciFi_main.html, both US/DS copies).
+  2) One kv pair per line: the SHARED kv() (SciFi_PowerFEB.js) glues
+     label+value straight into .detail-kv's own flex-wrap ROW with no
+     per-pair wrapper - fine for FEB/LV/Readout's own panels (not
+     touched), but Geometry needed real line breaks. New Geometry-only
+     local helper geoKv() wraps each pair in its own <div class="geo-kv-
+     row"> block; .geo-detail-col .detail-kv switched to flex-direction:
+     column so those divs stack. The static Module/Super-module header
+     in SciFi_main.html (not built via kv()) restructured to match by
+     hand, same .geo-kv-row wrapper.
+  3) Margin from the box edge: .geo-detail-col had NO padding at all
+     (the base .collapsible-container class it also carries doesn't set
+     any) - added padding:10px.
+  4) ASIC rows: added .row-clickable + .row-chevron (the same hover-
+     background + rotating-chevron affordance FEB/LV/Readout's own
+     click-to-expand rows already use, instead of relying on cursor:
+     pointer alone) - geoExpandAsic/geoCollapseAsic now also toggle
+     .open on the row element itself (previously only the expand-content
+     div), and state-restore-on-repoll (openAsics[ai]) does too.
+  5) "ASICs" sub-label added right above the per-ASIC rows (previously
+     unlabeled continuation of "Module summary" - could read as one
+     block). They were already structurally under the "Readout"
+     detail-block-label; this just makes the sub-grouping visible.
+  6) Calibration section REMOVED (US + DS): both the static "Calibration"
+     detail-block-label + #geo-d-calib-us/ds divs in SciFi_main.html, and
+     every geo-d-calib reference in SciFi_Geometry.js (geoPopulateSmPanel's
+     placeholder-message line, geoPopulateModulePanel's whole IV/Thr
+     eligibility block) - not hidden, fully removed, "per ora" (may come
+     back later).
+  SciFi_main.css bumped v=60->v=61, SciFi_Geometry.js bumped v=2->v=3.
+
+5t) Two placeholder-text tweaks, same day: "select a module (not just a
+    super-module) for this info" -> "select a module for this info"
+    (parenthetical dropped); "click a super-module dot, a module dot, or
+    an ASIC dot on the US/DS ring" -> "click a SM dot, a Module dot, or
+    an ASIC dot on the US/DS ring". SciFi_Geometry.js bumped v=3->v=4.
+    User flagged the legend (removed in 5g) as the next thing to revisit.
+
+5u) Legend RE-ADDED, same day (user: "legenda la mettiamo sopra a tutto")
+    - same 4-row content removed in 5g (link status, HV outline, ASIC
+      fill, super-module dot), same .geo-legend-block/.geo-legend/.geo-sw
+      CSS restored - but positioned at the very TOP of container-
+      container-setup, above .geo-layout, instead of its original
+      pre-5g position (below the rings, above the detail panel).
+    SciFi_main.css bumped v=61->v=62.
+
+5v) Legend labels renamed to a consistent scheme, same day (user: "cambia
+    i nomi SM ASIC fill ASIC ring Module Ring Module Fill") - "link
+    status" -> "Module Fill (link status)", "ring outline = HV" ->
+    "Module Ring (HV)", "ASIC fill" -> "ASIC Fill", "super-module dot" ->
+    "SM". Also added a previously MISSING legend row, "ASIC Ring
+    (channels)" - the ASIC dot's own stroke color (geoAsicChannelColor():
+    green=all channels active, amber=some, red=none) was rendered on the
+    ring but never had a legend entry at all before this. HTML text only,
+    no CSS/JS changes this round.
+
+5w) Real gap found, same day (user: "mancano le info su modul fill nella
+    tabella") - linkStatusLabel was computed and used to color the
+    module dot's FILL on the ring (and for thrEligible), but never shown
+    as text anywhere in the detail panel. Added "Link status" as the
+    first geoKv() row in geoFebBlockHtml (FEBCrates/LinksFibre block),
+    reads directly off feb.linkStatusLabel - already present on every
+    feb object built, no new ODB read needed.
+    SciFi_Geometry.js bumped v=4->v=5.
+
+5x) SM dot split into fill(FEB)/ring(LV) + HV color scheme revised, same
+    day (user: "dobbiamo aggiungere piu info sui SM dot. magari anche
+    qui ring e dot con ring LV e fill FEB. cosa dici?" -> confirmed ->
+    "modificando anche HV, Verde On grigio off orsso not enabled")
+--------------------------------------------------------------------
+  geoHvStatusColor REVISED: green/amber/grey (enabled+on/enabled+off/
+  disabled) -> green/grey/red (On/Off/Not enabled) - changes the Module
+  Ring (HV) legend meaning too, not just SM.
+  geoFebHealth(feb,lv) (single mixed FEB+LV verdict, the ONLY dot on this
+  page that didn't already split fill/ring into two independent signals
+  like Module and ASIC dots do) REMOVED, replaced with two new functions
+  reusing the same geoHvStatusColor 3-bucket map: geoSmFebStatus(feb)
+  (fill - connected+power on/connected+power off/not connected) and
+  geoSmLvStatus(lv) (ring - on+no fault/off/fault while on).
+  CSS: .geo-sm-health-dot's own `stroke: #fff` REMOVED - it was silently
+  overriding the JS-set stroke color (same reason Module/ASIC dots'
+  CSS never sets a stroke color either, only stroke-width) - without
+  this fix the new LV ring color would never have actually shown.
+  Legend: "Module Ring (HV)" relabeled to On/Off/Not enabled; old single
+  "SM:" row split into "SM Fill (FEB)" and "SM Ring (LV)", same 3-state
+  language.
+  SciFi_main.css bumped v=62->v=63, SciFi_Geometry.js bumped v=5->v=6.
+
+6) STILL OPEN - "invisible bottleneck" readout monitoring (chain_and_
+   monitoring.txt's R1/R2/R3) - NOT the same thing as item 3ab below
+   - Currently nothing on this page reports whether data is actually
+     being read out (as opposed to whether ASICs/channels are configured
+     to be read out - that part is now built, see 3ab).
+   - chain_and_monitoring.txt flags this as a real gap ("the invisible
+     bottleneck": the whole power branch can read green while nothing is
+     actually being read out) and names the concrete signals to use:
+       R1: ROSWBF/ROSWBC/ROSWBDS Settings/readout_scifi + mask_n_scifi
+       R2: /Experiment/Run Parameters/SciFi readout (logged at BOR)
+       R3: SwitchingFibre sorter/merger counters (SFSO/SFCN, all 12 SciFi
+           FEBs - not mixed with pixel data despite the frontend being
+           shared - see chain_and_monitoring.txt section 4h for the exact
+           fields: "hits lost in" + "LINK FIFO FULL" + "Merger Rate" +
+           "credits" together answer AT WHICH STAGE data is lost)
+   - NOT started - mistakenly conflated with item 3ab below at the start
+     of this session (this item's own name misled the assistant into
+     researching SwitchingFibre before the user clarified the two are
+     different features).
+
+3ab) Readout tab BUILT 2026-08-03 (user: "la parte readout l'abbiamo già
+     costruita in .../docs/page. possiamo partire da lì") - module ->
+     ASIC -> channel masking, ported from the already-designed,
+     Marius-signed-off mockup (docs/page/custom_page_mockup_v3.html's
+     "Readout" mega-section, custom_page.txt section 3.5) - NOT item 6
+     above (chain_and_monitoring.txt's separate, still-open "invisible
+     bottleneck" gap, different document, different signals entirely).
+--------------------------------------------------------------------
+  New file SciFi_Readout.js + a new collapsible-container section
+  ("Readout", after Power, before Geometry) in SciFi_main.html, new grid
+  CSS in SciFi_main.css. Structure: 24 module rows (2 per Feb, module =
+  one SMB/4 ASICs/128 channels, per Mu3e Spec Book 6.4.2), grouped US/DS
+  like every other Power tab, each row click-to-expands (reusing the
+  existing toggleRowDetail()/restoreRowDetailState() mechanism from
+  SciFi_Utils.js, not the mockup's own separate mega-section/tooltip
+  system) into a 4-ASIC x 32-channel masking grid.
+  Real ODB backing confirmed against detector/asic.py, detector/
+  channel.py, detector/feb.py, calibrations/thr_scan.py:
+    - ASIC enable/disable: LinksFibre/Settings/ASICMask[feb] (one 8-bit
+      mask per Feb) - read-modify-write across every selected ASIC,
+      grouped by Feb first (same reasoning as Feb.set_asic_mask_bit()'s
+      own "preserve the other 7 bits").
+    - Channel mask: SciFiFibre/Settings/ASICs/Channels/mask[global_ch] -
+      confirmed mask=1 means MASKED (thr_scan.py's own
+      __set_array_all("mask", 0) is the reset-to-unmasked baseline,
+      __mask_noisy_channels() sets mask=1 to exclude a channel).
+    - tthresh/tthresh_offset/FCCR: same flat/global-index arrays,
+      read-only display (tooltip) here - Calibration tabs will own
+      writing tthresh/tthresh_offset, not built yet.
+    - Link status: recomputed independently from the same 5 "FEB
+      datapath status" fields SciFi_PowerFEB.js's own status column
+      already uses (PLL locked/RX ready/DPA locked/Buffer full/Frame
+      desync) - this file doesn't share state with the Power tab's poll.
+    - VBR: NO live ODB source exists anywhere - calibrations/
+      vbr_scan.py's result isn't persisted anywhere a page could read
+      it (a real, separate gap, flagged to the user before building -
+      user's call: build everything else now, leave VBR as "—").
+  Global channel index computed exactly like SciFiDetector.
+  __build_febs_from_odb()/Feb.__init__ do in Python: a running cursor
+  incremented by numAsics*32 per Feb in feb_index order (real dump
+  confirmed NumASICsMax is 0 or 8 per Feb, never partial - "not
+  provisioned" ASIC rows handle the 0 case without rendering a channel
+  grid for them).
+  Selection persistence: unlike every other tab (single click-and-
+  verify actions), Readout's own interaction is multi-step (select
+  several channels/ASICs across possibly several modules, THEN click
+  one bulk action) - but the table rebuilds from scratch every 2s poll
+  like every other tab. Two page-level Sets (selectedChannels by global
+  index, selectedAsics by "febIndex:posInFeb") survive the rebuild and
+  are consulted when each checkbox/cell is (re)created - same reasoning
+  as SciFi_Utils.js's openDetailKeys (which does the same thing for
+  open/closed detail-row state), just for selection instead.
+  Module-row-level "select all" checkbox from the mockup deliberately
+  DROPPED - part of the mockup's generic reusable 3-level selection
+  pattern (used meaningfully for FEB/LV/HV/crate group actions
+  elsewhere), but nothing in Readout's own mockup behaviour ever reads
+  it (Enable/Disable selected ASICs only ever queries .asic-select
+  checkboxes) - pure decoration with no wired action.
+  BUG CAUGHT DURING BUILD (before shipping): the two toolbar buttons
+  were first wired via document.addEventListener("DOMContentLoaded",
+  ...) in SciFi_Readout.js - but every script tag on this page loads at
+  the END of <body>, so DOMContentLoaded has always already fired by
+  the time a bottom-of-body script runs; the listener would never have
+  fired. Fixed to match this page's own established convention for
+  static (non-JS-generated) buttons - plain onclick="..." attributes
+  directly in the HTML, same as the Emergency buttons.
+  No messaging on writes (Mask/Unmask, Enable/Disable) - matches this
+  session's earlier, explicit "no ODB-write messages anywhere" decision.
+  Not yet exercised against a live MIDAS instance (checked: JS syntax
+  balance, real field names/paths against source + live ODB dump only).
+
+3ac) Readout REVISED same day, right after 3ab (user: "togli i tasti
+     generali. mettine uno per US e DS come nell'altra tab. con questo
+     tasto enable e disable ASICs. allarga la tabella riempiendo tutta
+     la tab readout. i canali non mascherati sono verdi e quelli
+     mascherati sono rossi")
+--------------------------------------------------------------------
+  ASIC enable/disable changed from "select individual ASICs via
+  checkbox across any module, then click one of two page-level toolbar
+  buttons" to a per-side BULK action - one button in each side-header
+  row ("Enable all US ASICs"/"Disable all US ASICs"), flipping label
+  based on whether every existing ASIC on that side is already enabled,
+  same "one bulk button per side, aggregate-state-driven label" pattern
+  every other Power tab's own side-header row already uses. Removed
+  entirely: the .asic-select checkboxes, the selectedAsics Set, the
+  page-level toolbar div + its two buttons. readoutSideHeaderRow(side,
+  rows) now takes the full rows array and filters internally (matches
+  febSideHeaderRow/pdSideHeaderRow's own convention) instead of the
+  side label alone.
+  Layout bug fixed: Readout (like Power) sits directly inside
+  .safety-grid, a 2-column CSS grid (repeat(2, 1fr)) meant for the small
+  status widgets (PySequencer/Watchdog/etc) - with no override, a
+  wide-table section only gets half the row. Added a "wide-section"
+  modifier class (grid-column: 1/-1) to Readout's own
+  collapsible-container. NOTE flagged to the user: Power's
+  collapsible-container has the exact same structural issue (same
+  parent grid, no span override) - not touched here since only Readout
+  was asked for, but likely wants the same fix.
+  Channel-cell colors changed from the page's usual pale .flag-pill/
+  .status-pill-style background+text (meant for text badges) to solid/
+  vivid green (#22c55e unmasked) and red (#ef4444 masked) - a plain
+  color-filled button with no text, in a dense 24x4x32 grid, needs to
+  read as "green"/"red" at a glance.
+
+3ad) Readout - per-module action + real ASIC toggle, same day, right
+     after 3ac (user: "aggiungi o per ogni riga able/disable ASICs con
+     stesso colore di set. inoltre anche la parola enable disable su
+     ogni ascis in realta e un pulsante per attivarlo o disattivarlo")
+--------------------------------------------------------------------
+  Two additions, both direct write, no confirmation (same convention as
+  every other single-item/bulk action on this page):
+    - New 6th column "actions" in the main module table: one button per
+      row, "Enable ASICs"/"Disable ASICs" (flips label based on whether
+      every existing ASIC in THAT module is already enabled), styled
+      "row-action-btn set-btn" - the same light-blue per-row secondary-
+      action style Supply/LV already use for Set/Reset/Clear Fault,
+      explicitly asked for ("stesso colore di set"). Scoped to one
+      module's up to-4 ASICs, same read-modify-write reasoning as the
+      per-side button (3ac) and Feb.set_asic_mask_bit(), just narrower.
+      Colspan bumped 5->6 everywhere (header, message row, side-header,
+      detail row).
+    - The ASIC "enabled"/"disabled" pill inside the expanded grid,
+      previously a plain read-only statusPill, is now a real actionPill
+      toggling that ONE ASIC directly (toggleSingleAsic()) - same
+      pattern as every other single-item toggle on this page. Required
+      extending actionPill() itself (SciFi_Utils.js) with an optional
+      6th `labels` param ({on, off} text override) since "enabled"/
+      "disabled" is the real field semantics here, not "on"/"off" -
+      defaults preserve the exact old on/off text for every existing
+      caller (Supply/HV/LV/FEB), zero behavior change there.
+  Click-propagation: both the new per-row button and the per-ASIC pill
+  call event.stopPropagation() - the module row's own onclick opens/
+  closes the detail grid, and the ASIC header's own onclick selects all
+  32 channels on that ASIC, neither of which should also fire when the
+  action pill/button itself is clicked.
+
+3ae) Readout table STILL not full width after 3ac's "wide-section" fix,
+     same day (user: "allarga la tabella redout per riepire la tab")
+--------------------------------------------------------------------
+  3ac only widened the SECTION (collapsible-container spanning both
+  .safety-grid columns) - the TABLE inside was still shrink-to-fit/
+  centered/unstyled, because virtually every layout rule for .mtable on
+  this page (width, centering, row striping, side-header background,
+  row-detail left-align, table-message-row) is scoped to ".mpanel
+  table.mtable" - and #readout-table isn't inside a .mpanel (Power's
+  tables are, Readout is a plain .details div, no tab bar above it).
+  Fixed by adding #readout-table as an explicit alternate selector to
+  every one of those rules (not by wrapping it in .mpanel - that class
+  also carries border-top:none, which assumes a tab bar sits above it;
+  Readout has none, so that would have looked visually wrong).
+
+3af) Row order/labeling fixed, same day (user: "ordina i sm da 0 a 5 e
+     non con mod 0 mod 1, ma con i moduli effettivamente")
+--------------------------------------------------------------------
+  Two related fixes:
+    - Sort order: rows were only sorted by side (US/DS), relying on the
+      raw LinksFibre/FEBType array order within each side - confirmed
+      live that this is NOT sorted by SM number (US Febs read
+      SM1,SM0,SM2,SM5,SM4,SM3 in that exact array order), so rows looked
+      shuffled. Now sorted by side, then by SM number ascending, then by
+      module (0 before 1) within each SM.
+    - Label: "<side> SM <n> · Mod 0/1" (the per-Feb-local 0/1, resetting
+      every row, indistinguishable across all 12 rows of a side) changed
+      to "<side> SM <n> · Module <0-11>" - the real per-side module
+      number, computed as 2*sm_index + m, the SAME numbering
+      detector/feb.py's own __build_lv_supply() already uses for this
+      exact module pair ("SMB_<side>_2sm-2sm+1"). NOT claimed to be the
+      separately-unconfirmed Spec Book physical ring position
+      (topology.txt's own open question) - just the numbering already
+      established elsewhere on this page for the identical module.
+
+3ag) Bulk Mask/Unmask ALL channels ADDED, same day (user: "aggiungi
+     anche insieme agli asics i bottoni per mascherare e demascherare
+     tutti i canali")
+--------------------------------------------------------------------
+  Alongside the Enable/Disable ASICs buttons (3ad's per-module action,
+  3ac's per-side one), added "Mask all ch"/"Unmask all ch" at BOTH the
+  same levels - two SEPARATE buttons, not a single flip-label button
+  like Enable/Disable (mask/unmask isn't naturally an aggregate-state
+  toggle the way "all ASICs enabled" is - same reasoning the grid's own
+  Mask ch/Unmask ch pair already follows, user's plural wording "i
+  bottoni" also pointed at two buttons). New shared helpers:
+  moduleAllChannels(row) (every channel of every EXISTING ASIC in one
+  module) and applyChannelMaskBulk(channels, masked) (bulk modbset, no
+  selection needed - unlike the grid's own Mask ch/Unmask ch which only
+  acts on .selected cells). Per-module buttons styled "set-btn" (same
+  light-blue per-row style as Enable/Disable ASICs); per-side ones plain
+  "row-action-btn" (same as the side's own Enable/Disable all ASICs
+  button) - matches this page's established bulk-vs-per-row button color
+  convention.
+
+3ah) Side-level mask buttons REVISED (3ag's 2 separate side buttons ->
+     1 flip button), same day (user: "lascia un solo bottone per il
+     masking dei canali come asics... parlo di quelli generali.
+     all'interno dei moduli lascia i tre bottoni")
+--------------------------------------------------------------------
+  Only the SIDE/general level changed: "Mask all <side> ch" + "Unmask
+  all <side> ch" (2 buttons) collapsed into ONE flip button ("Mask all
+  X ch" / "Unmask all X ch", same aggregate-state-driven label pattern
+  as the side's own Enable/Disable all ASICs button) - allMasked =
+  every channel across every module of that side already masked. The
+  per-module action cell is UNCHANGED - still keeps all 3 separate
+  buttons (Enable/Disable ASICs, Mask all ch, Unmask all ch), per the
+  user's explicit "all'interno dei moduli lascia i tre bottoni".
+
+  Also answered, same message: where the "link" column's OK/fault/
+  unknown comes from - LinksFibre/Variables/"FEB datapath status"/{PLL
+  locked, RX ready, DPA locked, Buffer full, Frame desync}, computed
+  independently in this file (no shared state with the FEB tab, whose
+  own near-identical linkOk was dead code, removed earlier this
+  session - see 3z/final-review-pass notes).
+
+3ai) Per-module actions ALSO reduced to one mask button + link fault
+     flags shown, same day (user: "anche in actions deve essere essere
+     uno per masking. per il fault, aggiungi sotto i quattro asics le
+     flag che rendono fault")
+--------------------------------------------------------------------
+  Per-module action cell revised further: "Mask all ch"/"Unmask all ch"
+  (2 buttons) also collapsed into ONE flip button, same
+  aggregate-state-driven pattern as 3ah's side-level one (now: only
+  "Enable/Disable ASICs" + "Mask/Unmask all ch", 2 buttons total, not 3
+  - supersedes the "keeps its own 3 separate buttons" note in 3ah,
+  written moments before this follow-up request).
+  Link fault flags: readoutFebs now keeps the individual linkFlags
+  object (pllLocked/rxReady/dpaLocked/bufferFull/frameDesync), not just
+  the aggregate linkOk boolean. buildAsicGrid() renders them as a
+  .detail-block + .flag-pill-row below the 4 ASIC rows (same visual
+  language as the FEB tab's own datapath detail block) - labelled
+  "Link status (this Feb - shared by both modules)" since datapath
+  status is per-Feb, not per-module (both modules of the same Feb always
+  show the identical 5 flags).
+
+3aj) Spacing + "not provisioned" explained, same day (user: "readout e
+     troppo attaccato a power. lascia uno spazio come tra cooling
+     service e watchdogs. cosa vuol dire che asic e not provisioned?")
+--------------------------------------------------------------------
+  .safety-grid .wide-section got its own margin-top: 14px (on top of
+  the grid's own 14px gap) - .collapsible-container's margin-bottom is
+  zeroed out grid-wide (gap already handles normal spacing), but
+  Readout still read as glued to Power's bottom edge, so it gets extra
+  breathing room the other small widgets don't need.
+  Explained "not provisioned" (asic.exists === false, when posInFeb >=
+  feb.numAsics): NOT the same as "disabled" (Enabled bit off, ASIC
+  exists but is off) - it means that ASIC position doesn't physically
+  exist for this Feb according to NumASICsMax at all (e.g. NumASICsMax=0
+  for most Febs in this local/dev environment - not yet
+  connected/configured - means all 8 of that Feb's ASIC slots are "not
+  provisioned", no channel data would even be meaningful there).
+
+7) [x] CLOSED 2026-08-03 - REMOVED, not fixed (user: "la storia dei
+   messaggi midas puoi cancellarla. non voglio mandare alcun messaggio
+   quando scrivo su odb")
+   - Every window.midasMessanger.send_message(...) call tied to a write
+     action was removed outright, across all 4 Power tabs
+     (SciFi_PowerSupply.js/HV/LV/FEB) and SciFi_Emergency.js - not just
+     the ones investigated for the "messages not showing up" bug this
+     entry used to track. Any now-dead local variables that existed only
+     to build a message string (action/label/skippedNote/hostNote/
+     actionLabel) were removed too, along with two now-unused function
+     parameters (FEB's febGroupToggleAction(side, ...) -> (...); LV's
+     dcdcCrateAction/dcdcGroupAction and their 3 wrapper functions each
+     dropped a label/actionLabel parameter, with every call site updated
+     to match).
+   - SciFi_Utils.js's own midasMessanger usage (updateRunState(), the Run
+     N started/stopped/paused message) was left untouched on purpose -
+     it fires off a MIDAS run-state transition, not an ODB write made
+     from this page's own buttons, so it's outside what was asked.
+   - SciFi_Message.js (the MidasMessanger class/window.midasMessanger
+     setup) was left in place, still used by SciFi_Utils.js above.
+
+3ak) Geometry view rendering full-width below sequencer-container instead
+     of beside it, same day (user: "ora guarda geometry, e sotto")
+--------------------------------------------------------------------
+  Real, PRE-EXISTING bug (confirmed via git show HEAD, present already
+  in commit b895312c - not introduced by any of today's edits): #container
+  (the outer 3-column grid meant to hold .sequencer-container | .divider |
+  .container-container-setup side by side) was closing its </div> right
+  after .sequencer-container, BEFORE .divider and .container-container-setup
+  even opened - so those two were siblings of #container in the DOM, not
+  children inside its grid, and rendered as plain full-width blocks below
+  it instead of a sticky column beside it.
+  Naive <div>/</div> total counting (used all session) only ever caught
+  an aggregate mismatch, never WHERE - a Python html.parser.HTMLParser
+  tag-stack checker was written to pinpoint it precisely (open/close line
+  numbers per tag), then re-run after the fix to confirm #container now
+  closes AFTER .container-container-setup's own closing div, with
+  .divider and .container-container-setup correctly nested inside.
+  One separate, pre-existing, harmless quirk noted in passing: #mmain
+  (line 24) has no matching close either (auto-closed by the browser at
+  </body>) - not touched, lower priority, flagged here only for the record.
+
+3al) Readout - two banner messages ADDED, same day (user: "impkementa il
+     programma SW e magaria nche messaggio qauando ho not .. degli asics")
+--------------------------------------------------------------------
+  Noticed while answering "should Readout have any messages?": every
+  Power tab checks its own Required Programme (SciFi_Programs.js's list)
+  and banners if it's down, but Readout never checked "SW Fibre" - the
+  frontend that actually serves LinksFibre/SciFiFibre (so ASICMask/
+  channel mask writes have no real effect if it's down). Added the exact
+  same READOUT_REQUIRED_PROGRAM pattern as SciFi_PowerFEB.js's
+  FEB_REQUIRED_PROGRAM (query /Programs/SW Fibre/First failed, same
+  null-vs-0 fix, banner via combineTableMessages).
+  Also added an aggregate "not provisioned" summary line (asic.exists
+  false because posInFeb >= NumASICsMax) - counts total not-provisioned
+  ASIC slots across all Febs and shows one line if >0, so a shifter sees
+  it without opening every module's detail grid - follow-up to 3aj's
+  explanation of what "not provisioned" means.
+  Confirmed no per-action "write succeeded" messages exist anywhere on
+  this page (showTableMessage's "info" kind is mentioned in a comment
+  but never actually called) - deliberately did NOT add one to Readout,
+  would be an inconsistency with every other tab, not a real pattern to
+  match.
+
+READOUT SECTION CLOSED 2026-08-03 (user: "si segna come chiuso"). Full
+build/revision log: 3ab-3al above. Known accepted gaps, not bugs: VBR has
+no live ODB source anywhere (shown as "—"), tthresh/tthresh_offset stay
+read-only pending the Calibration tab. Next up: item 5 (Geometry view).
+
+3am) Power+Readout spacing fix REDONE for real, 2026-08-04 (user: "secondo
+     me power e readout appertengono alla stessa entry della griglia")
+--------------------------------------------------------------------
+  Root cause of 3aj/3ak's spacing fix never visibly landing, found while
+  acting on the user's suggestion: .safety-grid's own closing </div>
+  (opened SciFi_main.html line 40) was already closing at line 241,
+  BEFORE Power's collapsible-container even opens (243) - confirmed with
+  the same html.parser tag-stack checker used for 3ak's Geometry bug.
+  So ".safety-grid .wide-section" and ".safety-grid .collapsible-
+  container" never matched Power/Readout at all - the whole
+  grid-column:1/-1 + margin-top mechanism from 3ac/3aj was DEAD CODE the
+  entire time, on a real Feb (Power/Readout were never grid children of
+  .safety-grid to begin with, just plain block siblings below it with no
+  margin between them at all - explains why they read as "attached").
+  Fixed properly: both collapsible-containers wrapped in one new real
+  ancestor, <div class="power-readout-group"> (SciFi_main.html), styled
+  display:flex; flex-direction:column; gap:24px (SciFi_main.css) - a
+  selector that actually matches, instead of one that depended on
+  .safety-grid nesting that was never true. Removed the now-pointless
+  "wide-section" class/CSS entirely (full width was already the natural
+  block-level behavior once outside any grid - the class never did
+  anything real).
+  SciFi_main.css bumped to ?v=23.
+
+3an) Readout's ASIC/channel grid was breaking out of the table card,
+     2026-08-04 (user: "quando apro la tab della readout la tabella
+     interna esce dalla tabella readout")
+--------------------------------------------------------------------
+  .grid-scroll already had overflow-x:auto (meant to let the 32-channel
+  grid scroll horizontally instead of widening the row), but that alone
+  doesn't stop it: #readout-table uses default table-layout:auto, which
+  sizes each column to fit its widest descendant's CONTENT width first,
+  then clips only after that's decided - so the wide grid was stretching
+  the whole table (and its card border) outward instead of scrolling.
+  Fixed with the standard hack for this exact case: .grid-scroll got
+  width:1px; min-width:100% added alongside overflow-x:auto - the 1px
+  hint is what the table auto-layout algorithm actually uses when
+  computing column width, then min-width:100% re-expands it to fill the
+  cell once that width is settled, so it scrolls internally instead of
+  pushing the table wider.
+  SciFi_main.css bumped to ?v=24.
+
+SAFETY GAP FOUND 2026-08-04 (not fixed, flagged only - found while
+reading page_io_reference.txt 3.1/3.2 for Geometry's real ODB fields,
+NOT something the user asked to investigate right now):
+  Readout's ASIC enable/disable and channel mask/unmask (SciFi_Readout.js,
+  closed 2026-08-03) write DIRECTLY via modbset() to LinksFibre/Settings/
+  ASICMask[] and SciFiFibre/Settings/ASICs/Channels/mask[] - but the
+  ALREADY-DECIDED, Marius-signed-off design (page_io_reference.txt 3.1/
+  3.2, "GATE HIERARCHY, CLOSED 2026-07-24") requires these writes to go
+  through a NEW PySequencer script, scripts/readout_mask.py (still not
+  built), specifically so check_shared_equipment() and a LinkStatus gate
+  can run authoritatively server-side:
+    - Unmask ch / Enable ASICs (the "risky/reactivating" direction only,
+      never mask/disable) should be gated on LinkStatus=="OK" for the
+      target's own FEB.
+    - Enable ASICs additionally requires check_shared_equipment() to
+      pass (Marius's own answer was specifically about ASICMask writes).
+  Documented reasoning (page_io_reference.txt 779-797) for why this can't
+  be a JS-side check like Power's own direct writes are: check_shared_
+  equipment() only exists in Python, has no ODB-published live flag, and
+  a client-side pre-check has no atomicity with the write and is
+  trivially bypassable - "the authoritative refusal must happen inside
+  scripts/readout_mask.py itself." Unlike Power (where the C++ driver
+  itself is the real enforcement point, confirmed per-driver in item 1),
+  ASICMask/channel-mask writes have NO hardware-level protection at all -
+  a direct JS write can genuinely command an unsafe state with nothing
+  to stop it.
+  DROPPED 2026-08-04 (user: "il punto uno dimenticalo completamente") -
+  decided not to pursue scripts/readout_mask.py; no longer tracked as an
+  open item.
+  RESOLVED 2026-08-04 (user: "penso che nella tabella redout sia meglio
+  mostrare in link quello che viene mostrato nella geometry view. non ha
+  senso ripetere ciò che già viene detto nella feb"): the "link" column
+  mismatch flagged just above is fixed - SciFi_Readout.js's own linkOk
+  (a boolean aggregated from 5 raw "FEB datapath status" flags) replaced
+  with the same LinksFibre/Variables/LinkStatus[feb_index] field/decode
+  Geometry's Module Fill uses (own local LINK_STATUS_LABELS_RD constant,
+  not a cross-file reference to Geometry's - this file's own poll runs
+  synchronously before SciFi_Geometry.js's script tag even loads). The
+  per-module "Link status (this Feb...)" flag-pill breakdown block
+  (showing those same 5 raw flags a second time, under the ASIC grid)
+  was REMOVED entirely too, not just recolored - it was explaining a
+  linkOk value that no longer exists, and the 5 raw flags are already
+  shown in FEB's own detail row regardless.
+  SciFi_Readout.js bumped v=7->v=8.
+
+3av) Real bug found right after, same day (user: "in redout, gli asics
+     devono andare da 0 a 3 per ogni modulo") - the displayed "ASIC N"
+     text used asic.posInFeb directly (0-7, the real bit index within
+     the whole Feb's 8-bit ASICMask) - correct for the SECOND module of
+     each Feb pair only by accident (0-3), but showed 4-7 for that
+     second module instead of resetting to 0-3. Added a separate
+     posInModule field (= the loop index within that module, always
+     0-3) used ONLY for display text (channelCellTitle, the "not
+     provisioned" label, nameSpan, the enable/disable actionPill's
+     title, the header's select-all title) - every actual ODB read/
+     write and DOM-correlation id (toggleSingleAsic, ASICMask bit shifts,
+     data-asic attributes) still uses posInFeb, unchanged, since that's
+     the real hardware-meaningful index. Geometry's own per-module ASIC
+     numbering was already correct (uses the .map() array index, 0-3,
+     not posInFeb) - this bug was isolated to Readout.
+     SciFi_Readout.js bumped v=8->v=9.
+
+3aw) DAB added to Geometry's detail panel, same day (user: "secondo me
+     vanno inserite nelle tabelle che si aprono nella geometry view")
+--------------------------------------------------------------------
+  DAB (Detector Adaptor Board, 1 per super-module, interfaces the 2 SMBs
+  of one SM to their 1 FEB) - PURELY physical wiring documentation, NO
+  ODB representation at all (topology.txt section 1/6: "DAB is purely
+  passive interconnect... not yet decided whether Dab needs to exist as
+  a class at all - current finding says no"). New GEO_DAB_MAP constant
+  (HARDCODED, real values from topology.txt section 6a's master wiring
+  table, cross-checked against an installation elogbook + the live ODB
+  dump 2026-07-31 - e.g. US SM1=DAB003, DS SM1=DAB005) + geoDabForSm(side,
+  sm) helper. Shown as its own small detail-block ("DAB (physical
+  wiring, not ODB)") at the top of geoFebBlockHtml() - deliberately
+  shown even when no live FEB entry exists yet (feb===null), since DAB
+  doesn't depend on LinksFibre data at all, just side+sm. Function
+  signature changed to geoFebBlockHtml(feb, side, sm); both call sites
+  (geoPopulateSmPanel, geoPopulateModulePanel) updated to pass them.
+  SciFi_Geometry.js bumped v=7->v=8.
+  DROPPED 2026-08-04 (user: "il punto uno dimenticalo completamente") -
+  the readout_mask.py PySequencer-gate part of this gap is no longer
+  tracked; decided not to pursue.
+
+5x) SM dot split into fill(FEB)/ring(LV), then color scheme refined
+    twice more, 2026-08-04 (user: "dobbiamo aggiungere piu info sui SM
+    dot... ring LV e fill FEB" -> "modificando anche HV, Verde On grigio
+    off orsso not enabled" -> "per LV aggiugi arancione not present. per
+    Feb rosso fault arancione non connected. per HV al posto del rosso
+    metti arancione")
+--------------------------------------------------------------------
+  SM health dot was the only dot on the ring that DIDN'T already split
+  fill/ring into two independent signals like Module (fill=link status,
+  ring=HV) and ASIC (fill=enabled, ring=channel summary) do - it used one
+  mixed FEB+LV verdict (geoFebHealth()), hiding which side a problem was
+  actually on. Replaced with geoSmFebStatus(feb) (fill) and geoSmLvStatus
+  (lv) (ring), reusing the same 3-state on/off/not-enabled language as
+  the newly-revised HV coloring.
+  Color scheme went through 2 revisions same day:
+    1) geoHvStatusColor (Module Ring/HV) changed from green/amber/grey
+       (enabled+on/enabled+off/disabled) to green/grey/red (On/Off/Not
+       enabled).
+    2) Red re-revised to ORANGE for administrative "not enabled"/"not
+       connected" states (both Module Ring/HV and the new SM Fill/FEB
+       share this bucket) - red is now reserved for genuine active
+       faults. LV (SM Ring) needed a real 4th state instead of reusing
+       the shared 3-bucket map: geoLvRingColor (on=green, off=grey,
+       not_present=orange NEW, fault=red KEPT) - geoSmLvStatus(lv) now
+       checks the real lv.present field (same hardware Present readback
+       the LV Power tab already gates Channel On/Off on) before on/fault.
+  CSS fix along the way: .geo-sm-health-dot's own `stroke: #fff` had to
+  be removed - it was silently overriding the JS-set stroke color
+  (same reason Module/ASIC dots' CSS never sets a stroke color, only
+  stroke-width) - without this the new LV ring color would never have
+  shown at all.
+  Legend updated to match at every step: "Module Ring (HV)" and "SM Fill
+  (FEB)" both read On/Off/Not enabled(orange); "SM Ring (LV)" reads
+  On/Off/Not present(orange, new)/Fault(red).
+  SciFi_main.css bumped v=62->v=63, SciFi_Geometry.js bumped v=5->v=7.
+
+3ao) TDK fault/interlock checks extended to also check Output On, same
+     day (user: "tutte le tabelle che controllano fault e interlock di
+     tdk devono controllare anche se e on o off il canale, come fa power
+     distribution con devices")
+--------------------------------------------------------------------
+  Every place that already checks TDK Fault Register/Interlock Trigger
+  (FEB tab's checkSharedEquipmentHealth() in SciFi_Utils.js; LV tab's own
+  dcdcCrateMainsHealth() in SciFi_PowerLV.js) checked Enabled + Fault +
+  Interlock but never the channel's own on/off state - unlike the SAME
+  functions' own PowerDist part, which already checks pdOn[ch] &&
+  pdGood[ch] together. Added a new tdkOutputOn param to both functions
+  (real field, confirmed plain boolean not hex-string via live RPC:
+  TDKStaging/Settings/Output On = [true,true,true,true,false,false]) -
+  reports "<name> (TDK ch<i>): Output Off" alongside the existing Fault/
+  Interlock lines when an Enabled channel's Output On is false. Both
+  call sites (SciFi_PowerFEB.js, SciFi_PowerLV.js) updated to fetch
+  Output On in their own mjsonrpc query and pass it through.
+  SciFi_Utils.js bumped v=18->v=19, SciFi_PowerFEB.js v=20->v=21,
+  SciFi_PowerLV.js v=34->v=35.
+
+3ap) Power distribution "Device on OFF" message now names the affected
+     channels, same day (user: "slow control controlla solo alcuni
+     canali mentre scifi e tile altri. quindi quando uno dei due e
+     spento e bene mostrare quali canali va a toccare")
+--------------------------------------------------------------------
+  "SciFi & Tile" (device 0) and "Slow Control" (device 3) each own a
+  DIFFERENT subset of pd-supply-table's 32 channels (SMB/LDO role vs
+  crate-mains/HV/weather roles) - the old message just named the device
+  ("<name> Device on is OFF..."), leaving it unclear which specific
+  rows below were actually affected. Now builds one message per off
+  device, listing its own real channel display names from pdRows
+  (Math.floor(r.ch/32) === deviceIndex), e.g. "SciFi & Tile Device on
+  is OFF - affects <ch1>, <ch2>, ... (real power regardless of their
+  own Output On)".
+  SciFi_PowerSupply.js bumped v=33->v=34.
+
+3aq) Message formatting fixed + Device-on check extended to LV/HV, same
+     day (user: "i messaggi mettili come gli altri con ogni info a
+     capo. ora... per le sotto tab che controllano power distribution
+     ora devono controllare anche se e on il device corrispondente")
+--------------------------------------------------------------------
+  1) 3ap's new "Device on is OFF" message was one comma-joined line per
+     DEVICE ("... affects ch1, ch2, ch3..."); changed to one line per
+     AFFECTED CHANNEL instead (flatMap), matching every other multi-item
+     message on this page's own convention.
+  2) HV's hvPowerDistHealth() and LV's dcdcCrateMainsHealth() (both
+     already check their PowerDistStaging dependency's Enabled + Output
+     On/Power good per-channel) were missing the SAME Device-on check
+     Supply's own pd-supply-table just got (3ap) - a device can be
+     Enabled but still switched off at the device level, zeroing every
+     channel on it regardless of their own Output On. Added pdDeviceOn
+     as a new param to both functions, checked ONCE per group/crate-
+     mains-block (not once per channel - same dedup reasoning as the
+     existing Enabled check) before falling through to the per-channel
+     loop. Both tabs' own mjsonrpc queries updated to fetch "Device on".
+  SciFi_PowerSupply.js bumped v=34->v=35, SciFi_PowerHV.js v=29->v=30,
+  SciFi_PowerLV.js v=35->v=36.
+
+3ar) Real bug found right after, same day (user: "non li vedo in LV") -
+     3aq's new PD Device-on check in dcdcCrateMainsHealth() only pushed
+     into the `problems` array (shown on dcdc-crate-table), never into
+     `tdkProblems` (the subset lv-table's own banner actually reads) -
+     confirmed live via RPC that PowerDistStaging devices 0 ("SciFi &
+     Tile") AND 3 ("Slow Control") are BOTH currently Device on=false,
+     Enabled=true, so the message genuinely should have been showing on
+     lv-table and wasn't. Fixed: now pushed into both arrays, matching
+     how the existing TDK fault/interlock/output-off checks right above
+     it already do.
+     SciFi_PowerLV.js bumped v=36->v=37.
+
+3as) Real device name used instead of "device N", same day (user:
+     "cambia PowerDistStaging device 3 con il nome giusto sia qui che
+     in crate") - both dcdcCrateMainsHealth() (LV, feeds lv-table AND
+     dcdc-crate-table since it's the same function) and
+     hvPowerDistHealth() (HV) now take a new pdDeviceNames param
+     (PowerDistStaging/Settings/Device Names, added to both tabs' own
+     mjsonrpc query) and use pdDeviceNames[device] (e.g. "Slow Control"
+     for device 3, confirmed live) instead of the placeholder "device N"
+     in both the Device-on message and (HV only, for consistency) the
+     existing "not Enabled" message.
+     SciFi_PowerLV.js bumped v=37->v=38, SciFi_PowerHV.js v=30->v=31.
+
+3at) Device-on check extended to the SMB/LDO group too, same day (user:
+     "LV controlla anche scifi e tile device") - pdSmbLdoProblems() (the
+     PER-CHANNEL PowerDist check for lv-table's own SMB_/LDO_ rows,
+     device 0 "SciFi & Tile") had the same gap dcdcCrateMainsHealth's
+     crate-mains part (device 3) had before 3aq: per-channel Output On/
+     Power good only, no device-level Device-on gate. Added the same
+     check-once-for-the-group pattern (Math.floor(PD_SMB_LDO[0]/32) - all
+     SMB/LDO indices share device 0), with the real device name via the
+     same new pdDeviceNames param. Call site updated to pass pdDeviceOn/
+     pdDeviceNames through (both already fetched in this poll from 3aq/
+     3as, no new ODB read needed).
+     SciFi_PowerLV.js bumped v=38->v=39.
+
+3au) Crate-mains/Slow Control check REMOVED from LV entirely, same day
+     (user: "lv non deve controllare slow control") - PD_CRATE_MAINS
+     (device 3, "Slow Control") was a pre-existing check inside
+     dcdcCrateMainsHealth() (predates today, 2026-08-03's own "lascia
+     Crate OFF" call), just extended today (3aq/3as) with the Device-on
+     layer that first surfaced "Slow Control" by its real name in
+     messages. Removed the WHOLE PD_CRATE_MAINS block (not just today's
+     addition) - Slow Control is generic shared infrastructure, not
+     SciFi-specific, same "only care about our own equipment" boundary
+     FEB's checkSharedEquipmentHealth() already draws for TDK ("FE
+     Crates" only, not "SciFi & Tile"). Device 0 "SciFi & Tile" stays
+     checked (pdSmbLdoProblems, 3at) - confirmed still wanted ("LV
+     controlla anche scifi e tile device"). dcdcCrateMainsHealth()'s
+     signature dropped the now-unused pdNames/pdOn/pdGood/pdDeviceOn/
+     pdDeviceNames params (still used elsewhere for pdSmbLdoProblems's
+     own separate call) - the function is now TDK-only (SciFi & Tile TDK
+     channel Fault/Interlock/Output Off), affects both dcdc-crate-table
+     and lv-table's own banners since they share this one function.
+     SciFi_PowerLV.js bumped v=39->v=40.
+
+3ay) uTP cable ID added alongside DAB, same day (user: "aggiungi anche i
+     muTP se li hai") - same master wiring table (topology.txt 6a), same
+     hardcoded-only reasoning as GEO_DAB_MAP (no ODB source). New
+     GEO_UTP_MAP + geoUtpForSm(side, sm), shown as a second geoKv() row
+     in the same DAB detail-block.
+     SciFi_Geometry.js bumped v=8->v=9.
+
+3az) Geometry detail-panel reorganization, same day (user: "facciamo un
+     po di ordine..." - 4-part request, confirmed understanding before
+     proceeding, first 3 parts implemented, 4th started as a first draft)
+--------------------------------------------------------------------
+  1) FEB block gains "Fault flags" (the 5 real "FEB datapath status"
+     flags - PLL locked/RX ready/DPA locked/Buffer full/Frame desync -
+     same fields SciFi_PowerFEB.js's own detail row shows, and the same
+     ones SciFi_Readout.js used to aggregate into its old linkOk before
+     today's LinkStatus switch removed that block). Shown LV-style
+     (flag-pill-row via geoFlagPillsHtml), newly queried in Geometry
+     (wasn't fetched there before). Order within "Power · FEB": LinksFibre
+     kv -> Fault flags -> DAB (DAB's own "(physical wiring, not ODB)"
+     subtitle dropped, just "DAB" now).
+  2) Detail-panel block order changed to inside-out-of-the-ring (user's
+     own framing): Module/Super-module header -> DCDC crate (moved up
+     from after HV) -> Power·FEB -> Power·LV -> Power·HV -> Readout.
+     SciFi_main.html reordered for both US/DS copies (a leftover
+     duplicate "Power · DCDC crate" block + duplicate geo-d-dcdc-ds id
+     from the move was found and removed too).
+  3) DCDC crate block recolored: green=on, grey=off, orange=not enabled
+     (new geoDcdcCrateStatus(lv) helper, shown as a colored geo-sw dot +
+     label in a new "Status" row). Red/fault deliberately NOT added -
+     checked the real ODB tree live (/Equipment/DCDCCrates/Settings) and
+     confirmed there is no fault READBACK field at all, "Clear Fault" is
+     write-only (mdev_pdcc.cxx) with nothing reporting current fault
+     state - flagged as "Fault: — (no live ODB source)" text instead of
+     a fabricated color, same treatment as VBR's own gap.
+  4) NEW ring element STARTED (user: "comincia a costruirlo poi ne
+     parliamo" - explicitly a first draft, not final): a hexagon at the
+     dead center of each ring (radius 62, inside the SM health dots which
+     start ~128 - i.e. "before" the whole Module/ASIC dot chain, per the
+     user's own framing), 4 of its 6 sides colored per that side's 4 real
+     DCDCCrates crates (same geoDcdcCrateStatus colors), crate index
+     labelled just outside each colored side, clickable (geoSelectCrate()
+     - currently just console.logs, no dedicated crate detail panel
+     exists yet, exact interaction still open per "poi ne parliamo").
+     New geoRenderCrateHexagon(svg, cx, cy, crates) + CSS .geo-crate-hex-
+     side/.geo-crate-hex-label (stroke color set per-instance in JS, same
+     reasoning every other ring dot's own CSS already follows).
+  SciFi_main.css bumped v=63->v=64, SciFi_Geometry.js bumped v=9->v=10.
+
+3ba) Five-part follow-up, same day (user: "mancano le modifiche delle
+     FEB nel ring. rosso se fault... aggiugi nel menu della geometry il
+     pallino colorato, per tutti quelli che hanno questa feature. i dcdc
+     crate togli la entry fault. aggiungi nella legenda l'esagono...
+     ogni lato deve di fronte ad un SM, non il vertice, fallo piu
+     grande e i numeri falli interni")
+--------------------------------------------------------------------
+  1) SM Fill (FEB) ring color: geoSmFebStatus(feb) now checks the new
+     linkFlags first (added earlier today for the detail panel's own
+     Fault flags block, but never wired into the ring color) - any bad
+     flag -> "fault" (new red key added to geoHvStatusColor), overriding
+     on/off/not-connected. Legend gained a 4th "Fault" red entry.
+  2) Colored geo-sw dots (same style the DCDC crate Status row
+     introduced) added to every other clear on/off-style field: Link
+     status (4-color, geoLinkColor), Crate link, FEB power (FEB block);
+     Present, On (LV block); Enabled, Output on (HV block). New geoDot()
+     helper.
+  3) DCDC crate's "Fault: — (no live ODB source)" row REMOVED entirely -
+     no live data, so no placeholder shown either.
+  4) New legend entry "Center hexagon (DCDC crate)" - same 3-color
+     on/off/not-enabled language.
+  5) Hexagon geometry fixed: vertex angle formula "90-i*60" -> "120-i*60"
+     so each SIDE's own midpoint lands on an SM's real angle instead of
+     a vertex landing there (sides used to be offset 30 deg from every
+     SM). Radius 62->95 ("fallo piu grande"). Crate-number labels moved
+     from outside the hexagon (1.35x) to inside (0.62x, "i numeri falli
+     interni").
+  SciFi_main.css unchanged this round, SciFi_Geometry.js bumped
+  v=10->v=11.
+
+3bb) ASIC dots + real crate-to-SM association for the hexagon, same day
+     (user: "aggiugngy i pallini colorati anche agli asics. per i crate,
+     la numerazione prendila da lv power dcdc crates. ogni lato e
+     associato ad un sm quindi il numero deve essere quello a cui e
+     collegato il crate" + mid-turn: "cliccando sul lato crate si apre
+     solo in kdule detail il dcdc crate ovviamente")
+--------------------------------------------------------------------
+  1) Per-ASIC rows in the Readout block gained the same geoDot() colored
+     dot as everything else (green=enabled, red=disabled, grey=not
+     provisioned - same language as the ASIC Fill legend).
+  2) REAL BUG found and fixed: the hexagon's crates array was built as a
+     flat 0-3 index (side i = crate i), an arbitrary assignment that
+     didn't reflect which crate actually powers that SM's own SMB_/LDO_
+     channels. Worse, even side INDEX itself was misaligned - side i is
+     drawn at the same angle as pairIndex i's own SM arc, but pairIndex
+     i is NOT the same as SM number i (the US/DS sequence arrays reorder
+     them - US pairIndex 0 is SM1, not SM0). Rewrote buildCratesForSide()
+     to index by pairIndex (matching the SM-arc loop's own p1=pairIndex*2
+     exactly) and pull each SM's REAL lv.crateIndex/crateName (already
+     resolved per-module, same data geoDcdcBlockHtml reads) instead of a
+     synthetic index.
+  3) Crate number label switched from raw crateIndex to the actual
+     DCDCCrates Device Name's own number ("DCDC_C_3" -> "3", regex
+     /_(\d+)$/) - same number lv-table's own DCDC crates rows show.
+  4) Hexagon side click now calls geoSelectSm(side, crate.sm) - opens
+     that SM's own module detail panel (same as clicking its SM health
+     dot), which now shows the CORRECT real crate for that SM in the
+     DCDC crate block. Placeholder console.log geoSelectCrate() removed
+     (dead code once the real handler replaced it).
+  SciFi_Geometry.js bumped v=11->v=12.
+
+3bc) Real bug found right after, same day (user: "il click sul crate e
+     buggato") - geoRenderCrateHexagon's own click handler called
+     geoSelectSm(side, crate.sm), but a local `const side = geoSvgEl(
+     "line", ...)` (the hexagon side element itself) SHADOWED the outer
+     ringSide function parameter of the same name - the click was
+     passing the <line> DOM element as the side argument instead of
+     "US"/"DS", breaking geoSideSuffix() and everything downstream.
+     Renamed the outer parameter to ringSide and the local line element
+     to sideEl to remove the collision entirely, not just patch the one
+     call site.
+     SciFi_Geometry.js bumped v=12->v=13.
+
+3bd) Hexagon thinned, same day (user: "assottiglia un po l'esagono") -
+     .geo-crate-hex-side stroke-width 10->6. (User's earlier ask for
+     clicking a crate side to show ONLY the DCDC crate block was dropped
+     mid-request - "va bene cosi grazie" - current behavior, opening the
+     full SM module detail panel, stays as-is.)
+     SciFi_main.css bumped v=64->v=65.
+
+3be) Colored dots added to Module summary too, same day (user: "i asics
+     aggiugi pallino per canali nel menu geometry") - "ASIC active" and
+     "Channels unmasked" in the Readout block's Module summary gained
+     the same all/some/none -> green/amber/red geoDot(), same language
+     geoAsicChannelColor() already uses for the ring's own ASIC dot
+     stroke, applied to the module-wide totals (4/4 and 128/128) instead
+     of per-ASIC.
+     SciFi_Geometry.js bumped v=13->v=14.
+
+3bf) DCDC crate block gained its own "Enabled" dot, same day (user:
+     "sotto dcdc crate aggiugi anche pallino con enabled") - separate
+     from the existing combined "Status" (On/Off/Not enabled), a plain
+     yes/no green/grey dot for lv.crateEnabled on its own row.
+     SciFi_Geometry.js bumped v=14->v=15.
+
+3bg) Hexagon crate-number labels nudged, same day (user: "avvicina i
+     numeri ai lati del'esagono") - inward-pull scale 0.62->0.85, closer
+     to the side line itself while still staying inside the hexagon.
+     SciFi_Geometry.js bumped v=15->v=16.
+
+3bh) Hexagon -> circle, 2026-08-04 (user: "al posto dell'esagono fai un
+     cerchio dividilo in quattro parti. ogni parte corrisponde ad un
+     crate... la numerazione e, partendo dall'alto il primo segmento
+     dopo il primo supermodule in ordine orario... 6 7 8 5 DS e 2 3 4 1.
+     ... i questi segmenti di cerchio non farli uniti, lasciali un po'
+     divisi che seguono il cerchio. quando clicco su una sezione mi si
+     apre solo il crate nel menu e alle info aggiungi che feb contiene").
+     This also answers the earlier OPEN QUESTION (2026-08-04: "qui
+     mostro solo gli LV host, ma i crate alimentano anche feb") - the
+     user pointed at real per-module FEB data as the source, not a new
+     DCDCCrates ODB field, so the "which FEB" answer is built by
+     cross-referencing already-resolved module data, not guessed.
+  1) geoRenderCrateHexagon (6 sides, one per SM, real crate re-derived
+     per SM) REPLACED by geoRenderCrateRing (4 arc-segment donut, one
+     per real DCDCCrates crate) - drawn as curved SVG path arcs (not
+     straight hexagon lines) with an 8deg angular gap between segments
+     so they read as separate pieces, not a solid ring. Crate-to-
+     quadrant layout is now a FIXED per-side array (GEO_CRATE_QUADRANTS
+     = {US:[2,3,4,1], DS:[6,7,8,5]}), quadrant 0 starting at the segment
+     immediately clockwise of the top (pairIndex 0) supermodule - not
+     re-derived per SM anymore, since a crate now maps to a whole fixed
+     ring quadrant rather than one specific SM's own resolved lv.
+  2) New geoCrateSummaries (built every poll in updateGeometryTab, keyed
+     by real crate name "DCDC_C_N") - one entry per DCDCCrates device,
+     carrying crateEnabled/crateOn (status), hosts (the SMB_/LDO_
+     channel names, same as before), AND now modules (the real SciFi
+     modules/FEBs that crate powers, cross-referenced from each already-
+     resolved module's own .lv - not the ODB, since no "FEB"-named
+     DCDCCrates channel exists at all, confirmed live).
+  3) geoDcdcBlockHtml(lv) -> geoDcdcBlockHtml(crateName) - now the
+     single source of truth for the DCDC crate block, looked up via
+     geoCrateSummaries, reused unchanged by the per-SM/module panels
+     (via lv.crateName) AND the new crate-only panel. Gained a new
+     "FEBs" row (the modules list above) alongside the existing "Hosts"
+     row.
+  4) New selection kind "crate" (geoSelectCrate/geoPopulateCratePanel) -
+     clicking a ring segment now shows ONLY the DCDC crate block, not
+     the full SM panel. geoSetBlockVisibility(side, showRest) hides/
+     shows the Power-FEB/Power-LV/Power-HV/Readout block WRAPPERS
+     (new geo-block-feb/power/hv/readout-us/ds divs in SciFi_main.html,
+     added because each block's static label lives outside its JS-
+     filled content div - hiding just the content div would've left an
+     orphan label with nothing under it).
+  5) Placeholder text ("click a SM dot, a Module dot, or an ASIC dot on
+     the US/DS ring") gained ", or a crate segment". Legend renamed
+     "Center hexagon (DCDC crate)" -> "Center ring (DCDC crate)".
+  6) Selection highlight (geoApplySelectionHighlight) extended to also
+     highlight the selected crate ring segment (.geo-crate-ring-segment
+     .selected, thicker stroke) - same "same scheme" interaction pattern
+     as the module/SM dots already had.
+     SciFi_Geometry.js bumped v=16->v=17. SciFi_main.css bumped
+     v=65->v=66 (.geo-crate-hex-side/.geo-crate-hex-label rules replaced
+     by .geo-crate-ring-segment/.geo-crate-ring-segment.selected/
+     .geo-crate-ring-label). SciFi_main.html: legend text, placeholder
+     text, geo-block-*-us/ds wrapper divs (no own version).
+
+3bi) Crate ring thinned, same day (user: "assottiglia le righe dei
+     crate") - .geo-crate-ring-segment stroke-width 16->8, .selected
+     20->11 (same ratio kept).
+     SciFi_main.css bumped v=66->v=67.
+
+3bj) Two fixes, same day (user: "quando clicco lascia le altre
+     intestazioni tipo POWER . HV select a module for this info READOUT
+     e anche le febs sono sballate quelle che mostri. guarda nella
+     tabella feb power, li sono indicate giuste"):
+  1) Crate-only panel (3bh's geoPopulateCratePanel/geoSetBlockVisibility)
+     REVERTED from hiding the Power-FEB/LV/HV/Readout block wrappers
+     entirely back to keeping their headers always visible and just
+     filling the content with the existing "select a module for this
+     info" placeholder note (same one geoPopulateSmPanel already used
+     for HV/Readout) - geoSetBlockVisibility deleted, geo-block-*-us/ds
+     wrapper divs in SciFi_main.html removed (dead markup once unused).
+  2) REAL BUG fixed: the DCDC crate block's new "FEBs" list (3bh) was
+     built by iterating geoAllModules (24 entries, 2 per SM sharing the
+     same lv row) and pushing febName once per MODULE, not once per SM -
+     every crate's FEBs list showed each SM's name twice, adjacent
+     (US/DS sequence arrays keep a pair's 2 positions next to each
+     other) - looked garbled. Cross-checked live ODB (LinksFibre+
+     FEBCrates+DCDCCrates via mjsonrpc db_get_values) to confirm the
+     underlying per-SM DCDC crate resolution itself was correct (matches
+     real SMB_<side>_<n>-<n+1> -> crateIndex math exactly) - only the
+     push was duplicated, not the crate assignment. Fixed by deduping on
+     (side, sm) before pushing.
+     SciFi_Geometry.js bumped v=17->v=18. SciFi_main.html: geo-block-*
+     wrapper divs removed (no own version).
+
+3bk) Two fixes, same day (user: "turn off feb non si colora di grigio e
+     rimane fault e anche POWER . FEB select a module for this info
+     POWER . LV select a module for this info select a super module non
+     module"):
+  1) REAL BUG fixed: geoSmFebStatus() checked linkFlags-derived fault
+     BEFORE the power-off check, so a powered-OFF FEB (whose datapath
+     flags - PLL locked/RX ready/DPA locked/etc - are naturally all
+     "bad" with no power applied, that's expected, not a fault) showed
+     red "fault" on the SM Fill instead of grey "off". Reordered: power-
+     off now checked first, fault only evaluated when feb.power is true.
+  2) geoPopulateCratePanel's placeholder note ("select a module for this
+     info", reused for all 4 non-DCDC blocks) split into two wordings -
+     FEB/LV are keyed by SUPER-module (one FEB/lv row shared by both a
+     SM's modules) so they now say "select a super module for this
+     info"; HV/Readout genuinely need a specific module, unchanged.
+     SciFi_Geometry.js bumped v=18->v=19.
+
+3bl) Power Distribution: added the "FEC" device (2026-08-05, user:
+     "dobbiamo aggiungere un nuovo device FEC e i canali US FEC e DS FEC"
+     -> confirmed as PowerDistStaging device 1, which ALREADY exists in
+     ODB - the page just never touched it - discussed and restated back
+     to the user before implementing, per this session's own "dimmi se
+     hai capito" convention):
+  1) Real channels found live: device 1's 32-channel block has only 8
+     named ones - "US FEC1".."US FEC4" (idx 32-35), "DS FEC5".."DS FEC8"
+     (idx 48-51) - the rest are "ch N"/"Not used N" placeholders. Cross-
+     checked against topology.txt's FEBCrates crate numbers (crate+1):
+     US uses crates {0,2} -> FEC1/FEC3, DS uses {5,7} -> FEC6/FEC8 -
+     confirms these are the mains-power channels for the physical crates
+     housing the FEBs (same "crate" the FEB tab's "Crate . slot" field
+     already shows via FEBCrates, a different equipment/numbering than
+     DCDCCrates).
+  2) SciFi_ServiceStatus.js: new `PD_FEC = [32,33,34,35,48,49,50,51]`
+     constant, alongside the existing PD_CRATE_MAINS/PD_SMB_LDO/PD_HV/
+     PD_WEATHER (same file, reused by other tabs the same way those
+     already are).
+  3) SciFi_PowerSupply.js (Supply tab): `PD_DEVICES_TOUCHED` gained
+     device 1 - the FEC device row, its 8 real channels, and their
+     "Device on is OFF"/not-Enabled banner messages now appear
+     automatically (both were already generic over PD_DEVICES_TOUCHED,
+     no per-device special-casing needed there). Added a new "FEC crate
+     mains" role (PD_ROLE_ORDER, new PD_FEC group in the row build) and
+     a matching "Turn on/off all <side> FEC" button next to the existing
+     SMB/DCDC ones. The old hardcoded "Slow Control device" sharedNote
+     text (previously assumed every non-SMB/LDO role/device was device 3)
+     was wrong for device 1 - replaced with two lookup maps,
+     PD_ROLE_SHARED_NOTE (per row role) and PD_DEVICE_SHARED_NOTE (per
+     device row), so FEC gets its own correct wording.
+  4) SciFi_PowerFEB.js: per user's explicit correction, FEB's own
+     precondition check should NOT depend on DCDC crates (those power
+     LV/SMB, not FEB) - it should depend on these new FEC PowerDist
+     channels instead, same pattern HV's own hvPowerDistHealth already
+     uses (device Enabled + Device on, then per-channel Output On +
+     Power good). New `febPowerDistFecHealth(side, ...)` added (mirrors
+     hvPowerDistHealth almost exactly, generalized to 4 channels per
+     side instead of 2 named ones). `checkSharedEquipmentHealth()` (in
+     SciFi_Utils.js, only ever called by FEB - confirmed via grep, so
+     safe to change directly) had its DCDC-crate check REMOVED, TDK "FE
+     Crates" check kept as-is; `DCDC_HEALTH_PATH` constant deleted too
+     (became unused after this). FEB's two per-side checks (TDK + new
+     PD-FEC) are now combined into one `problems` list per side, same
+     external shape (`febSharedEquipmentHealthBySide[side].problems`)
+     the message row already consumed - no other call site needed
+     changes.
+     SciFi_ServiceStatus.js bumped v=5->v=6. SciFi_Utils.js bumped
+     v=19->v=20. SciFi_PowerFEB.js bumped v=21->v=22. SciFi_PowerSupply.js
+     bumped v=35->v=36.
+
+3bm) Power Distribution channel table reorganized by DEVICE, 2026-08-05
+     (user: "organizzare la tabella dei canali in base ai device che li
+     controlla" - discussed the tradeoff first: device-level sections
+     with side+role as before inside each, confirmed before implementing)
+--------------------------------------------------------------------
+  pd-supply-table went from side-then-role grouping (US/DS header, with
+  fixed SMB/DCDC/FEC toggle buttons regardless of which device a role
+  actually belongs to) to device-then-side-then-role: a new full-width
+  device header row (device name + Enabled/Device-on status pills,
+  pdDeviceHeaderRow) appears whenever the device changes, then the
+  existing side header inside it, now scoped to just that device's own
+  rows (so eligible/toggle buttons never leak across devices).
+  pdSideHeaderRow's per-role buttons are no longer a fixed hardcoded set
+  (SMB/DCDC/FEC always shown) - they're now generated dynamically from
+  whichever roles are actually present for that device+side, and ONLY
+  shown when a device has more than one role (SciFi & Tile has only
+  SMB/LDO, FEC has only FEC crate mains - a role-specific button there
+  would just duplicate the "all" button; Slow Control has three roles -
+  crate mains/HV/weather - so it gets three, DCDC+HV+Weather, HV and
+  Weather buttons that didn't exist before this reorg). New
+  PD_ROLE_SHORT_LABEL lookup for the button text. pdRows gained
+  device/deviceName/deviceOn fields; sort is now device (in
+  PD_DEVICES_TOUCHED order) -> side -> role -> channel. New
+  .device-header CSS rule (distinct shade from .side-header, so the two
+  header levels read as a hierarchy, not the same thing twice).
+  Simulated the full sort/group against live ODB data before calling it
+  done - 3 device sections (SciFi & Tile, FEC, Slow Control), correct
+  roles per device, matches expectation exactly.
+  SciFi_PowerSupply.js bumped v=36->v=37. SciFi_main.css bumped
+  v=67->v=68.
+
+3bn) Geometry: FEB info removed from DCDC crate, Ribbon/SMB/Fibre added,
+     DAB/uTP/HV data corrected with a new user-supplied wiring table,
+     2026-08-05 ("togli le info feb dai dcdc crate e poi dobbiamo
+     aggiornare le info dentro i moduli" + a full ribbon/uTP/SM/module/
+     SMB/DAB/FEB/HV table, all 24 modules - parsed and cross-checked
+     against topology.txt before touching anything, 3 discrepancies
+     found and asked back: US SM3 fibre F6 vs F0 (user: "aggiorna con
+     questi dati" -> use F0), US SM5 module 11 HV showing CH1 twice
+     (user: "ch2" -> typo, is CH2), DS SM4's "(*)" mark on Ribbon top/
+     bottom (user: "lasciala stare" -> left unexplained, no special
+     handling added)):
+  1) FEBs row removed from geoDcdcBlockHtml (added just yesterday, 3bh/
+     3bn's own predecessor) - the `crate.modules` tracking that fed it
+     (built in updateGeometryTab) removed too, now unused.
+  2) GEO_DAB_MAP/GEO_UTP_MAP gained SM0 entries for BOTH sides (US
+     DAB008/uTP1101, DS DAB017/uTP1010) - topology.txt's 2026-07-31
+     master table predates SM0's installation and said "not installed";
+     SM5's DAB number normalized to the same 3-digit zero-padded format
+     as every other entry (DAB06->DAB006, DAB09->DAB009 - same board,
+     just typed shorter this time, not a real conflict).
+  3) New GEO_FIBRE_MAP (per SM, like DAB/uTP - "Fibre" is a physical
+     connector number topology.txt section 6b explicitly says is NOT
+     the same as FEBSlot and has no ODB field at all).
+  4) New GEO_RIBBON_MAP (per SM + moduleOfPair 0/1, side-independent -
+     confirmed identical between US/DS for the same SM index, mirror-
+     symmetric ribbon slots) and GEO_SMB_MAP (per side + SM +
+     moduleOfPair - the physical SMB BOARD's own serial number, NOT to
+     be confused with DCDCCrates' "SMB_<side>_<n>-<n+1>" LV POWER
+     CHANNEL name, which covers both of an SM's 2 SMB boards together -
+     same name, two different real things, flagged explicitly in code).
+  5) geoFebBlockHtml gained a 4th param, moduleOfPair (0/1/undefined) -
+     undefined when called from the SM-level panel (shows BOTH modules'
+     Ribbon/SMB side by side, since DAB/uTP/Fibre are one-per-SM but
+     Ribbon/SMB are one-per-MODULE and there's no single module selected
+     yet), a specific 0/1 from the module-level panel (shows just that
+     module's own values). geoPopulateModulePanel's call site now passes
+     m.module % 2.
+     SciFi_Geometry.js bumped v=19->v=21 (two edits, FEB-removal then
+     the wiring-table update).
+
+3bo) Geometry: the detail-block section title "DAB" renamed to "Physical
+     wiring", 2026-08-05 (user: "la sezione non chiamarla DAB in
+     geometry, chiamala in un altro modo") - the block now holds DAB,
+     uTP, Fibre, Ribbon and SMB (3bn), so "DAB" alone was no longer an
+     accurate title. The individual "DAB" kv row label inside it is
+     unchanged (that one still correctly names just the DAB value).
+     SciFi_Geometry.js bumped v=21->v=22.
+
+3bp) Temperature review, 2026-08-05 - discussed with the user what
+     temperature readings exist across SciFi (SFFE per-FEB, DCDCCrates
+     per-channel, SCFC per-crate, SFTS per-crate roll-up, ASIC - none,
+     SiPM chiller - not SciFi-specific) before touching any code. User
+     decided: leave ASIC and the chiller aside, add the rest to Geometry
+     and to their respective existing tables, and leave the SI1/SI2
+     "SiPM?" question alone entirely (neither confirmed nor pursued
+     further - no firmware source found locally that defines them).
+  1) SciFi_PowerFEB.js: new "Crate Av/Max FEB temp" row (LinksFibre/
+     Variables/SFTS, 2 values per FEBCrates crate) added next to the
+     existing CC temp/FEB temp row - was read nowhere on the page before
+     this. SFFE's Arria/MAX/ext Arria/DCDC were already shown here, not
+     touched.
+  2) SciFi_Geometry.js: FEB block gained the same "Crate Av/Max FEB
+     temp" row, plus a new "FEB temp (Arria/MAX/ext Arria/DCDC)" row
+     (SFFE) - neither existed in Geometry before (SI1/SI2 deliberately
+     NOT added, per the user's "SI dimenticane"). DCDCCrates per-channel
+     temperature and SCFC's crate rails/CC temp were already shown here
+     too, not touched.
+     No comments added to either file, per explicit instruction.
+     SciFi_PowerFEB.js bumped v=22->v=23. SciFi_Geometry.js bumped
+     v=22->v=23.
+
+3bq) Geometry: new SMB temperature indicator on the ring, 2026-08-05
+     (Marius asked the user for a per-SM temperature indicator; user
+     also asked about FEB but then said "FEB lascia stare, solo SMB" -
+     FEB temp deliberately NOT added). Discussed first: no invented
+     color threshold on the raw DCDCCrates Temperature value (no
+     verified "normal" range documented anywhere) - used the real
+     "Over Temperature" boolean flag instead (already one of lv.flags)
+     for the color, plus the actual number as text.
+  1) New small dot + number per SM, placed between the crate ring and
+     the existing SM health dot (same aMid angle) - green if not Over
+     Temperature, red if Over Temperature, grey + no number if there is
+     no reading at all.
+  2) REAL display bug avoided before it shipped: DCDCCrates/Variables/
+     Temperature reads -999 for every one of its 128 channels right now
+     (confirmed live - a sentinel for "no reading", not a real value) -
+     without a guard this would have shown "-999°" next to every SM.
+     Added a `lv.temperature > -900` guard before coloring/printing (this
+     new indicator only - the existing detail-panel "Temperature" kv row
+     had the same -999-passthrough gap already, pre-existing, not
+     touched here).
+     No comments added, per the same standing instruction.
+     SciFi_Geometry.js bumped v=23->v=25 (label rename then this).
+     SciFi_main.css bumped v=68->v=69. SciFi_main.html: new legend row
+     "SM Temp (SMB)" (no own version).
+
+3br) SMB temp indicator's number removed, 2026-08-05 (user: "togli il
+     numero, aggiungilo alla legenda") - just the colored dot remains;
+     the "SM Temp (SMB): OK/Over Temperature" legend row already covers
+     it (added in 3bq, nothing further needed there). Now-unused
+     .geo-sm-temp-num CSS rule removed too.
+     SciFi_Geometry.js bumped v=25->v=26. SciFi_main.css bumped
+     v=69->v=70.
+
+3bs) SMB temp dot also added to the detail-panel LV block, 2026-08-05
+     (user: "aggiungi il pallino anche nel menu estendibile") - the ring
+     dot's color logic (3bq/3br) factored out into geoLvTempColor(lv),
+     reused by both renderGeoRing and geoLvBlockHtml's own "Temperature"
+     kv row (geoDot), so ring and panel always agree.
+     SciFi_Geometry.js bumped v=26->v=27.
+
+3bu) CC Temp (crate controller) check added to Geometry, 2026-08-05
+     (user asked to double-check "sicuro che da nessuna parte c'e un
+     check sulla feb temp?" - re-audited febcrate_control/febcratefe.cpp
+     directly: confirmed a REAL threshold check exists, but on the CRATE
+     CONTROLLER'S own temperature - SCFC's CC Temperature - not on the
+     per-FEB SFFE readings, which remain unchecked anywhere. WARNING/
+     ALARM/SWITCHOFF_FEBCrate_TemperatureThreshold = 60/65/70 C, already
+     used by SciFi_PowerFEB.js's ccTempHtml - same thresholds reused
+     here, not reinvented):
+  1) New geoCcTempColor(feb) (green &lt;60, orange 60-65, red &gt;=65,
+     grey if no reading) added to Geometry.
+  2) Ring layout changed (user: "il pallino di ora va spostato sopra il
+     numero del SM e al posto di questo tu possa aggiungere questo
+     indicatore") - the existing SMB temp dot moved OUTWARD past the SM
+     number (rSmLabel+12, between the number and the SM arc); the CC
+     temp dot now takes over the SMB dot's old inner slot (healthR-16,
+     between the crate ring and the SM health dot).
+  3) Detail panel: "Crate rails/temp" row's CC value wrapped in the same
+     geoDot color, reusing geoCcTempColor - ring and panel agree, same
+     pattern as 3bs's geoLvTempColor.
+  4) New "CC Temp (crate controller)" legend row (green/orange/red/grey,
+     with the real 60/65 thresholds spelled out).
+     No comments added, per the standing instruction.
+     SciFi_Geometry.js bumped v=27->v=28.
+
+3bv) SMB temp dot nudged further out, 2026-08-05 (user: "sposta il
+     pallino del smb leggermente piu lontano") - smbTempR rSmLabel+12 ->
+     rSmLabel+18, still inside the SM arc (rSmArc=170).
+     SciFi_Geometry.js bumped v=28->v=29.
+
+3bw) SMB temp dot nudged further out again, 2026-08-05 (user: "muovi
+     leggermente il pallino della temp sm" -> "lontano") - smbTempR
+     rSmLabel+18 -> rSmLabel+26, now just outside the SM arc (rSmArc=170).
+     SciFi_Geometry.js bumped v=29->v=30.
+
+3bt) "No reading" (grey) added to the SM Temp (SMB) legend, 2026-08-05
+     (user: "aggiungilo alla legenda") - third state was missing, only
+     OK/Over Temperature were listed; swatch color matched exactly to
+     geoLvTempColor's own grey (#cdd5df), not the unrelated #98a2b3 grey
+     other legend rows use for "off". SciFi_main.html only, no own
+     version.
+
+8) STILL OPEN 2026-08-21 - Calibration tab: make_plots/save_to_root toggles
+--------------------------------------------------------------------
+  Python side already done (scifi_scripts, this session): calibrations/
+  calibrationfactory.py's run_calibration_and_save() now reads two ODB
+  bools per calibration type - {CAL_ODB_BASE}/make_plots and
+  {CAL_ODB_BASE}/save_to_root - and gates the new plot-saving system
+  (calib.build_plots() + results.saver.ResultSaverPlot, one PNG per
+  ASIC/module/FEB in scifi_scripts/output_plot/{name}_{run}/) and the
+  existing ROOT-saving (ResultSaverROOT) on them. save_to_cdb (existing,
+  currently only a PySequencer register_param dialog, not on this page
+  at all) is now a code-level dependent of save_to_root - the CDB upload
+  block only runs INSIDE the `if save_to_root:` branch, so it can never
+  fire without a real .root file having just been saved this run (can't
+  drift out of sync via stale/inconsistent ODB state).
+  RESOLVED 2026-08-24: added the two checkboxes (`checked` by default,
+  matching the previous unconditional-save behaviour) to all 3
+  Calibration sub-tabs' "Shared" form-group in SciFi_main.html, same
+  `<div class="calib-field checkbox">` pattern as run_vbr_finding/
+  run_thr_finding. Wired purely by adding "make_plots"/"save_to_root"
+  to SciFi_Calibration.js's ivSharedFields/thrSharedFields/
+  pllSharedFields arrays (and the matching *ParamDefaults objects) - no
+  changes needed to calStartIv/calStartThr/calStartPll themselves, they
+  already loop generically over *SharedFields and write both the
+  top-level `{CAL_ODB_BASE}/{calib_name}/{field}` path (confirmed exact
+  match against run_calibration_and_save()'s `_read_bool(client,
+  f"{calib_class.CAL_ODB_BASE}/make_plots")` read path in
+  calibrationfactory.py) and each selected row's ParametersUsed/
+  snapshot copy, same as every other shared field.
+
+9) STILL OPEN 2026-08-21 - Calibration tab: shared-equipment health +
+   Required Programmes banner missing, all 3 sub-tabs
+--------------------------------------------------------------------
+  Confirmed by grepping the real file (not assumed): SciFi_Calibration.js
+  has ZERO matches for TDK/PowerDist/"Fault Register"/Interlock/"First
+  failed"/checkSharedEquipmentHealth/"Required Programme" anywhere -
+  unlike every Power tab (Supply/HV/LV/FEB), which all have this pattern
+  built and refined at length (see items 1-8 above in this same file).
+  What the Calibration tab DOES already show before Start (don't
+  reduplicate these): parameter validation (calIvParamErrors/
+  calIvSharedErrors/calThrParamErrors/calThrSharedErrors - already
+  complete), PySequencer busy/ghost-running state, and a per-MODULE HV
+  Output On check (calIvWarnings(), via geoHvStatusFor()).
+  What's genuinely missing, all 3 sub-tabs (cal-iv-table/cal-thr-table/
+  cal-pll-table): the BROADER shared-equipment health (TDK Fault
+  Register/Interlock, PowerDist Enabled/on/good, DCDCCrates) and a
+  Required-Programmes-down banner (DCDC/Febcrate/Powerrack/HV Frontend)
+  - today you only find out about either when the Python backend
+  (scifi_check_shared_equipment() in calibrations/calibrationfactory.py,
+  or each calibration's own prepare()-time program/chain check - see
+  calibrations_plan.txt/todo.txt 2026-08-21 for the full per-calibration
+  breakdown, nothing missing there, it's page-only) refuses to run -
+  never before clicking Start.
+  Proposed approach (not yet decided/built): reuse the same
+  checkSharedEquipmentHealth() + combineTableMessages() pattern already
+  mature on Power tabs, message-only (not a gate, matching this page's
+  own established philosophy, TODO.txt 3c). Two open design questions
+  before implementing:
+    1. One check for the whole Calibration tab, or split per calibration
+       type (each needs different programs - ScanThr/PllTest need DCDC+
+       Febcrate+Powerrack, ScanVbr needs HV+Powerrack, see calibrations_
+       plan.txt/todo.txt 2026-08-21)?
+    2. Which Required Programmes subset to actually show per tab, given
+       each calibration's own real dependency list already differs in
+       the Python code (see above)?
+
+10) RESOLVED 2026-08-24 - Readout tab eliminated, merged into Configuration
+--------------------------------------------------------------------
+  The standalone Readout tab referenced throughout this file (items
+  3ab/5b/etc. above, kept as-is - historical record of the design this
+  file's own decisions were built against) no longer exists as of
+  2026-08-24. Its real per-channel masking grid was ported into
+  Configuration (per-MuTrig, opens on click); its own old per-channel
+  tthresh/tthresh_offset matrix was dropped per user request. Full
+  session detail (channel detail table, PE-band picker bug fix, TDC/
+  PRBS test build, SwitchingFibre general commands) logged in todo.txt
+  and LOGBOOK.md's 2026-08-24 entry, not duplicated here.

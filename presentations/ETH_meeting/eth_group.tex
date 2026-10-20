@@ -1,0 +1,824 @@
+%Please use LuaLaTeX or XeLaTeX
+\documentclass[11pt,aspectratio=169]{beamer}
+
+\title{SciFi Detector Slow Control System}
+\date[Mu3e]{ETH Group Meeting\\August 9th, 2026}
+\author{Giacomo Moretti}
+\institute[D-PHYS, ETH Z\"urich]{D-PHYS Institute for Particle Physics and Astrophysics}
+
+\usetheme{eth}
+\usetikzlibrary{positioning, arrows.meta, calc, shapes.geometric, backgrounds, fit}
+
+\usepackage{fontspec}
+\setsansfont{Avenir Next}[UprightFont=* Medium, BoldFont=* Demi Bold, ItalicFont=* Medium Italic]
+
+\colorlet{titlefgcolor}{ETHBlue}
+\colorlet{accentcolor}{ETHRed}
+
+% ------------------------------------------------------------------
+% Pillar color coding -- used consistently across every diagram
+% ------------------------------------------------------------------
+\colorlet{instcolor}{ETHBronze}   % Installation
+\colorlet{uicolor}{ETHBlue}       % User Interface
+\colorlet{pwrcolor}{ETHBronze!45!ETHRed} % Power
+\colorlet{calcolor}{ETHRed}       % Calibration
+\colorlet{savecolor}{ETHGreen}    % Saving
+\colorlet{confcolor}{ETHPurple}   % Configuration
+\colorlet{metacolor}{ETHPetrol}   % Big picture / wrap-up
+
+% ------------------------------------------------------------------
+% Reusable tikz styles
+% ------------------------------------------------------------------
+\tikzset{
+  boxhw/.style   ={draw=ETHGray,   thick, rounded corners, fill=ETHGray!10,   minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxinst/.style ={draw=instcolor, thick, rounded corners, fill=instcolor!12, minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxui/.style   ={draw=uicolor,   thick, rounded corners, fill=uicolor!10,   minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxpwr/.style  ={draw=pwrcolor,  thick, rounded corners, fill=pwrcolor!12,  minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxcal/.style  ={draw=calcolor,  thick, rounded corners, fill=calcolor!10,  minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxsave/.style ={draw=savecolor, thick, rounded corners, fill=savecolor!12, minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxconf/.style ={draw=confcolor, thick, rounded corners, fill=confcolor!10, minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  boxmeta/.style ={draw=metacolor, thick, rounded corners, fill=metacolor!10, minimum height=1cm, minimum width=2.3cm, align=center, font=\small},
+  arr/.style     ={-{Stealth[length=2.2mm]}, thick, draw=ETHGray},
+  arrthin/.style ={-{Stealth[length=1.8mm]}, draw=ETHGray!70},
+  commit/.style  ={circle, draw=ETHBlue, fill=ETHBlue, minimum size=2.2mm, inner sep=0pt},
+  dotinst/.style ={circle, draw=instcolor, fill=instcolor, minimum size=2.4mm, inner sep=0pt},
+  dotcal/.style  ={circle, draw=calcolor,  fill=calcolor,  minimum size=2.4mm, inner sep=0pt},
+}
+
+% ------------------------------------------------------------------
+% Status pill: \statuspill{color}{\faIcon}{text}
+% ------------------------------------------------------------------
+\newcommand{\statuspill}[3]{%
+  \tikz[baseline=-0.65ex]{\node[rounded corners=2pt, inner sep=3pt, fill=#1!12, draw=#1, thick, font=\scriptsize\bfseries, text=#1!55!black]{#2~#3};}%
+}
+
+% ------------------------------------------------------------------
+% Section divider: \dividerframe{color}{floor index 0-7, or -1}{Title text}
+% Draws a mini, unlabelled copy of the building diagram on the right --
+% every floor already passed is filled in with its own gradient color
+% (like a battery charging), the current floor is bold, the rest stay faded.
+% ------------------------------------------------------------------
+\newcommand{\dividerframe}[3]{%
+  {\setbeamertemplate{footline}{}
+  \begin{frame}[plain,noframenumbering]
+    \begin{tikzpicture}[remember picture, overlay]
+      \fill[white] (current page.south west) rectangle (current page.north east);
+      \fill[#1] (current page.south west) rectangle ([xshift=3.2mm]current page.north west);
+      \node[black!80, font=\fontsize{30}{30}\selectfont, anchor=west] at ([xshift=20mm]current page.west) {#3};
+      \draw[#1, line width=0.8pt] ([xshift=20mm,yshift=-9mm]current page.west) -- ([xshift=95mm,yshift=-9mm]current page.west);
+      \begin{scope}[shift={($(current page.east)+(-32mm,0)$)}]
+        \foreach \i/\fc/\dc in {0/ETHGray!28/ETHGray,
+                                 1/ETHGray!72!ETHBlue!32/ETHGray!72!ETHBlue,
+                                 2/ETHGray!52!ETHBlue!32/ETHGray!52!ETHBlue,
+                                 3/ETHGray!37!ETHBlue!32/ETHGray!37!ETHBlue,
+                                 4/ETHGray!25!ETHBlue!32/ETHGray!25!ETHBlue,
+                                 5/ETHGray!16!ETHBlue!32/ETHGray!16!ETHBlue,
+                                 6/ETHGray!8!ETHBlue!32/ETHGray!8!ETHBlue,
+                                 7/ETHBlue!28/ETHBlue} {
+          \ifnum\i=#2
+            \node[rounded corners, minimum width=1.5cm, minimum height=0.4cm, fill=#1, draw=#1] at (0,{\i*0.5cm-1.75cm}) {};
+          \else
+            \ifnum\i<#2
+              \node[rounded corners, minimum width=1.5cm, minimum height=0.4cm, fill=\fc, draw=\dc] at (0,{\i*0.5cm-1.75cm}) {};
+            \else
+              \node[rounded corners, minimum width=1.5cm, minimum height=0.4cm, fill=ETHGray!10, draw=ETHGray!30] at (0,{\i*0.5cm-1.75cm}) {};
+            \fi
+          \fi
+        }
+      \end{scope}
+    \end{tikzpicture}
+  \end{frame}}%
+}
+
+% ------------------------------------------------------------------
+% Opening thesis: a closed loop of organs, not a linear roadmap.
+% ------------------------------------------------------------------
+\newcommand{\roadmapframe}{%
+\begin{frame}{How it all fits together}
+  \begin{columns}[onlytextwidth,c]
+    \begin{column}{0.42\textwidth}
+      \begin{center}
+      \resizebox{\linewidth}{!}{%
+      \begin{tikzpicture}[every node/.style={align=center, rounded corners, thick,
+            minimum width=2.3cm, minimum height=1.05cm, font=\small}]
+        \node[fill=instcolor!14, draw=instcolor, text=instcolor!65!black]  (hw)   at (90:1.85cm)  {Detector};
+        \node[fill=metacolor!14, draw=metacolor, text=metacolor!65!black]  (py)   at (0:1.85cm)   {Python\\scripts};
+        \node[fill=savecolor!14, draw=savecolor, text=savecolor!55!black]  (odb)  at (-90:1.85cm) {Database};
+        \node[fill=uicolor!14,   draw=uicolor,   text=uicolor!65!black]    (page) at (180:1.85cm) {Custom\\page};
+        \draw[-{Stealth[length=3mm]}, thick, ETHGray!55] (hw)   to[bend left=18] (py);
+        \draw[-{Stealth[length=3mm]}, thick, ETHGray!55] (py)   to[bend left=18] (odb);
+        \draw[-{Stealth[length=3mm]}, thick, ETHGray!55] (odb)  to[bend left=18] (page);
+        \draw[-{Stealth[length=3mm]}, thick, ETHGray!55] (page) to[bend left=18] (hw);
+      \end{tikzpicture}%
+      }
+      \end{center}
+    \end{column}
+    \begin{column}{0.54\textwidth}
+      \begin{itemize}\small\setlength{\itemsep}{4pt}
+        \item \textbf{\textcolor{instcolor!65!black}{Detector}} -- matters once a script can drive it.
+        \item \textbf{\textcolor{metacolor!65!black}{Python scripts}} -- matter once the result is saved.
+        \item \textbf{\textcolor{savecolor!55!black}{Database}} -- matters once the page shows it back.
+        \item \textbf{\textcolor{uicolor!65!black}{Custom page}} -- matters once a shifter can act on it.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+  \medskip
+  \small This is a slow control system: no single piece works alone. Every step in this loop matters equally.
+\end{frame}
+}
+
+% ------------------------------------------------------------------
+% Image placeholder: \imgph{width}{height}{description}
+% Once real images arrive, replace the \imgph{...} call with
+% \includegraphics[width=...]{elements/<file>} directly.
+% ------------------------------------------------------------------
+\newcommand{\imgph}[3]{%
+  \begin{tikzpicture}
+    \node[draw=ETHGray, dashed, ultra thick, minimum width=#1, minimum height=#2,
+          fill=ETHGray!6, align=center, font=\small\itshape, text=ETHGray!70!black,
+          inner sep=3mm]{\faImage\\[2mm]#3};
+  \end{tikzpicture}%
+}
+
+\begin{document}
+
+% IMAGE SPOT 0 (optional): a detector/site photo, 2:1 aspect ratio, as the
+% title background. Drop it at ../imgs/img_title.jpg and uncomment:
+% \def\titlefigure{../imgs/img_title}
+\def\titlefigure{}
+\setlength{\titleboxwidth}{0.85\textwidth}
+\titleframe
+
+% ==================================================================
+\section{Overview}
+% ==================================================================
+
+\begin{frame}{Context}
+  This is an account of the SciFi detector's slow control system: what got built, end to end, ahead of the data taking at PSI this October.
+  \bigskip
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.53\textwidth}
+      \small
+      \begin{itemize}
+        \item The old slow control page, \texttt{Scifi-monitor.js}, grew organically over the years into something that worked -- but was \textbf{\textcolor{ETHRed!70!black}{hard to trust}} and even harder to extend.
+        \item So it was \textbf{replaced end to end}: a proper set of \textbf{\textcolor{metacolor!65!black}{Python scripts}} driving the detector, and a new \textbf{\textcolor{uicolor!65!black}{custom operations page}} a shifter can actually rely on.
+        \item What follows is the complete picture -- \textbf{\textcolor{instcolor!65!black}{installation}}, the \textbf{\textcolor{uicolor!65!black}{interface}} itself, \textbf{\textcolor{confcolor!55!black}{configuration}}, \textbf{\textcolor{calcolor!55!black}{calibration}}, and how results get \textbf{\textcolor{savecolor!45!black}{saved}}.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.43\textwidth}
+      \begin{center}
+      \includegraphics[width=5.6cm]{../imgs/img_context_team.jpg}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Where we were $\rightarrow$ where we are}
+  \vspace{-6mm}
+  \begin{columns}[onlytextwidth,c]
+    \begin{column}{0.3\textwidth}
+      \begin{center}
+      \includegraphics[width=\linewidth]{../imgs/img_scifi.png}
+
+      \bigskip
+      \includegraphics[width=\linewidth]{../imgs/img_mu3e.jpg}
+      \end{center}
+    \end{column}
+    \begin{column}{0.66\textwidth}
+      \begin{center}
+      \resizebox{0.82\linewidth}{!}{%
+      \begin{tikzpicture}[every node/.style={font=\small}]
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!28,             draw=ETHGray,             thick] (f0) at (0,0)    {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!72!ETHBlue!32,   draw=ETHGray!72!ETHBlue,  thick] (f1) at (0,0.54) {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!52!ETHBlue!32,   draw=ETHGray!52!ETHBlue,  thick] (f2) at (0,1.08) {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!37!ETHBlue!32,   draw=ETHGray!37!ETHBlue,  thick] (f3) at (0,1.62) {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!25!ETHBlue!32,   draw=ETHGray!25!ETHBlue,  thick] (f4) at (0,2.16) {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!16!ETHBlue!32,   draw=ETHGray!16!ETHBlue,  thick] (f5) at (0,2.70) {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHGray!8!ETHBlue!32,    draw=ETHGray!8!ETHBlue,   thick] (f6) at (0,3.24) {};
+        \node[rounded corners, minimum width=2.9cm, minimum height=0.5cm, fill=ETHBlue!28,              draw=ETHBlue,             thick] (f7) at (0,3.78) {};
+
+        \node[anchor=west, text=ETHGray]              at ([xshift=3mm]f0.east) {No control system};
+        \node[anchor=west, text=ETHGray!72!ETHBlue]   at ([xshift=3mm]f1.east) {Installation};
+        \node[anchor=west, text=ETHGray!52!ETHBlue]   at ([xshift=3mm]f2.east) {User Interface};
+        \node[anchor=west, text=ETHGray!37!ETHBlue]   at ([xshift=3mm]f3.east) {Power};
+        \node[anchor=west, text=ETHGray!25!ETHBlue]   at ([xshift=3mm]f4.east) {Configuration};
+        \node[anchor=west, text=ETHGray!16!ETHBlue]   at ([xshift=3mm]f5.east) {Calibration};
+        \node[anchor=west, text=ETHGray!8!ETHBlue]    at ([xshift=3mm]f6.east) {Saving};
+        \node[anchor=west, text=ETHBlue]              at ([xshift=3mm]f7.east) {New page + full slow control};
+      \end{tikzpicture}%
+      }
+      \end{center}
+    \end{column}
+  \end{columns}
+  \bigskip
+  \small From an \textbf{ad-hoc JavaScript page} and a handful of scripts to a \textbf{\textcolor{ETHBlue!65!black}{complete slow control system}} -- built one floor at a time, this is the path the rest of the talk follows.
+  \begin{tikzpicture}[remember picture, overlay]
+    \draw[densely dashed, thick, ETHBlue!50, -{Stealth[length=2.5mm]}]
+      ($(current page.south west)+(0.27\paperwidth,0.46\paperheight)$) to[bend right=12]
+      ($(current page.south west)+(0.513\paperwidth,0.402\paperheight)$);
+    \draw[densely dashed, thick, ETHBlue!50, -{Stealth[length=2.5mm]}]
+      ($(current page.south west)+(0.196\paperwidth,0.714\paperheight)$) to[bend left=12]
+      ($(current page.south west)+(0.513\paperwidth,0.798\paperheight)$);
+  \end{tikzpicture}
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHGray!72!ETHBlue}{1}{Installation}
+\section{Installation}
+% ==================================================================
+
+\begin{frame}{A week of installation at PSI}
+  \vspace{-5mm}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.48\textwidth}
+      \begin{center}\includegraphics[width=6.6cm]{../imgs/img_install_wiring.jpg}\end{center}
+    \end{column}
+    \begin{column}{0.48\textwidth}
+      \begin{center}\includegraphics[width=6.6cm]{../imgs/img_team.jpg}\end{center}
+    \end{column}
+  \end{columns}
+  \bigskip
+  A full week at PSI went into physically \textbf{\textcolor{instcolor!65!black}{installing}} and characterizing the \textbf{entire detector}, ring by ring, module by module -- every piece of modularity the \textbf{\textcolor{pwrcolor!65!black}{Power}} tab shows today (both rings, every super-module, every fibre and cable, \textbf{LV}, \textbf{HV}, \textbf{FEBs}, \textbf{readout}) was mechanically mounted, wired and verified, not just one part of it. The whole chain was characterized end to end, and it all works.
+\end{frame}
+
+\begin{frame}{Installation, in pictures}
+  \vspace{-9mm}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.499\textwidth}
+      \begin{center}
+      \includegraphics[height=3.15cm]{../imgs/img_install_detail.jpg}
+      \end{center}
+      \vspace{0.5mm}
+      \begin{center}
+      \includegraphics[height=3.15cm]{../imgs/img_install_4.jpg}
+      \end{center}
+    \end{column}
+    \begin{column}{0.499\textwidth}
+      \begin{center}
+      \includegraphics[height=3.15cm]{../imgs/img_install_5.jpg}
+      \end{center}
+      \vspace{0.5mm}
+      \begin{center}
+      \includegraphics[height=3.15cm]{../imgs/img_install_6.jpg}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Two chains, one question}
+  \bigskip
+  \begin{center}
+  \resizebox{0.92\linewidth}{!}{%
+  \begin{tikzpicture}[node distance=6mm, every node/.style={align=center, rounded corners, thick, font=\small,
+        minimum width=2.3cm, minimum height=0.85cm}]
+    \node[fill=pwrcolor!14, draw=pwrcolor, text=pwrcolor!65!black] (p1) {\textbf{Shared}\\power};
+    \node[fill=pwrcolor!14, draw=pwrcolor, text=pwrcolor!65!black, right=of p1] (p2) {\textbf{Crate}\\status};
+    \node[fill=pwrcolor!14, draw=pwrcolor, text=pwrcolor!65!black, right=of p2] (p3) {\textbf{Module}\\supply};
+    \node[fill=pwrcolor!14, draw=pwrcolor, text=pwrcolor!65!black, right=of p3] (p4) {\textbf{Board}\\power};
+
+    \node[fill=uicolor!12, draw=uicolor, text=uicolor!65!black, below=22mm of p1] (r1) {\textbf{Readout}\\enabled};
+    \node[fill=uicolor!12, draw=uicolor, text=uicolor!65!black, right=of r1] (r2) {\textbf{Run}\\active};
+    \node[fill=uicolor!12, draw=uicolor, text=uicolor!65!black, right=of r2] (r3) {\textbf{Data}\\rate};
+    \node[fill=uicolor!12, draw=uicolor, text=uicolor!65!black, right=of r3] (r4) {No \textbf{data}\\lost};
+
+    \node[circle, fill=metacolor, text=white, minimum width=1.9cm, minimum height=1.9cm, font=\bfseries\small, right=18mm of p4, yshift=-11mm] (q) {Data\\flowing?};
+
+    \draw[arr] (p1) to[bend left=15]  (p2);
+    \draw[arr] (p2) to[bend right=15] (p3);
+    \draw[arr] (p3) to[bend left=15]  (p4);
+    \draw[arr] (r1) to[bend right=15] (r2);
+    \draw[arr] (r2) to[bend left=15]  (r3);
+    \draw[arr] (r3) to[bend right=15] (r4);
+    \draw[arr] (p4) to[bend right=15] (q);
+    \draw[arr] (r4) to[bend left=15]  (q);
+
+    \node[font=\scriptsize\itshape, text=pwrcolor!60!black, below=2mm of p1, align=center] {crate \textbf{mains} OK};
+    \node[font=\scriptsize\itshape, text=pwrcolor!60!black, below=2mm of p2, align=center] {\textbf{DCDC} enabled};
+    \node[font=\scriptsize\itshape, text=pwrcolor!60!black, below=2mm of p3, align=center] {LV per \textbf{module}};
+    \node[font=\scriptsize\itshape, text=pwrcolor!60!black, below=2mm of p4, align=center] {\textbf{FEB} power good};
+    \node[font=\scriptsize\itshape, text=uicolor!60!black, above=2mm of r1, align=center] {\textbf{frontend} armed};
+    \node[font=\scriptsize\itshape, text=uicolor!60!black, above=2mm of r2, align=center] {\textbf{MIDAS} run started};
+    \node[font=\scriptsize\itshape, text=uicolor!60!black, above=2mm of r3, align=center] {$>$0\,Hz per \textbf{FEB}};
+    \node[font=\scriptsize\itshape, text=uicolor!60!black, above=2mm of r4, align=center] {\textbf{buffers} not full};
+  \end{tikzpicture}%
+  }
+  \end{center}
+  \small Two chains, checked separately -- \textcolor{pwrcolor!65!black}{\textbf{power}} can be all green while \textcolor{uicolor!65!black}{\textbf{readout}} stays idle.\\Only when both agree does data actually flow.
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHGray!52!ETHBlue}{2}{User Interface}
+\section{User Interface}
+% ==================================================================
+
+\begin{frame}{From hardware to shifter}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.56\textwidth}
+      \begin{itemize}\small\setlength{\itemsep}{6pt}
+        \item The chain runs both ways: \textbf{hardware status} flows up to the shifter, and the \textbf{\textcolor{uicolor!65!black}{shifter's changes}} flow back down to hardware, though not always instantly -- some changes only apply at specific trigger points (e.g.\ a run start).
+        \item \alert{Nothing is ever hard-blocked}: every action stays clickable, and the page warns you instead of stopping you.
+        \item \textbf{MIDAS} is the shared framework tying it together -- frontends, ODB and this page all run inside it.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{center}
+      \resizebox{!}{0.75\textheight}{%
+      \begin{tikzpicture}[node distance=5mm]
+        \node[boxhw] (hw) {Detector};
+        \node[boxhw, below=of hw] (fe) {Frontends};
+        \node[boxhw, below=of fe] (odb) {ODB\\\footnotesize(online database)};
+        \node[boxui, below=of odb] (page) {Custom page};
+        \node[boxui, below=of page] (user) {Shifter};
+        \foreach \a/\b in {hw/fe, fe/odb, odb/page, page/user}
+          \draw[{Stealth[length=2.2mm]}-{Stealth[length=2.2mm]}, thick, draw=ETHGray] (\a) -- (\b);
+        \begin{pgfonlayer}{background}
+          \node[fill=ETHBlue!8, draw=ETHBlue!40, thick, rounded corners=1.5pt,
+                fit=(hw)(fe)(odb)(page)(user), inner xsep=8mm, inner ysep=3mm] (midasbg) {};
+        \end{pgfonlayer}
+        \node[font=\small\itshape, text=ETHBlue!55!black, rotate=90, xshift=7mm] at (midasbg.west) {MIDAS};
+      \end{tikzpicture}%
+      }
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{The page: then and now}
+  \begin{columns}[onlytextwidth,c]
+    \begin{column}{0.46\textwidth}
+      \begin{flushleft}
+      \includegraphics[width=0.97\linewidth]{../imgs/img_page_old.png}
+      \end{flushleft}
+      \begin{center}
+      \vspace{-3mm}
+      \href{http://localhost:8080/?cmd=custom&page=SciFi\%20Main}{\includegraphics[width=0.97\linewidth]{../imgs/img_page_new.png}}
+      \end{center}
+    \end{column}
+    \begin{column}{0.5\textwidth}
+      \small
+      \begin{itemize}
+        \item The old page showed a static, unlabeled ring -- \textbf{no live status}, nothing clickable.
+        \item The new page splits in two: \textbf{Geometry} is pure diagnostic, read-only; \textbf{\textcolor{pwrcolor!65!black}{Power}} / \textbf{\textcolor{uicolor!65!black}{Readout}} / \textbf{\textcolor{calcolor!55!black}{Calibration}} is the only editable surface.
+        \item Configuring a value writes it to \textbf{ODB} -- a frontend picks it up and pushes it onto the physical hardware.
+        \item Real safety logic stays in \textbf{Python}, on purpose -- never duplicated in JavaScript.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHGray!37!ETHBlue}{3}{Power}
+\section{Power}
+% ==================================================================
+
+\begin{frame}{The SciFi detector, briefly}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.42\textwidth}
+      \footnotesize
+      \begin{itemize}\setlength{\itemsep}{1pt}
+        \item \textbf{2 rings}, US / DS -- 12 modules each; \textbf{24 SMB} (12+12) merge into 12 super-modules via a passive DAB.
+        \item \textbf{12 FEB} (1:1 with LV); \textbf{96 ASIC} (32 ch.\ each) $=$ \textbf{\textcolor{pwrcolor!65!black}{3072 channels}}; \textbf{24 HV channels} (1:1 with SMB).
+        \item Each module: \{side, ring position, readout end\} -- the same key used across \textbf{ODB}, \textbf{geometry}, and \textbf{calibration}.
+        \item SMB and DAB connect via microtwisted-pair links, carrying the raw \textbf{MuTRiG3} data downstream.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.55\textwidth}
+      \vspace{-8mm}
+      \begin{center}
+      \includegraphics[width=0.62\linewidth]{../imgs/img_signal_chain.png}\\[1.5mm]
+      \includegraphics[height=2.0cm]{../imgs/scifi_render_module.png}\hspace{2mm}
+      \includegraphics[height=2.0cm]{../imgs/supermodule_detaul_cooling.png}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{From detector to Power and Readout}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.56\textwidth}
+      \begin{center}
+      \resizebox{!}{0.65\textheight}{%
+      \begin{tikzpicture}[every node/.style={align=center, rounded corners, thick,
+            minimum width=2.6cm, minimum height=0.9cm, font=\small}]
+        \node[fill=ETHGray!12,   draw=ETHGray,   text=ETHGray!70!black]   (tdk)  at (0,0)       {TDK};
+        \node[fill=ETHGray!12,   draw=ETHGray,   text=ETHGray!70!black]   (pd)   at (0,-1.3)    {PowerDist};
+        \node[fill=pwrcolor!14,  draw=pwrcolor,  text=pwrcolor!65!black]  (dcdc) at (-3.0,-2.6) {DCDC crates};
+        \node[fill=ETHGray!12,   draw=ETHGray,   text=ETHGray!70!black]   (fe)   at (3.0,-2.6)  {Frontend};
+        \node[fill=pwrcolor!14,  draw=pwrcolor,  text=pwrcolor!65!black]  (lvch) at (-3.0,-3.9) {LV channels};
+        \node[fill=metacolor!14, draw=metacolor, text=metacolor!65!black] (feb)  at (1.2,-3.9)  {FEB};
+        \node[fill=calcolor!14,  draw=calcolor,  text=calcolor!65!black]  (hvch) at (4.6,-3.9)  {HV channels};
+        \node[fill=uicolor!14,   draw=uicolor,   text=uicolor!65!black]   (rout) at (-0.2,-5.4) {Readout};
+        \node[fill=calcolor!14,  draw=calcolor,  text=calcolor!65!black]  (sipm) at (3.3,-5.4)  {SiPM};
+        \node[fill=uicolor!14,   draw=uicolor,   text=uicolor!65!black]   (ready) at (1.55,-6.8) {Detector};
+
+        \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55]   (tdk) -- (pd);
+        \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55]   (pd) to[bend right=20] (dcdc);
+        \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55]   (pd) to[bend left=20] (fe);
+        \draw[-{Stealth[length=2.2mm]}, thick, pwrcolor!55]  (dcdc) -- (lvch);
+        \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55]   (fe) to[bend left=15] (hvch);
+        \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55]   (fe) to[bend right=15] (feb);
+        \draw[-{Stealth[length=2.2mm]}, thick, pwrcolor!55]  (lvch) to[bend left=15] (rout);
+        \draw[-{Stealth[length=2.2mm]}, thick, metacolor!55] (feb) to[bend right=15] (rout);
+        \draw[-{Stealth[length=2.2mm]}, thick, calcolor!55]  (hvch) to[bend right=10] (sipm);
+        \draw[-{Stealth[length=2.2mm]}, thick, uicolor!55]   (rout) to[bend left=10] (ready);
+        \draw[-{Stealth[length=2.2mm]}, thick, calcolor!55]  (sipm) to[bend right=10] (ready);
+      \end{tikzpicture}%
+      }
+      \end{center}
+    \end{column}
+    \begin{column}{0.4\textwidth}
+      \begin{itemize}\small\setlength{\itemsep}{6pt}
+        \item \textbf{\textcolor{ETHGray!70!black}{TDK}} and \textbf{\textcolor{ETHGray!70!black}{PowerDist}} -- the same first two devices for all three chains.
+        \item \textbf{\textcolor{pwrcolor!65!black}{LV}} -- through its own \textbf{\textcolor{pwrcolor!65!black}{DCDC crates}} -- feeds the \textbf{\textcolor{uicolor!65!black}{Readout}}.
+        \item \textbf{\textcolor{calcolor!65!black}{HV}} and \textbf{\textcolor{metacolor!65!black}{FEB}} both wait for their \textbf{\textcolor{ETHGray!70!black}{Frontend}}.
+        \item \textbf{\textcolor{calcolor!65!black}{HV}} feeds the \textbf{\textcolor{calcolor!65!black}{SiPM}}; \textbf{\textcolor{metacolor!65!black}{FEB}} feeds the \textbf{\textcolor{uicolor!65!black}{Readout}} too.
+        \item \textbf{\textcolor{uicolor!65!black}{Readout}} and \textbf{\textcolor{calcolor!65!black}{SiPM}} both lead back to the \textbf{\textcolor{uicolor!65!black}{detector}}.
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHGray!25!ETHBlue}{4}{Configuration}
+\section{Configuration}
+% ==================================================================
+
+\begin{frame}{Configuration: one hub, four jobs}
+  \begin{center}
+  \resizebox{0.88\linewidth}{!}{%
+  \begin{tikzpicture}[every node/.style={align=center, rounded corners=4pt, line width=1pt, font=\small}]
+    \node[fill=ETHGray!10, draw=ETHGray!60, text=ETHGray!70!black, minimum width=3.0cm, minimum height=1.0cm] (start) at (0,0) {\textbf{Configuration}};
+
+    \node[fill=confcolor!10, draw=confcolor, text=confcolor!55!black, minimum width=3.4cm, minimum height=1.15cm] (paramalg) at (-5.6,-2.1) {Walk \textbf{FEB} $\to$ module\\$\to$ chip $\to$ channel};
+    \node[fill=calcolor!10,  draw=calcolor,  text=calcolor!55!black,  minimum width=3.4cm, minimum height=1.15cm] (pllalg)   at (-1.87,-2.1) {Verify \textbf{clock}\\recovery};
+    \node[fill=metacolor!10, draw=metacolor, text=metacolor!55!black, minimum width=3.4cm, minimum height=1.15cm] (prbsalg)  at (1.87,-2.1)  {Check \textbf{link}\\integrity};
+    \node[fill=uicolor!10,   draw=uicolor,   text=uicolor!65!black,   minimum width=3.4cm, minimum height=1.15cm] (tdcalg)   at (5.6,-2.1)  {Verify \textbf{per-channel}\\test pulse};
+
+    \node[fill=confcolor!10, draw=confcolor, text=confcolor!55!black, minimum width=2.8cm, minimum height=0.9cm] (param) at (-5.6,-3.8) {\textbf{Parameters}\\(ODB tree)};
+    \node[fill=calcolor!10,  draw=calcolor,  text=calcolor!55!black,  minimum width=2.6cm, minimum height=0.9cm] (pll)   at (-1.87,-3.8) {\textbf{PLL} test};
+    \node[fill=metacolor!10, draw=metacolor, text=metacolor!55!black, minimum width=2.6cm, minimum height=0.9cm] (prbs)  at (1.87,-3.8)  {\textbf{PRBS} test};
+    \node[fill=uicolor!10,   draw=uicolor,   text=uicolor!65!black,   minimum width=2.6cm, minimum height=0.9cm] (tdc)   at (5.6,-3.8)  {\textbf{TDC} test};
+
+    \draw[-{Stealth[length=2.2mm]}, thick, confcolor!55]  (start) to[bend right=20] (paramalg);
+    \draw[-{Stealth[length=2.2mm]}, thick, calcolor!55]   (start) to[bend right=9]  (pllalg);
+    \draw[-{Stealth[length=2.2mm]}, thick, metacolor!55]  (start) to[bend left=9]   (prbsalg);
+    \draw[-{Stealth[length=2.2mm]}, thick, uicolor!55]    (start) to[bend left=20]  (tdcalg);
+    \draw[-{Stealth[length=2.2mm]}, thick, confcolor!55]  (paramalg) to[bend left=8]  (param);
+    \draw[-{Stealth[length=2.2mm]}, thick, calcolor!55]   (pllalg)   to[bend right=8] (pll);
+    \draw[-{Stealth[length=2.2mm]}, thick, metacolor!55]  (prbsalg)  to[bend left=8]  (prbs);
+    \draw[-{Stealth[length=2.2mm]}, thick, uicolor!55]    (tdcalg)   to[bend right=8] (tdc);
+  \end{tikzpicture}%
+  }
+  \end{center}
+  \smallskip
+  \small \textcolor{confcolor!60!black}{\textbf{Configuration}} has grown beyond parameter editing into the detector's general hardware test hub -- the old \textbf{Readout} tab folds in here entirely, and every parameter still writes to a dedicated \textbf{ODB} tree, read directly by the Python scripts.
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHGray!16!ETHBlue}{5}{Calibration}
+\section{Calibration}
+% ==================================================================
+
+\begin{frame}{Two calibrations, one starting point}
+  \begin{center}
+  \resizebox{0.66\linewidth}{!}{%
+  \begin{tikzpicture}[every node/.style={align=center, rounded corners=4pt, line width=1pt, font=\small}]
+    \node[fill=ETHGray!10, draw=ETHGray!60, text=ETHGray!70!black, minimum width=2.8cm, minimum height=1.0cm] (start) at (0,0) {\textbf{Start}};
+
+    \node[fill=calcolor!10, draw=calcolor, text=calcolor!55!black, minimum width=3.6cm, minimum height=1.2cm] (thralg) at (-2.6,-2.0) {Walk \textbf{threshold},\\read rate curve};
+    \node[fill=pwrcolor!10, draw=pwrcolor, text=pwrcolor!65!black, minimum width=3.6cm, minimum height=1.2cm] (vbralg) at (2.6,-2.0)   {\textbf{Derivative} $+$\\Gaussian fit};
+
+    \node[fill=calcolor!10, draw=calcolor, text=calcolor!55!black, minimum width=2.8cm, minimum height=0.9cm] (thr) at (-2.6,-3.7) {\textbf{ScanThr}};
+    \node[fill=pwrcolor!10, draw=pwrcolor, text=pwrcolor!65!black, minimum width=2.8cm, minimum height=0.9cm] (vbr) at (2.6,-3.7)    {\textbf{ScanVbr}};
+
+    \draw[-{Stealth[length=2.2mm]}, thick, calcolor!55] (start) to[bend right=18] (thralg);
+    \draw[-{Stealth[length=2.2mm]}, thick, pwrcolor!60] (start) to[bend left=18]  (vbralg);
+    \draw[-{Stealth[length=2.2mm]}, thick, calcolor!55] (thralg) to[bend left=8]  (thr);
+    \draw[-{Stealth[length=2.2mm]}, thick, pwrcolor!60] (vbralg) to[bend right=8] (vbr);
+  \end{tikzpicture}%
+  }
+  \end{center}
+  \smallskip
+  \small Both share the same \texttt{CalibrationBase} lifecycle -- \textbf{prepare}, \textbf{execute}, \textbf{finalise}.
+\end{frame}
+
+\begin{frame}{How a calibration actually runs}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.32\textwidth}
+      \begin{itemize}\small\setlength{\itemsep}{6pt}
+        \item \textbf{\textcolor{uicolor!65!black}{Start}} -- the page writes ODB and hands off to PySequencer.
+        \item \textbf{\textcolor{metacolor!65!black}{Script}} -- PySequencer launches it, it connects to MIDAS.
+        \item \textbf{\textcolor{calcolor!65!black}{Lifecycle}} -- prepare, execute, finalise.
+        \item \textbf{\textcolor{savecolor!55!black}{Save}} -- result written to ODB, local, and CDB.
+        \item \textbf{\textcolor{uicolor!65!black}{Result}} -- the page shows it back to the shifter.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.63\textwidth}
+  \begin{center}
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[node distance=4.5mm, every node/.style={align=center, rounded corners, thick, font=\small}]
+    \node[fill=uicolor!14,   draw=uicolor,   text=uicolor!65!black,   minimum width=4.2cm] (start) {Shifter presses Start};
+    \node[fill=uicolor!14,   draw=uicolor,   text=uicolor!65!black,   minimum width=4.2cm, below=of start] (odbw) {Page writes ODB};
+    \node[fill=metacolor!14, draw=metacolor, text=metacolor!65!black, minimum width=4.2cm, below=of odbw] (pyseq) {PySequencer picks up script};
+    \node[fill=metacolor!14, draw=metacolor, text=metacolor!65!black, minimum width=4.2cm, below=of pyseq] (script) {Script connects to MIDAS};
+    \node[fill=calcolor!14, draw=calcolor, text=calcolor!65!black, minimum width=1.7cm, below=7mm of script, xshift=-2.4cm] (prep) {Prepare};
+    \node[fill=calcolor!14, draw=calcolor, text=calcolor!65!black, minimum width=1.7cm, below=7mm of script] (exec) {Execute};
+    \node[fill=calcolor!14, draw=calcolor, text=calcolor!65!black, minimum width=1.7cm, below=7mm of script, xshift=2.4cm] (fin) {Finalise};
+    \node[fill=savecolor!14, draw=savecolor, text=savecolor!55!black, minimum width=2.1cm, below=7mm of fin, xshift=-2.6cm] (odb) {ODB (live)};
+    \node[fill=savecolor!14, draw=savecolor, text=savecolor!55!black, minimum width=2.1cm, below=7mm of fin] (local) {Local (recent)};
+    \node[fill=savecolor!14, draw=savecolor, text=savecolor!55!black, minimum width=2.1cm, below=7mm of fin, xshift=2.9cm] (cdb) {CDB (permanent)};
+    \node[fill=uicolor!14, draw=uicolor, text=uicolor!65!black, minimum width=4.2cm, below=7mm of local] (result) {Page shows the result};
+
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (start) -- (odbw);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (odbw) -- (pyseq);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (pyseq) -- (script);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (script) to[bend right=15] (prep);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (prep) to[bend left=15] (exec);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (exec) to[bend left=15] (fin);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (fin) to[bend right=20] (odb);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (fin) -- (local);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (fin) to[bend left=20]  (cdb);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (odb) to[bend right=15] (result);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (local) -- (result);
+    \draw[-{Stealth[length=2.2mm]}, thick, ETHGray!55] (cdb) to[bend left=15]  (result);
+    \draw[thick, dashed, ETHBlue!50, -{Stealth[length=2.5mm]}] (result.east) to[bend right=70] (start.east);
+  \end{tikzpicture}%
+  }
+  \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHGray!8!ETHBlue}{6}{Saving}
+\section{Saving}
+% ==================================================================
+
+\begin{frame}{Saving: ODB, local, and CDB}
+  \begin{center}
+  \resizebox{0.85\linewidth}{!}{%
+  \begin{tikzpicture}[font=\small]
+    \node[circle, fill=calcolor!14, draw=calcolor, line width=1pt, minimum size=2.8mm, inner sep=0pt] (scan) at (0,0) {};
+    \node[font=\footnotesize, below=2mm, xshift=-9mm, text=calcolor!55!black] at (0,0) {\textbf{Scan} result};
+
+    \node[circle, fill=uicolor, minimum size=2.4mm, inner sep=0pt] (bodb) at (3,1.7) {};
+    \node[circle, fill=metacolor, minimum size=2.4mm, inner sep=0pt] (blocal) at (3.4,0) {};
+    \node[circle, fill=savecolor, minimum size=2.4mm, inner sep=0pt] (bcdb) at (3,-1.7) {};
+    \draw[-{Stealth[length=2.2mm]}, thick, uicolor!55]   (scan) to[bend left=15]  (bodb);
+    \draw[-{Stealth[length=2.2mm]}, thick, metacolor!60] (scan) -- (blocal);
+    \draw[-{Stealth[length=2.2mm]}, thick, savecolor!65] (scan) to[bend right=15] (bcdb);
+
+    \node[font=\small, align=left, anchor=west, text=uicolor!65!black] at ([xshift=4mm]bodb) {\textbf{ODB} -- \texttt{ResultSaverROOT}\\\textbf{live} only, overwritten each scan};
+    \node[font=\small, align=left, anchor=west, text=metacolor!55!black] at ([xshift=4mm]blocal) {\textbf{Local} -- most recent calibration per FEB\\cached on disk, for day-to-day operations};
+    \node[font=\small, align=left, anchor=west, text=savecolor!45!black] at ([xshift=4mm]bcdb) {\textbf{CDB} -- \texttt{ResultSaverCDB}\\indexed by name + run, \textbf{permanent}};
+  \end{tikzpicture}%
+  }
+  \end{center}
+  \smallskip
+  \small All three destinations are genuinely wired into the calibration scripts now.
+  \smallskip
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.31\textwidth}
+      \begin{itemize}\small
+        \item \textbf{\textcolor{uicolor!65!black}{ODB}} -- \emph{``What's the calibration right now?''}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.34\textwidth}
+      \begin{itemize}\small
+        \item \textbf{\textcolor{metacolor!55!black}{Local}} -- \emph{``What did we last calibrate, for operations?''}
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.31\textwidth}
+      \begin{itemize}\small
+        \item \textbf{\textcolor{savecolor!45!black}{CDB}} -- \emph{``What was it on a given run?''}
+      \end{itemize}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+% ==================================================================
+\dividerframe{ETHBlue}{7}{Big Picture}
+\section{Big Picture}
+% ==================================================================
+
+\begin{frame}{The work, as a branch diagram}
+  It helps to think about this effort the way you'd think about a software repository.
+  \begin{center}
+  \resizebox{\linewidth}{!}{%
+  \begin{tikzpicture}[x=1.3cm, y=1cm]
+    \draw[thick, ETHGray!60] (0,0) -- (18,0);
+    \node[circle, fill=instcolor!16, draw=instcolor, line width=1pt, minimum size=2.6mm, inner sep=0pt] at (0,0) {};
+    \node[circle, fill=uicolor!16,   draw=uicolor,   line width=1pt, minimum size=2.6mm, inner sep=0pt] at (2,0) {};
+    \node[circle, fill=pwrcolor!16,  draw=pwrcolor,  line width=1pt, minimum size=2.6mm, inner sep=0pt] at (6,0) {};
+    \node[circle, fill=confcolor!16, draw=confcolor, line width=1pt, minimum size=2.6mm, inner sep=0pt] at (10,0) {};
+    \node[circle, fill=calcolor!16,  draw=calcolor,  line width=1pt, minimum size=2.6mm, inner sep=0pt] at (14,0) {};
+    \node[circle, fill=savecolor!16, draw=savecolor, line width=1pt, minimum size=2.6mm, inner sep=0pt] at (18,0) {};
+    \node[font=\footnotesize, below=2mm, text=instcolor!65!black]  at (0,0)  {\textbf{Installation}};
+    \node[font=\footnotesize, below=2mm, text=uicolor!65!black]    at (2,0)  {\textbf{User Interface}};
+    \node[font=\footnotesize, below=2mm, text=pwrcolor!65!black]   at (6,0)  {\textbf{Power}};
+    \node[font=\footnotesize, below=2mm, xshift=7mm,  text=confcolor!55!black]  at (10,0) {\textbf{Configuration}};
+    \node[font=\footnotesize, below=2mm, xshift=-3mm, text=calcolor!55!black]   at (14,0) {\textbf{Calibration}};
+    \node[font=\footnotesize, below=2mm, text=savecolor!45!black]  at (18,0) {\textbf{Saving}};
+
+    % Installation -> User Interface
+    \draw[thick, uicolor!55] (0,0) .. controls (0.6,0.9) and (1.4,0.9) .. (2,0)
+      node[pos=0.5, circle, fill=uicolor, minimum size=2.4mm, inner sep=0pt] (page) {};
+    \node[font=\scriptsize, above=1mm of page, text=uicolor!65!black] {\textbf{Custom page}};
+
+    % User Interface -> Power: three independent bring-up sequences
+    \draw[thick, pwrcolor!60] (2,0) .. controls (3.2,1.1) and (4.8,1.1) .. (6,0)
+      node[pos=0.22, circle, fill=pwrcolor, minimum size=2.4mm, inner sep=0pt] (lv)  {}
+      node[pos=0.5,  circle, fill=pwrcolor, minimum size=2.4mm, inner sep=0pt] (hv)  {}
+      node[pos=0.78, circle, fill=pwrcolor, minimum size=2.4mm, inner sep=0pt] (feb) {};
+    \node[font=\scriptsize, above=1mm of lv, xshift=3mm, text=pwrcolor!65!black] {\textbf{LV} bring-up};
+    \node[font=\scriptsize, below=1mm of hv,  text=pwrcolor!65!black] {\textbf{HV} bring-up};
+    \node[font=\scriptsize, above=1mm of feb, text=pwrcolor!65!black] {\textbf{FEB} bring-up};
+
+    % Power -> Configuration: page tabs
+    \draw[thick, confcolor!55] (6,0) .. controls (7.2,-1.0) and (8.8,-1.0) .. (10,0)
+      node[pos=0.22, circle, fill=confcolor, minimum size=2.4mm, inner sep=0pt] (ptab) {}
+      node[pos=0.62, circle, fill=confcolor, minimum size=2.4mm, inner sep=0pt] (gtab) {};
+    \node[font=\scriptsize, below=1mm of ptab, text=confcolor!55!black] {\textbf{Power} tab};
+    \node[font=\scriptsize, below=1mm of gtab, text=confcolor!55!black] {\textbf{Geometry} tab};
+
+    % Configuration -> Calibration: hardware test branch
+    \draw[thick, calcolor!55] (10,0) .. controls (11.2,1.1) and (12.8,1.1) .. (14,0)
+      node[pos=0.22, circle, fill=calcolor, minimum size=2.4mm, inner sep=0pt] (pll)  {}
+      node[pos=0.5,  circle, fill=calcolor, minimum size=2.4mm, inner sep=0pt] (prbs) {}
+      node[pos=0.78, circle, fill=calcolor, minimum size=2.4mm, inner sep=0pt] (tdc)  {};
+    \node[font=\scriptsize, above=1mm of pll,  text=calcolor!55!black] {\textbf{PLL} test};
+    \node[font=\scriptsize, below=1mm of prbs, text=calcolor!55!black] {\textbf{PRBS} test};
+    \node[font=\scriptsize, above=1mm of tdc,  text=calcolor!55!black] {\textbf{TDC} test};
+
+    % Calibration -> Saving: two independent calibration scans
+    \draw[thick, savecolor!65] (14,0) .. controls (15.2,-1.0) and (16.8,-1.0) .. (18,0)
+      node[pos=0.25, circle, fill=savecolor, minimum size=2.4mm, inner sep=0pt] (thr) {}
+      node[pos=0.75, circle, fill=savecolor, minimum size=2.4mm, inner sep=0pt] (vbr) {};
+    \node[font=\scriptsize, below=1mm of thr, text=savecolor!45!black] {\textbf{Threshold} scan};
+    \node[font=\scriptsize, below=1mm of vbr, text=savecolor!45!black] {\textbf{Breakdown} scan};
+  \end{tikzpicture}%
+  }
+  \end{center}
+  \bigskip
+  There's a main line -- the real operational workflow, installation through to saving -- and every concrete piece of work is a branch off that line, sometimes several at once: three independent bring-up sequences, a family of hardware tests, two independent calibration scans. Each one gets built and tested on its own, then merged back once it's solid. None of these pieces are useful in isolation; the point was always to converge onto one coherent system.
+\end{frame}
+
+\roadmapframe
+
+\begin{frame}{What this leaves behind}
+  \begin{itemize}\small\setlength{\itemsep}{1pt}
+    \item \textbf{\textcolor{savecolor!45!black}{Result saving}} is fully implemented and wired -- the one piece that had to be ready for the data taking.
+    \item The \textbf{shared code library} now properly covers SciFi: a real, reusable slow control foundation, not a one-off.
+    \item The \textbf{\textcolor{uicolor!65!black}{custom page}} is fully implemented -- Power, Configuration and Calibration all wired to the real detector.
+    \item The full \textbf{operational workflow} is implemented end to end: shifter action $\to$ ODB $\to$ Python script $\to$ result saved and shown back.
+  \end{itemize}
+  \smallskip
+  \begin{center}
+    \tikz\node[boxmeta, text=metacolor!65!black, minimum width=7.2cm, minimum height=0.8cm, font=\footnotesize]{Installed and working on \texttt{mu3ebe}: LV, HV, FEBs, Readout};
+  \end{center}
+  \smallskip
+  \begin{center}
+    \tikz\node[boxui, text=uicolor!65!black, minimum width=5.4cm, minimum height=0.8cm, font=\footnotesize]{What's still open};
+  \end{center}
+  \smallskip
+  \small Everything is installed, wired, and ready. The one thing left is a full end-to-end workflow test, including a real calibration run, on \texttt{mu3ebe}.
+\end{frame}
+
+\begin{closingframe}
+
+\begin{tikzpicture}[remember picture, overlay]
+  \node[anchor=south east, xshift=-10mm, yshift=10mm] at (current page.south east)
+    {\includegraphics[width=28mm]{../imgs/img_mu3e_logo.png}};
+\end{tikzpicture}
+
+Giacomo Moretti\\
+
+\medskip
+
+Mu3e Experiment\\
+Scifi Detector Group\\
+ETH Z\"urich\\
+PSI, Villigen
+
+\end{closingframe}
+
+% ====================================================================
+% ====================================================================
+%  BACKUP -- not part of the main talk, kept for Q&A
+% ====================================================================
+% ====================================================================
+
+\dividerframe{ETHGray}{-1}{Backup}
+\section{Backup}
+
+\begin{frame}{PLL test: getting the verdict right}
+  The PLL test is a good example of why it matters to check assumptions against real data, not just against the code.
+  \begin{center}
+  \begin{tikzpicture}[node distance=26mm]
+    \node[boxconf] (a) {first design:\\peak $=$ locked};
+    \node[boxconf, right=of a] (b) {corrected:\\\textbf{flat} histogram $=$ locked};
+    \draw[arr, ETHRed, thick] (a) -- node[above, font=\scriptsize\bfseries, ETHRed, align=center]{verdict logic\\inverted} (b);
+  \end{tikzpicture}
+  \end{center}
+  \smallskip
+  \small The first version of the acceptance logic assumed a locked PLL would show up as a clear peak in the timing histogram -- a reasonable-sounding guess. It turned out to be backwards: a genuinely locked PLL produces a \textbf{flat} histogram. Resolved directly with \textbf{Yifen Wan}, who owns the histogram analysis.
+\end{frame}
+
+\begin{frame}{Geometry tab: drill down, three clicks deep}
+  \begin{columns}[onlytextwidth,T]
+    \begin{column}{0.32\textwidth}
+      \begin{tikzpicture}[node distance=9mm]
+        \node[boxui] (sm) {SM health dot};
+        \node[boxui, below=of sm] (mod) {Module dot};
+        \node[boxui, below=of mod] (asic) {ASIC dot};
+        \draw[arr] (sm) -- node[right, font=\scriptsize, align=left]{adds HV/Readout/\\Calibration status} (mod);
+        \draw[arr] (mod) -- node[right, font=\scriptsize, align=left]{expands the\\32-channel grid} (asic);
+      \end{tikzpicture}
+      \smallskip
+      \footnotesize US/DS are drawn as mirror rings with opposite rotation. Each click level is \textbf{cumulative}, not a page switch.
+    \end{column}
+    \begin{column}{0.66\textwidth}
+      \begin{center}
+      \includegraphics[height=5.3cm]{../imgs/img_geometry_drilldown.png}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{What's hardcoded vs.\ what's live}
+  \begin{center}
+  \renewcommand{\arraystretch}{1}
+  \begin{tabular}{@{}c p{9cm}@{}}
+    \tikz\node[rounded corners=2pt, inner sep=4pt, minimum width=2.4cm, fill=ETHGreen!12, draw=ETHGreen, thick, font=\small\bfseries, text=ETHGreen!55!black]{SAFE}; &
+      Compile-time constants \\[4mm]
+    \tikz\node[rounded corners=2pt, inner sep=4pt, minimum width=2.4cm, fill=ETHBlue!12, draw=ETHBlue, thick, font=\small\bfseries, text=ETHBlue!65!black]{SELF-HEALING}; &
+      Name-pattern filters (\texttt{"SMB\_"}, \texttt{"SciFi CH"}) \\[4mm]
+    \tikz\node[rounded corners=2pt, inner sep=4pt, minimum width=2.4cm, fill=ETHRed!12, draw=ETHRed, thick, font=\small\bfseries, text=ETHRed!55!black]{REAL RISK}; &
+      Curated lists: \texttt{SciFi\_Programs.js} (7), \texttt{SciFi\_Alarms.js} (10), \texttt{HV\_BOARDS} (32-cell board$\leftrightarrow$module map) \\[4mm]
+    \tikz\node[rounded corners=2pt, inner sep=4pt, minimum width=2.4cm, fill=ETHGray!12, draw=ETHGray, thick, font=\small\bfseries, text=ETHGray!55!black]{LIVE}; &
+      Everything else \\
+  \end{tabular}
+  \end{center}
+  \bigskip
+  \texttt{HV\_BOARDS} is the single biggest hardcoded piece on the whole page -- flagged, not yet ported into Python/ODB.
+\end{frame}
+
+\begin{frame}{Calibration entry points -- a deliberate simplification}
+  \texttt{thr\_run.py} / \texttt{vbr\_run.py} / \texttt{pll\_run.py} bypass SciFi's own \texttt{CalibrationFactory} (never wired to a real entry point) and instead:
+  \begin{itemize}
+    \item build \texttt{Detector} + \texttt{Calibration} \textbf{directly}
+    \item open their \textbf{own} \texttt{MidasClient}, with \texttt{try/finally: disconnect()}
+  \end{itemize}
+  \bigskip
+  \begin{block}{Judged safer than pixel's own pattern}
+    Pixel passes PySequencer's \texttt{seq} object in as the client -- never independently verified. SciFi's explicit connect/disconnect is a stronger guarantee.
+  \end{block}
+\end{frame}
+
+\begin{frame}{From design to a real save}
+  \begin{block}{\texttt{.root} layout}
+    5 trees -- \texttt{Meta}, \texttt{RawScan}, \texttt{Results}, \texttt{Conditions}, \texttt{ChannelMasks} -- the shape was restructured once per-module/per-ASIC parameters were properly pinned down.
+  \end{block}
+  \bigskip
+  \texttt{ResultSaverROOT} (per-tree upsert by key), \texttt{ResultSaverCDB} (opt-in POST to \texttt{mu3edb0/detcal}), and a local cache of the most recent per-FEB calibration are implemented and wired, reconciled with a colleague's parallel branch.
+\end{frame}
+
+\begin{frame}{Calibration: threshold scan}
+  \vspace{-8mm}
+  \begin{columns}[onlytextwidth,c]
+    \begin{column}{0.47\textwidth}
+      \small
+      \begin{itemize}\setlength{\itemsep}{6pt}
+        \item \textbf{\textcolor{calcolor!55!black}{ScanThr}} finds the right discrimination point on every channel.
+        \item Walks the \textbf{threshold} up per channel, reading the rate curve to find the crossing points at 0.5, 1.5 and 2.5 p.e.
+        \item Runs independently per \textbf{FEB} -- any subset of the detector can be (re-)calibrated on its own, and the result is what actually gets loaded as the operating threshold.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.47\textwidth}
+      \begin{center}
+      \includegraphics[width=\linewidth]{../imgs/img_scanthr_plot.png}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\begin{frame}{Calibration: IV scan}
+  \vspace{-8mm}
+  \begin{columns}[onlytextwidth,c]
+    \begin{column}{0.38\textwidth}
+      \small
+      \begin{itemize}\setlength{\itemsep}{6pt}
+        \item \textbf{\textcolor{calcolor!55!black}{ScanVbr}} locates each SiPM's breakdown voltage.
+        \item Takes the \textbf{derivative} of the IV curve and fits a \textbf{Gaussian} to its peak -- the fit mean $\mu$ gives $V_{br}$.
+        \item Runs independently per \textbf{FEB} -- the result directly sets each SiPM's HV operating point (overvoltage), a real physics constant, not just a diagnostic.
+      \end{itemize}
+    \end{column}
+    \begin{column}{0.58\textwidth}
+      \begin{center}
+      \includegraphics[height=7.0cm]{../imgs/img_scanvbr_plot2.jpeg}
+      \end{center}
+    \end{column}
+  \end{columns}
+\end{frame}
+
+\end{document}

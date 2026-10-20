@@ -1,0 +1,2348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SciFi Control — Power</title>
+<style>
+  :root{
+    --bg:#eef1f6;
+    --paper:#ffffff;
+    --paper-2:#f4f6fa;
+    --ink:#1c2430;
+    --muted:#5c6779;
+    --faint:#8993a4;
+    --line:#d9dfe8;
+    --line-strong:#b7c0cd;
+    --accent:#a8651c;
+    --accent-wash:#a8651c14;
+    --ok:#2f8a5f;
+    --ok-wash:#2f8a5f17;
+    --warn:#a97a1c;
+    --warn-wash:#a97a1c17;
+    --crit:#b8483f;
+    --crit-wash:#b8483f17;
+    --shadow:0 1px 2px rgba(28,36,48,0.05), 0 8px 20px -12px rgba(28,36,48,0.16);
+
+    /* identity colors - visual cross-references only, never status (ok/
+       warn/crit stay reserved for state). Fixed categorical set, not cycled. */
+    --side-us:#3b6dc9;
+    --side-us-wash:#3b6dc914;
+    --side-ds:#8b5cf6;
+    --side-ds-wash:#8b5cf614;
+    --sec-power:#64748b;
+    --sec-power-wash:#64748b14;
+    --sec-readout:#0d9488;
+    --sec-readout-wash:#0d948814;
+    --sec-calibration:#c2478d;
+    --sec-calibration-wash:#c2478d14;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f151b;
+      --paper:#171f28;
+      --paper-2:#1b2530;
+      --ink:#dde3ec;
+      --muted:#8b97a8;
+      --faint:#5f6b7c;
+      --line:#293544;
+      --line-strong:#3c4a5c;
+      --accent:#d0912f;
+      --accent-wash:#d0912f1c;
+      --ok:#59b98a;
+      --ok-wash:#59b98a1c;
+      --warn:#dcae52;
+      --warn-wash:#dcae521c;
+      --crit:#e07268;
+      --crit-wash:#e072681c;
+      --shadow:0 1px 2px rgba(0,0,0,0.3), 0 12px 26px -14px rgba(0,0,0,0.55);
+
+      --side-us:#7ea3e8;
+      --side-us-wash:#7ea3e81c;
+      --side-ds:#b09bfa;
+      --side-ds-wash:#b09bfa1c;
+      --sec-power:#9aa8bb;
+      --sec-power-wash:#9aa8bb1c;
+      --sec-readout:#3fc4b3;
+      --sec-readout-wash:#3fc4b31c;
+      --sec-calibration:#e075b1;
+      --sec-calibration-wash:#e075b11c;
+    }
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+    line-height:1.45;
+  }
+  .mono{font-family:ui-monospace,"SF Mono","Cascadia Code","Roboto Mono",Menlo,Consolas,monospace;font-variant-numeric:tabular-nums;}
+  button{font:inherit;cursor:pointer;}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+
+  /* ---------- top strip ---------- */
+  .topstrip{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:16px;
+    padding:10px 24px;
+    background:var(--paper);
+    border-bottom:1px solid var(--line);
+  }
+  .topstrip-left{display:flex;align-items:baseline;gap:10px;}
+  .topstrip h1{font-size:15px;font-weight:700;margin:0;letter-spacing:-.01em;}
+  .topstrip .path{font-size:11.5px;color:var(--faint);font-family:ui-monospace,"SF Mono",monospace;}
+  .alarm-pill{
+    font-size:11px;font-weight:600;
+    padding:3px 10px;border-radius:999px;
+    background:var(--ok-wash);color:var(--ok);
+  }
+  .topstrip-right{font-size:11.5px;color:var(--faint);font-family:ui-monospace,"SF Mono",monospace;}
+
+  .page{max-width:1320px;margin:0 auto;padding:28px 24px 64px;}
+
+  /* ---------- safety row ---------- */
+  .safety-row{
+    display:grid;
+    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
+    gap:14px;
+    margin-bottom:8px;
+  }
+  .card{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:12px;
+    box-shadow:var(--shadow);
+    padding:16px 18px;
+  }
+  .card h2{
+    font-size:11px;
+    text-transform:uppercase;
+    letter-spacing:.07em;
+    color:var(--muted);
+    margin:0 0 12px;
+    font-weight:700;
+  }
+
+  .estop{
+    background:linear-gradient(180deg, var(--crit-wash), transparent 60%);
+    border-color:color-mix(in srgb, var(--crit) 35%, var(--line));
+    display:flex;
+    flex-direction:column;
+    justify-content:space-between;
+  }
+  .estop-btn{
+    width:100%;
+    border:1.5px solid var(--crit);
+    background:var(--crit);
+    color:#fff;
+    font-weight:700;
+    font-size:13px;
+    padding:12px 14px;
+    border-radius:9px;
+    letter-spacing:.01em;
+  }
+  .estop-btn:hover{filter:brightness(1.06);}
+  .estop-sub{font-size:11px;color:var(--muted);margin-top:8px;}
+
+  .stat-list{display:flex;flex-direction:column;gap:7px;}
+  .stat-row{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    font-size:12.5px;
+  }
+  .stat-name{color:var(--ink);}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none;}
+  .dot-ok{background:var(--ok);}
+  .dot-warn{background:var(--warn);}
+  .dot-crit{background:var(--crit);}
+  .dot-off{background:var(--faint);}
+  .group-status-dot{display:inline-block;margin-right:5px;vertical-align:1px;}
+  .dot-label{
+    display:flex;align-items:center;gap:6px;
+    font-size:11px;font-weight:600;
+  }
+  .dot-label.ok{color:var(--ok);}
+  .dot-label.warn{color:var(--warn);}
+  .dot-label.crit{color:var(--crit);}
+
+  .seq-line{
+    grid-column:1 / -1;
+    display:flex;
+    align-items:center;
+    gap:8px;
+    font-size:12px;
+    color:var(--muted);
+    padding:2px 4px 4px;
+  }
+
+  /* ---------- tabs ---------- */
+  .tabs{
+    display:flex;
+    gap:2px;
+    margin:28px 0 0;
+    border-bottom:1px solid var(--line);
+  }
+  .tab-btn{
+    background:none;
+    border:none;
+    padding:10px 18px 12px;
+    font-size:13.5px;
+    font-weight:600;
+    color:var(--muted);
+    border-bottom:2.5px solid transparent;
+    margin-bottom:-1px;
+  }
+  .tab-btn:hover{color:var(--ink);}
+  .tab-btn[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent);}
+
+  .tab-panel{display:none;padding-top:18px;}
+  .tab-panel.active{display:block;}
+
+  .panel-toolbar{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:12px;
+    margin-bottom:14px;
+  }
+  .action-group{display:flex;gap:8px;flex-wrap:wrap;align-items:center;}
+  .btn{
+    border:1px solid var(--line-strong);
+    background:var(--paper);
+    color:var(--ink);
+    font-size:12.5px;
+    font-weight:600;
+    padding:8px 14px;
+    border-radius:8px;
+  }
+  .btn:hover{border-color:var(--accent);}
+  .btn-primary{background:var(--accent-wash);border-color:var(--accent);}
+  .btn-ghost{background:transparent;border-color:var(--line);color:var(--muted);}
+  .btn:disabled, .btn:disabled:hover{opacity:.5;cursor:not-allowed;border-color:var(--line);}
+
+  .tier-block{border:1px solid var(--line);border-radius:10px;padding:10px 12px 12px;margin-bottom:10px;}
+  .tier-block .panel-toolbar{margin-bottom:0;}
+  .tier-label{display:block;font-size:10px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--faint);margin-bottom:8px;}
+  .tier-hw{background:var(--paper-2);border-style:dashed;}
+  .btn-mini{
+    font-size:11px;font-weight:600;
+    padding:4px 9px;border-radius:6px;
+    border:1px solid var(--line-strong);
+    background:var(--paper);color:var(--muted);
+  }
+  .btn-mini:hover{border-color:var(--accent);color:var(--ink);}
+
+  .field{
+    display:flex;align-items:center;gap:6px;
+    font-size:12px;color:var(--muted);
+  }
+  .field input{
+    width:74px;
+    font:inherit;
+    font-family:ui-monospace,"SF Mono",monospace;
+    padding:6px 8px;
+    border-radius:6px;
+    border:1px solid var(--line-strong);
+    background:var(--paper);
+    color:var(--ink);
+  }
+  .field span.unit{color:var(--faint);}
+
+  .cell-input{
+    width:68px;
+    font-family:ui-monospace,"SF Mono","Cascadia Code",monospace;
+    font-size:12px;
+    padding:4px 6px;
+    border-radius:6px;
+    border:1px solid var(--line-strong);
+    background:var(--paper);
+    color:var(--ink);
+  }
+
+  /* ---------- tables ---------- */
+  .table-wrap{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:10px;
+    box-shadow:var(--shadow);
+    overflow:hidden;
+  }
+  .table-scroll{overflow-x:auto;}
+  table{width:100%;border-collapse:collapse;font-size:12.5px;min-width:640px;}
+  thead th{
+    text-align:left;
+    font-size:10.5px;
+    text-transform:uppercase;
+    letter-spacing:.05em;
+    font-weight:700;
+    color:var(--muted);
+    padding:9px 12px;
+    background:var(--paper-2);
+    border-bottom:1px solid var(--line);
+    white-space:nowrap;
+  }
+  tbody td{
+    padding:9px 12px;
+    border-bottom:1px solid var(--line);
+    vertical-align:middle;
+    white-space:nowrap;
+  }
+  tbody tr:last-child td{border-bottom:none;}
+  /* separates a value sourced from a DIFFERENT section (e.g. VBR, from
+     Calibration) from the masking-state columns beside it, which this
+     table itself owns - a visual break, not just the xref-dot alone. */
+  td.divider-left{border-left:1px solid var(--line-strong);padding-left:16px;}
+  tbody tr.row-main{cursor:pointer;}
+  tbody tr.row-main:hover{background:var(--paper-2);}
+  tbody tr.row-main.open{background:var(--accent-wash);}
+
+  tr.group-header{cursor:pointer;background:var(--paper-2);}
+  tr.group-header:hover{background:color-mix(in srgb, var(--accent) 8%, var(--paper-2));}
+  tr.group-header td{
+    padding:9px 12px;
+    border-bottom:1px solid var(--line);
+    font-weight:600;
+    font-size:12.5px;
+  }
+  /* US/DS identity accent - repeated on every group header, every table,
+     so the same side reads as the same color everywhere on the page.
+     Border only (not a fill) - keeps it from competing with the ok/warn/
+     crit status colors used inside the same row. */
+  tr.group-header.side-us td:first-child{border-left:3px solid var(--side-us);}
+  tr.group-header.side-ds td:first-child{border-left:3px solid var(--side-ds);}
+  .side-dot{
+    display:inline-block;
+    width:7px;height:7px;border-radius:50%;
+    flex:none;
+  }
+  .side-dot.us{background:var(--side-us);}
+  .side-dot.ds{background:var(--side-ds);}
+  .group-header-inner{display:flex;align-items:center;gap:10px;}
+  .group-chevron{
+    display:inline-block;
+    color:var(--faint);
+    font-size:10px;
+    transition:transform .15s;
+    width:10px;
+  }
+  tr.group-header.expanded .group-chevron{transform:rotate(90deg);}
+  .group-summary{font-weight:400;color:var(--muted);font-size:11.5px;}
+  tr.group-row{display:none;}
+  tr.group-row.expanded{display:table-row;}
+
+  input[type="checkbox"]{
+    width:15px;height:15px;
+    accent-color:var(--accent);
+  }
+
+  .pill{
+    display:inline-flex;align-items:center;gap:5px;
+    font-size:10.5px;font-weight:700;
+    padding:2px 8px;border-radius:999px;
+  }
+  .pill-ok{background:var(--ok-wash);color:var(--ok);}
+  .pill-off{background:color-mix(in srgb, var(--faint) 20%, transparent);color:var(--muted);}
+  .pill-crit{background:var(--crit-wash);color:var(--crit);}
+
+  .faint{color:var(--faint);}
+  .muted{color:var(--muted);}
+
+  .detail-row td{
+    background:var(--paper-2);
+    padding:0;
+    border-bottom:1px solid var(--line);
+  }
+  .detail-row{display:none;}
+  .detail-row.open{display:table-row;}
+  .detail-inner{
+    display:flex;
+    flex-wrap:wrap;
+    gap:22px;
+    padding:14px 20px 16px 40px;
+  }
+  .detail-group{display:flex;flex-direction:column;gap:6px;min-width:120px;}
+  .detail-group .k{font-size:9.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--faint);font-weight:700;}
+  .detail-group .v{font-size:13px;font-family:ui-monospace,"SF Mono",monospace;}
+  .flag-row{display:flex;flex-wrap:wrap;gap:6px;}
+  .flag{
+    font-size:10px;font-weight:700;
+    padding:3px 8px;border-radius:6px;
+  }
+  .flag-ok{background:var(--ok-wash);color:var(--ok);}
+  .flag-crit{background:var(--crit-wash);color:var(--crit);}
+
+  .table-note{font-size:11px;color:var(--faint);padding:9px 4px 0;font-style:italic;}
+  .table-note.msg-crit{color:var(--crit);font-weight:600;font-style:normal;}
+
+  .subhead{
+    display:flex;align-items:baseline;justify-content:space-between;flex-wrap:wrap;gap:8px;
+    margin:24px 0 10px;
+  }
+  .subhead h3{font-size:12.5px;font-weight:700;margin:0;}
+  .subhead .hint{font-size:11px;color:var(--faint);}
+
+  /* ---------- 2-column page layout ---------- */
+  .layout-2col{
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:22px;
+    align-items:stretch;
+  }
+  .right-col{position:sticky;top:16px;align-self:start;}
+  .geometry-placeholder{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-radius:12px;
+    box-shadow:var(--shadow);
+    min-height:calc(100vh - 140px);
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    text-align:center;
+    padding:24px;
+  }
+  .geometry-placeholder h2{
+    font-size:13px;
+    font-weight:700;
+    color:var(--faint);
+    letter-spacing:.02em;
+    margin:0 0 6px;
+  }
+  .geometry-placeholder p{font-size:11.5px;color:var(--faint);margin:0;}
+
+  /* ---------- emergency sub-buttons ---------- */
+  .estop-split{display:flex;gap:6px;margin-top:8px;}
+  .estop-split .btn{
+    flex:1;
+    font-size:11px;
+    padding:7px 6px;
+    text-align:center;
+    border-color:color-mix(in srgb, var(--crit) 30%, var(--line-strong));
+    color:var(--crit);
+  }
+  .estop-split .btn:hover{background:var(--crit-wash);}
+
+  /* ---------- status pill (PySequencer) ---------- */
+  .status-pill{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:8px 14px;
+    border-radius:9px;
+    font-size:12.5px;
+    font-weight:600;
+  }
+  .status-pill .dot{width:8px;height:8px;border-radius:50%;}
+  .status-pill-ok{background:var(--ok-wash);color:var(--ok);}
+  .status-pill-ok .dot{background:var(--ok);}
+  .status-pill-warn{background:var(--warn-wash);color:var(--warn);}
+  .status-pill-warn .dot{background:var(--warn);}
+
+  /* ---------- mega sections: Power / Readout / Calibration ---------- */
+  .mega-section{
+    background:var(--paper);
+    border:1px solid var(--line);
+    border-top:3px solid var(--sec-color, var(--line));
+    border-radius:12px;
+    box-shadow:var(--shadow);
+    margin-bottom:16px;
+    overflow:hidden;
+  }
+  .mega-section.sec-power{--sec-color:var(--sec-power);}
+  .mega-section.sec-readout{--sec-color:var(--sec-readout);}
+  .mega-section.sec-calibration{--sec-color:var(--sec-calibration);}
+  .mega-header{
+    display:flex;
+    align-items:center;
+    gap:10px;
+    padding:16px 20px;
+    cursor:pointer;
+  }
+  .mega-header:hover{background:var(--paper-2);}
+  .mega-chevron{
+    color:var(--faint);
+    font-size:11px;
+    transition:transform .15s;
+  }
+  .mega-header.expanded .mega-chevron{transform:rotate(90deg);}
+  .mega-header h2{font-size:15px;font-weight:700;margin:0;}
+  .mega-hint{font-size:11.5px;color:var(--faint);}
+  /* small identity dot, reused wherever one section's data is shown
+     read-only inside another (e.g. VBR in Readout, or the ASIC enabled/
+     disabled badge mirrored read-only in Thr scan) - a visual "this
+     value belongs to X" tag, not a status. */
+  .xref-dot{
+    display:inline-block;
+    width:7px;height:7px;border-radius:50%;
+    flex:none;
+    vertical-align:1px;
+    margin-right:5px;
+  }
+  .xref-dot.power{background:var(--sec-power);}
+  .xref-dot.readout{background:var(--sec-readout);}
+  .xref-dot.calibration{background:var(--sec-calibration);}
+  .mega-content{
+    display:none;
+    padding:0 20px 20px;
+    border-top:1px solid var(--line);
+    padding-top:18px;
+  }
+  .mega-content.expanded{display:block;}
+  .placeholder-note{
+    font-size:12.5px;
+    color:var(--faint);
+    font-style:italic;
+    padding:18px 4px;
+  }
+
+  /* ---------- Readout ---------- */
+  .mockup-note{
+    font-size:11px;
+    color:var(--faint);
+    font-style:italic;
+    padding:2px 4px 10px;
+  }
+  .grid-toolbar{
+    display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+    padding:14px 20px 10px 40px;
+  }
+  .grid-toolbar .hint{font-size:11px;color:var(--faint);}
+  .grid-scroll{overflow-x:auto;padding:0 20px 16px 40px;}
+  .readout-grid{display:flex;flex-direction:column;gap:3px;width:max-content;}
+  .grid-colheader{display:flex;gap:3px;}
+  .grid-colheader .rowlabel-spacer{width:150px;flex:none;}
+  .grid-colheader .colbtn{
+    -webkit-appearance:none;appearance:none;
+    width:20px;height:16px;flex:none;
+    font-size:8.5px;font-family:ui-monospace,"SF Mono",monospace;
+    color:var(--faint);
+    background:none;border:none;border-radius:3px;
+    overflow:visible;
+  }
+  .grid-colheader .colbtn:hover{background:var(--paper-2);color:var(--ink);}
+  .asic-row{display:flex;align-items:center;gap:3px;}
+  .asic-row-header{
+    cursor:pointer;
+    display:flex;flex-direction:column;justify-content:center;align-items:flex-start;
+    width:150px;flex:none;min-height:36px;
+    font-size:10.5px;line-height:1.3;white-space:normal;overflow:visible;
+    padding:4px 8px;border-radius:6px;
+    border:1px solid transparent;
+    background:none;color:var(--ink);text-align:left;
+    font-family:ui-monospace,"SF Mono",monospace;
+  }
+  .asic-row-header:hover{background:var(--paper-2);border-color:var(--line);}
+  .asic-name-row{display:flex;align-items:center;gap:6px;}
+  .asic-row-header .asic-name{font-weight:700;}
+  .asic-row-header .asic-sub{color:var(--faint);font-size:9.5px;display:block;}
+  .channel-cells{display:flex;gap:3px;align-items:center;}
+  .ch-cell{
+    -webkit-appearance:none;appearance:none;
+    width:20px;height:20px;flex:none;
+    border-radius:4px;
+    border:2px solid transparent;
+    box-sizing:border-box;
+    font-size:0;
+    padding:0;
+  }
+  .ch-cell.unmasked{background:var(--ok);}
+  .ch-cell.masked{background:var(--crit);}
+  /* masked via an ASIC-disable cascade vs an individual mask action -
+     a pattern (not just a shade) so the difference survives CVD/print,
+     not just a saturation change next to solid var(--crit). */
+  .ch-cell.masked.masked-cascade{
+    background:repeating-linear-gradient(45deg,
+      var(--crit), var(--crit) 3px,
+      color-mix(in srgb, var(--crit) 35%, var(--paper-2)) 3px,
+      color-mix(in srgb, var(--crit) 35%, var(--paper-2)) 6px);
+  }
+  .ch-cell.selected{border-color:var(--accent);}
+  .grid-legend{display:flex;gap:14px;align-items:center;font-size:11px;color:var(--muted);}
+  .grid-legend .sw{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:4px;vertical-align:-1px;}
+  .grid-legend .sw-cascade{
+    background:repeating-linear-gradient(45deg,
+      var(--crit), var(--crit) 2px,
+      color-mix(in srgb, var(--crit) 35%, var(--paper-2)) 2px,
+      color-mix(in srgb, var(--crit) 35%, var(--paper-2)) 4px);
+  }
+
+  .rd-tooltip{
+    position:fixed;
+    z-index:80;
+    background:var(--ink);
+    color:var(--paper);
+    font-size:11px;
+    font-family:ui-monospace,"SF Mono",monospace;
+    line-height:1.6;
+    padding:8px 10px;
+    border-radius:8px;
+    box-shadow:var(--shadow);
+    white-space:pre-line;
+    pointer-events:none;
+    display:none;
+    max-width:220px;
+  }
+  .rd-tooltip.visible{display:block;}
+
+  /* ---------- Calibration ---------- */
+  .calib-form{
+    display:flex;flex-wrap:wrap;gap:16px 24px;
+    padding:16px 18px;
+    background:var(--paper-2);
+    border:1px solid var(--line);
+    border-radius:10px;
+  }
+  .calib-field{display:flex;flex-direction:column;gap:5px;min-width:120px;}
+  .calib-field label{font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px;}
+  .calib-field input[type="number"]{
+    font:inherit;font-family:ui-monospace,"SF Mono",monospace;
+    padding:7px 9px;border-radius:6px;
+    border:1px solid var(--line-strong);
+    background:var(--paper);color:var(--ink);
+    width:110px;
+  }
+  .calib-field.checkbox{flex-direction:row;align-items:center;gap:8px;min-width:0;}
+  .calib-field.checkbox label{order:2;}
+  .unverified-badge{
+    font-size:9px;font-weight:700;letter-spacing:.03em;
+    color:var(--warn);background:var(--warn-wash);
+    padding:1px 5px;border-radius:4px;
+  }
+  .calib-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-top:14px;}
+
+  @media (max-width:900px){
+    .layout-2col{grid-template-columns:1fr;}
+    .right-col{position:static;}
+    .geometry-placeholder{min-height:160px;}
+  }
+  @media (max-width:640px){
+    .page{padding:20px 14px 48px;}
+    .topstrip{padding:10px 14px;}
+  }
+</style>
+</head>
+<body>
+
+  <div class="topstrip">
+    <div class="topstrip-left">
+      <h1>SciFi Control</h1>
+      <span class="path mono">/Custom/SciFi/Power</span>
+    </div>
+    <div class="topstrip-left">
+      <span class="alarm-pill">Alarms: none</span>
+      <span class="topstrip-right">22 Jul 2026, 09:14 CEST</span>
+    </div>
+  </div>
+
+  <div class="page">
+   <div class="layout-2col">
+    <div class="left-col">
+
+    <div class="safety-row">
+      <div class="card estop">
+        <div>
+          <h2>Emergency</h2>
+          <button class="estop-btn">Turn off all SciFi power</button>
+          <div class="estop-split">
+            <button class="btn">Turn off FEB</button>
+            <button class="btn">Turn off LV</button>
+            <button class="btn">Turn off HV</button>
+          </div>
+        </div>
+        <p class="estop-sub">or all together, above</p>
+      </div>
+
+      <div class="card">
+        <h2>Required programs</h2>
+        <div class="stat-list">
+          <div class="stat-row"><span class="stat-name">mhttpd</span><span class="dot-label ok"><span class="dot dot-ok"></span>running</span></div>
+          <div class="stat-row"><span class="stat-name">SW Fibre</span><span class="dot-label ok"><span class="dot dot-ok"></span>running</span></div>
+          <div class="stat-row"><span class="stat-name">DCDC Frontend</span><span class="dot-label ok"><span class="dot dot-ok"></span>running</span></div>
+          <div class="stat-row"><span class="stat-name">HV Frontend</span><span class="dot-label ok"><span class="dot dot-ok"></span>running</span></div>
+          <div class="stat-row"><span class="stat-name">Febcrate Frontend</span><span class="dot-label ok"><span class="dot dot-ok"></span>running</span></div>
+          <div class="stat-row"><span class="stat-name">Powerrack Frontend</span><span class="dot-label warn"><span class="dot dot-warn"></span>stale</span></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Service status</h2>
+        <div class="stat-list">
+          <div class="stat-row"><span class="stat-name">TDK</span><span class="dot-label ok"><span class="dot dot-ok"></span>ok</span></div>
+          <div class="stat-row"><span class="stat-name">DCDCCrates</span><span class="dot-label crit"><span class="dot dot-crit"></span>1 crate flagged</span></div>
+        </div>
+        <p class="estop-sub">gates every power action below</p>
+      </div>
+
+      <div class="card">
+        <h2>PySequencer</h2>
+        <div class="status-pill status-pill-ok mono">
+          <span class="dot"></span>idle — actions available
+        </div>
+        <p class="estop-sub">busy while a script runs — buttons disable</p>
+      </div>
+
+      <div class="card">
+        <h2>Run</h2>
+        <div class="status-pill status-pill-warn mono">
+          <span class="dot"></span>stopped
+        </div>
+        <div class="stat-list" style="margin-top:10px">
+          <div class="stat-row"><span class="stat-name">Run number</span><span class="mono">9412</span></div>
+          <div class="stat-row"><span class="stat-name">Crew</span><span class="mono">GM</span></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= POWER (mega-section) ================= -->
+    <div class="mega-section sec-power">
+      <div class="mega-header expanded" data-mega="power">
+        <span class="mega-chevron">▸</span>
+        <h2><span class="xref-dot power"></span>Power</h2>
+        <span class="mega-hint">FEB · LV · HV control</span>
+      </div>
+      <div class="mega-content expanded" id="mega-power">
+
+    <div class="tabs" role="tablist">
+      <button class="tab-btn" role="tab" aria-selected="true" data-tab="feb">FEB power</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="lv">LV power</button>
+      <button class="tab-btn" role="tab" aria-selected="false" data-tab="hv">HV power</button>
+    </div>
+
+    <!-- ================= FEB ================= -->
+    <div class="tab-panel active" data-panel="feb">
+      <div class="panel-toolbar">
+        <div class="action-group">
+          <button class="btn btn-primary" id="feb-power-on-btn">Power on selected FEBs</button>
+          <button class="btn" id="feb-power-off-btn">Power off selected FEBs</button>
+        </div>
+      </div>
+      <p class="table-note" id="feb-power-msg"></p>
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="feb-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="feb-select-all" title="select all"></th><th>FEB</th><th>position</th><th>crate · slot</th>
+                <th>active ch.</th><th>power</th><th>crate link</th>
+              </tr>
+            </thead>
+            <tbody id="feb-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="table-note">click a row for crate/FEB temperature and voltage rails · rows read live from LinksFibre</p>
+    </div>
+
+    <!-- ================= LV ================= -->
+    <div class="tab-panel" data-panel="lv">
+      <div class="tier-block tier-hw">
+        <div class="panel-toolbar">
+          <span class="tier-label">Hardware</span>
+          <div class="action-group">
+            <button class="btn btn-primary" id="lv-on-btn">Turn on selected</button>
+            <button class="btn" id="lv-off-btn">Turn off selected</button>
+            <button class="btn btn-ghost" id="lv-hw-apply-btn" title="future: writes staged adjust value to the ODB">Apply adjust selected</button>
+            <button class="btn btn-ghost" id="lv-hw-read-btn" title="future: reads back live adjust from the ODB">Read adjust selected</button>
+          </div>
+          <div class="action-group">
+            <span class="field">settle <input type="number" value="5"><span class="unit">s</span></span>
+            <span class="field">expected I <input type="number" value="6.5" step="0.1"><span class="unit">A</span><span class="unverified-badge">unverified</span></span>
+            <span class="field">tolerance <input type="number" value="3.0" step="0.1"><span class="unit">A</span><span class="unverified-badge">unverified</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="tier-block tier-page">
+        <div class="panel-toolbar">
+          <span class="tier-label">Page</span>
+          <div class="action-group">
+            <input type="number" class="cell-input" id="lv-adjust-input" style="width:80px" placeholder="e.g. -1.5" step="1.5">
+            <button class="btn btn-ghost" id="lv-adjust-btn">Set adjust to selected</button>
+          </div>
+        </div>
+      </div>
+      <p class="table-note" id="lv-power-msg"></p>
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="lv-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="lv-select-all" title="select all"></th><th>LV channel</th><th>active ch.</th><th>on</th>
+                <th>current</th><th>adjust</th><th>status</th>
+              </tr>
+            </thead>
+            <tbody id="lv-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="table-note">click a row for sense/temperature and the 7 fault flags · adjust is editable per row, or set in bulk for the current selection above</p>
+
+      <div class="subhead">
+        <h3>DCDC crate status</h3>
+        <span class="hint">8 crates — one LV channel's crate = channel index ÷ 16 · reset/clear fault act on the crate controller, not on channel power</span>
+      </div>
+      <div class="panel-toolbar">
+        <div class="action-group">
+          <button class="btn">Reset selected</button>
+          <button class="btn">Clear fault selected</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table>
+            <thead><tr><th><input type="checkbox" id="crate-select-all" title="select all"></th><th>crate</th><th>hosts</th><th>crate on</th><th>actions</th></tr></thead>
+            <tbody id="crate-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ================= HV ================= -->
+    <div class="tab-panel" data-panel="hv">
+      <div class="tier-block tier-hw">
+        <div class="panel-toolbar">
+          <span class="tier-label">Hardware</span>
+          <div class="action-group">
+            <button class="btn btn-primary" id="hv-on-btn">Turn on selected</button>
+            <button class="btn" id="hv-off-btn">Turn off selected</button>
+            <button class="btn btn-ghost" id="hv-hw-apply-btn" title="future: writes staged demand value to the ODB">Apply demand selected</button>
+            <button class="btn btn-ghost" id="hv-hw-read-btn" title="future: reads back live demand from the ODB">Read demand selected</button>
+          </div>
+          <div class="action-group">
+            <span class="field">settle <input type="number" value="10"><span class="unit">s</span></span>
+            <span class="field">expected I <input type="number" value="1.5" step="0.1"><span class="unit">uA</span><span class="unverified-badge">unverified</span></span>
+            <span class="field">tolerance <input type="number" value="1.0" step="0.1"><span class="unit">uA</span><span class="unverified-badge">unverified</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="tier-block tier-page">
+        <div class="panel-toolbar">
+          <span class="tier-label">Page</span>
+          <div class="action-group">
+            <input type="number" class="cell-input" id="hv-demand-input" style="width:80px" placeholder="e.g. 56.0" step="0.5" max="60">
+            <button class="btn btn-ghost" id="hv-demand-btn">Set demand to selected</button>
+          </div>
+        </div>
+      </div>
+      <p class="table-note" id="hv-power-msg"></p>
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr><th><input type="checkbox" id="hv-select-all" title="select all"></th><th>channel</th><th>board</th><th>FEB</th><th>output</th><th>enabled</th><th>demand</th><th>current</th><th>voltage</th></tr>
+            </thead>
+            <tbody id="hv-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <p class="table-note">demand is set per channel · FEB column fills in once the ordered channel↔FEB mapping is confirmed · sorted by ODB index</p>
+    </div>
+
+      </div>
+    </div>
+    <!-- ================= /POWER ================= -->
+
+    <!-- ================= READOUT ================= -->
+    <div class="mega-section sec-readout">
+      <div class="mega-header expanded" data-mega="readout">
+        <span class="mega-chevron">▸</span>
+        <h2><span class="xref-dot readout"></span>Readout</h2>
+        <span class="mega-hint">module · ASIC · channel masking</span>
+      </div>
+      <div class="mega-content expanded" id="mega-readout">
+
+      <div class="tier-block tier-page">
+        <div class="panel-toolbar">
+          <span class="tier-label">Page</span>
+          <div class="action-group">
+            <button class="btn" id="readout-enable-asic-btn">Enable selected ASICs</button>
+            <button class="btn" id="readout-disable-asic-btn">Disable selected ASICs</button>
+          </div>
+        </div>
+      </div>
+      <div class="tier-block tier-hw">
+        <div class="panel-toolbar">
+          <span class="tier-label">Hardware</span>
+          <div class="action-group">
+            <button class="btn btn-ghost" id="readout-hw-apply-btn" title="future: writes staged mask/enable state to ASICMask/Channel mask in the ODB">Apply selected</button>
+            <button class="btn btn-ghost" id="readout-hw-read-btn" title="future: reads back the live mask/enable state from the ODB">Read selected</button>
+          </div>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <div class="table-scroll">
+          <table id="readout-table">
+            <thead>
+              <tr>
+                <th><input type="checkbox" id="readout-select-all" title="select all"></th><th>module</th>
+                <th>ASIC active</th><th>ch. unmasked</th><th>VBR</th>
+              </tr>
+            </thead>
+            <tbody id="readout-body"></tbody>
+          </table>
+        </div>
+      </div>
+
+      </div>
+    </div>
+    <!-- ================= /READOUT ================= -->
+
+    <!-- ================= CALIBRATION ================= -->
+    <div class="mega-section sec-calibration">
+      <div class="mega-header" data-mega="calibration">
+        <span class="mega-chevron">▸</span>
+        <h2><span class="xref-dot calibration"></span>Calibration</h2>
+        <span class="mega-hint">IV scan · Threshold scan</span>
+      </div>
+      <div class="mega-content" id="mega-calibration">
+
+        <div class="tabs" role="tablist">
+          <button class="tab-btn" role="tab" aria-selected="true" data-calibtab="iv">IV scan</button>
+          <button class="tab-btn" role="tab" aria-selected="false" data-calibtab="thr">Thr scan</button>
+        </div>
+
+        <!-- ================= IV scan ================= -->
+        <div class="tab-panel active" data-calibpanel="iv">
+          <div class="calib-form">
+            <div class="calib-field"><label>iv_start</label><input type="number" class="mono" id="iv-form-iv_start" value="54.0" step="0.5"><span class="faint" style="font-size:10.5px">V</span></div>
+            <div class="calib-field"><label>iv_end</label><input type="number" class="mono" id="iv-form-iv_end" value="58.0" step="0.5" max="60"><span class="faint" style="font-size:10.5px">V</span></div>
+            <div class="calib-field"><label>iv_step</label><input type="number" class="mono" id="iv-form-iv_step" value="30" step="1"><span class="faint" style="font-size:10.5px">points</span></div>
+            <div class="calib-field"><label>settle_seconds</label><input type="number" class="mono" id="iv-form-settle_seconds" value="5" step="1"><span class="faint" style="font-size:10.5px">s</span></div>
+            <div class="calib-field"><label>fit_window_v <span class="unverified-badge">unverified</span></label><input type="number" class="mono" id="iv-form-fit_window_v" value="0.5" step="0.1"></div>
+            <div class="calib-field"><label>min_peak_prominence <span class="unverified-badge">unverified</span></label><input type="number" class="mono" id="iv-form-min_peak_prominence" value="3.0" step="0.5"></div>
+            <div class="calib-field" title="HV/Settings/&quot;Current limit&quot;[ch] - over-current cutoff checked every scan step, cuts a faulting channel's Demand to 0 for the rest of the sweep"><label>current_limit_ua <span class="unverified-badge">unverified</span></label><input type="number" class="mono" id="iv-form-current_limit_ua" value="1000" step="10"><span class="faint" style="font-size:10.5px">uA</span></div>
+            <div class="calib-field checkbox"><input type="checkbox" id="iv-form-run_vbr_finding"><label for="iv-form-run_vbr_finding">run_vbr_finding</label></div>
+          </div>
+          <div class="tier-block tier-page">
+            <div class="calib-actions">
+              <span class="tier-label" style="margin-bottom:0;margin-right:10px;display:inline">Page</span>
+              <button class="btn" id="iv-apply-selected">Set to selected</button>
+            </div>
+          </div>
+          <div class="tier-block tier-hw">
+            <div class="calib-actions">
+              <span class="tier-label" style="margin-bottom:0;margin-right:10px;display:inline">Hardware</span>
+              <button class="btn btn-ghost" id="iv-hw-apply-btn" title="future: writes staged per-module IV parameters to the ODB">Apply selected</button>
+              <button class="btn btn-ghost" id="iv-hw-read-btn" title="future: reads back parameters/results from the previous IV scan">Read selected</button>
+              <button class="btn btn-primary" id="iv-start-btn">Start scan selected</button>
+              <button class="btn btn-ghost" id="iv-hw-stop-btn" title="future: stops a running IV scan">Stop scan selected</button>
+            </div>
+          </div>
+          <p class="table-note" id="iv-start-msg"></p>
+          <div class="subhead"><h3>Per-module parameters</h3></div>
+          <div class="table-wrap">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th><input type="checkbox" id="iv-target-select-all" title="select all"></th><th>module</th>
+                    <th>iv_start</th><th>iv_end</th><th>iv_step</th><th>settle_s</th>
+                    <th>fit_window_v</th><th>min_peak_prom</th><th>cur_limit_ua</th><th>vbr_finding</th>
+                  </tr>
+                </thead>
+                <tbody id="iv-target-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ================= Thr scan ================= -->
+        <div class="tab-panel" data-calibpanel="thr">
+          <div class="calib-form">
+            <div class="calib-field"><label>threshold_start</label><input type="number" class="mono" id="thr-form-threshold_start" value="0" step="1"></div>
+            <div class="calib-field"><label>threshold_stop</label><input type="number" class="mono" id="thr-form-threshold_stop" value="63" step="1"></div>
+            <div class="calib-field"><label>offset_start</label><input type="number" class="mono" id="thr-form-offset_start" value="0" step="1"></div>
+            <div class="calib-field"><label>offset_end</label><input type="number" class="mono" id="thr-form-offset_end" value="2" step="1"></div>
+            <div class="calib-field"><label>noisy_rate_threshold</label><input type="number" class="mono" id="thr-form-noisy_rate_threshold" value="1000000" step="10000"><span class="faint" style="font-size:10.5px">Hz</span></div>
+            <div class="calib-field"><label>settle_seconds</label><input type="number" class="mono" id="thr-form-settle_seconds" value="5" step="1"><span class="faint" style="font-size:10.5px">s</span></div>
+            <div class="calib-field checkbox"><input type="checkbox" id="thr-form-run_autofinding"><label for="thr-form-run_autofinding">run_thr_finding</label></div>
+          </div>
+          <div class="tier-block tier-page">
+            <div class="calib-actions">
+              <span class="tier-label" style="margin-bottom:0;margin-right:10px;display:inline">Page</span>
+              <button class="btn" id="thr-apply-selected">Set to selected</button>
+            </div>
+          </div>
+          <div class="tier-block tier-hw">
+            <div class="calib-actions">
+              <span class="tier-label" style="margin-bottom:0;margin-right:10px;display:inline">Hardware</span>
+              <button class="btn btn-ghost" id="thr-hw-apply-btn" title="future: writes staged per-module threshold parameters to the ODB">Apply selected</button>
+              <button class="btn btn-ghost" id="thr-hw-read-btn" title="future: reads back parameters/results from the previous threshold scan">Read selected</button>
+              <button class="btn btn-primary" id="thr-start-btn">Start scan selected</button>
+              <button class="btn btn-ghost" id="thr-hw-stop-btn" title="future: stops a running threshold scan">Stop scan</button>
+            </div>
+          </div>
+          <p class="table-note" id="thr-start-msg"></p>
+          <div class="subhead"><h3>Per-module parameters</h3></div>
+          <div class="table-wrap">
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th><input type="checkbox" id="thr-target-select-all" title="select all"></th><th>module</th>
+                    <th>threshold_start</th><th>threshold_stop</th><th>offset_start</th><th>offset_end</th>
+                    <th>noisy_rate</th><th>settle_s</th><th>autofinding</th>
+                  </tr>
+                </thead>
+                <tbody id="thr-target-body"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+    <!-- ================= /CALIBRATION ================= -->
+
+    </div>
+    <!-- /left-col -->
+
+    <div class="right-col">
+      <div class="geometry-placeholder">
+        <div>
+          <h2>Geometry view</h2>
+          <p>Page 1 — separate page, not built yet</p>
+        </div>
+      </div>
+    </div>
+
+   </div>
+   <!-- /layout-2col -->
+  </div>
+
+<script>
+(function(){
+  // ---- tabs (Power: FEB/LV/HV) ----
+  var powerRoot = document.getElementById("mega-power");
+  var tabs = powerRoot.querySelectorAll(".tab-btn");
+  tabs.forEach(function(btn){
+    btn.addEventListener("click", function(){
+      tabs.forEach(function(b){ b.setAttribute("aria-selected", "false"); });
+      btn.setAttribute("aria-selected", "true");
+      powerRoot.querySelectorAll(".tab-panel").forEach(function(p){ p.classList.remove("active"); });
+      powerRoot.querySelector('.tab-panel[data-panel="' + btn.dataset.tab + '"]').classList.add("active");
+    });
+  });
+
+  // ---- tabs (Calibration stub: IV scan / Thr scan) ----
+  var calibRoot = document.getElementById("mega-calibration");
+  var calibTabs = calibRoot.querySelectorAll(".tab-btn");
+  calibTabs.forEach(function(btn){
+    btn.addEventListener("click", function(){
+      calibTabs.forEach(function(b){ b.setAttribute("aria-selected", "false"); });
+      btn.setAttribute("aria-selected", "true");
+      calibRoot.querySelectorAll(".tab-panel").forEach(function(p){ p.classList.remove("active"); });
+      calibRoot.querySelector('.tab-panel[data-calibpanel="' + btn.dataset.calibtab + '"]').classList.add("active");
+    });
+  });
+
+  // ---- mega-sections (Power / Calibration) expand-collapse ----
+  document.querySelectorAll(".mega-header").forEach(function(header){
+    header.addEventListener("click", function(){
+      var content = document.getElementById("mega-" + header.dataset.mega);
+      var expand = !header.classList.contains("expanded");
+      header.classList.toggle("expanded", expand);
+      content.classList.toggle("expanded", expand);
+    });
+  });
+
+  // ---- FEB rows ----
+  var febs = [
+    {name:"US SM 0", idx:0, link:144, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"US SM 1", idx:1, link:145, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"US SM 2", idx:2, link:146, crate:0, slot:2, ch:"256/256", on:true, link_ok:true, temps:{crate20:"20.1V",crate33:"3.31V",crate5:"5.02V",cc:"31.4°C",feb:"29.8°C"}},
+    {name:"US SM 3", idx:3, link:147, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"US SM 4", idx:4, link:148, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"US SM 5", idx:5, link:149, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"DS SM 0", idx:6, link:150, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"DS SM 1", idx:7, link:151, crate:2, slot:1, ch:"256/256", on:true, link_ok:true, temps:{crate20:"19.9V",crate33:"3.29V",crate5:"4.98V",cc:"30.7°C",feb:"28.6°C"}},
+    {name:"DS SM 2", idx:8, link:152, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"DS SM 3", idx:9, link:153, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"DS SM 4", idx:10, link:154, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}},
+    {name:"DS SM 5", idx:11, link:155, crate:"—", slot:"—", ch:"256/256", on:false, link_ok:false, temps:{crate20:"—",crate33:"—",crate5:"—",cc:"—",feb:"—"}}
+  ];
+  var febBody = document.getElementById("feb-body");
+  var febGroups = [
+    {label:"US", rows: febs.slice(0,6)},
+    {label:"DS", rows: febs.slice(6,12)}
+  ];
+  var febRowPaint = {};
+  febGroups.forEach(function(group, gi){
+    var powerCell, dotEl, summaryEl;
+    function refreshGroup(){
+      var onCount = group.rows.filter(function(f){ return f.on; }).length;
+      var connCount = group.rows.filter(function(f){ return f.link_ok; }).length;
+      summaryEl.textContent = onCount + "/" + group.rows.length + " on · " + connCount + "/" + group.rows.length + " crate connected";
+      dotEl.classList.remove("dot-ok", "dot-off", "dot-crit");
+      dotEl.classList.add(onCount === group.rows.length ? "dot-ok" : "dot-off");
+    }
+    var initialOnCount = group.rows.filter(function(f){ return f.on; }).length;
+    var initialSummary = initialOnCount + "/" + group.rows.length + " on · " +
+      group.rows.filter(function(f){ return f.link_ok; }).length + "/" + group.rows.length + " crate connected";
+    var header = renderGroupHeader(7, group.label, initialSummary, "feb", gi, null, groupStatusDot(initialOnCount === group.rows.length, false));
+    febBody.appendChild(header);
+    dotEl = header.querySelector(".group-status-dot");
+    summaryEl = header.querySelector(".group-summary");
+
+    group.rows.forEach(function(f, i){
+      var main = document.createElement("tr");
+      main.className = "row-main group-row";
+      main.dataset.group = "feb-" + gi;
+      main.dataset.target = "feb-detail-" + gi + "-" + i;
+      main.innerHTML =
+        '<td><input type="checkbox" class="rowsel-feb" data-group="feb-' + gi + '" onclick="event.stopPropagation()"></td>' +
+        '<td class="mono">' + f.name + '</td>' +
+        '<td class="mono faint">' + f.idx + ' / ' + f.link + '</td>' +
+        '<td class="mono">' + f.crate + (f.crate !== "—" ? " · " + f.slot : "") + '</td>' +
+        '<td class="mono">' + f.ch + '</td>' +
+        '<td class="feb-power-cell"></td>' +
+        '<td>' + (f.link_ok ? '<span class="pill pill-ok">connected</span>' : '<span class="pill pill-off">not connected</span>') + '</td>';
+      febBody.appendChild(main);
+      var powerTd = main.querySelector(".feb-power-cell");
+      febRowPaint[f.name] = function(){
+        powerTd.innerHTML = f.on ? '<span class="pill pill-ok">on</span>' : '<span class="pill pill-off">off</span>';
+        refreshGroup();
+      };
+      febRowPaint[f.name]();
+
+      var det = document.createElement("tr");
+      det.className = "detail-row group-row";
+      det.dataset.group = "feb-" + gi;
+      det.id = "feb-detail-" + gi + "-" + i;
+      det.innerHTML = '<td colspan="7"><div class="detail-inner">' +
+        detailGroup("Crate 20V", f.temps.crate20) + detailGroup("Crate 3.3V", f.temps.crate33) +
+        detailGroup("Crate 5V", f.temps.crate5) + detailGroup("CC temp.", f.temps.cc) +
+        detailGroup("FEB temp.", f.temps.feb) + '</div></td>';
+      febBody.appendChild(det);
+
+      main.addEventListener("click", function(){ toggleDetail(main, det); });
+    });
+  });
+
+  function checkedFebNames(){
+    return Array.prototype.map.call(document.querySelectorAll(".rowsel-feb:checked"), function(cb){
+      return cb.closest("tr").querySelector("td.mono").textContent;
+    });
+  }
+  var febPowerMsg = document.getElementById("feb-power-msg");
+  document.getElementById("feb-power-on-btn").addEventListener("click", function(){
+    var done = [], skipped = [];
+    checkedFebNames().forEach(function(name){
+      var f = febs.find(function(x){ return x.name === name; });
+      if (!f) return;
+      // mirrors Feb.turn_on_feb_power()'s own gate - never actually built
+      // for shutdown (turning off always proceeds, see below), only for
+      // power-on: no crate link, no power-on, same as the real script.
+      if (!f.link_ok){ skipped.push(name); return; }
+      f.on = true;
+      febRowPaint[name]();
+      done.push(name);
+    });
+    febPowerMsg.textContent = skipped.length
+      ? done.length + " powered on · " + skipped.length + " skipped (crate not connected): " + skipped.join(", ")
+      : (done.length ? done.length + " powered on" : "");
+  });
+  document.getElementById("feb-power-off-btn").addEventListener("click", function(){
+    var done = [];
+    checkedFebNames().forEach(function(name){
+      var f = febs.find(function(x){ return x.name === name; });
+      if (!f) return;
+      f.on = false; // shutdown always proceeds, regardless of crate link
+      febRowPaint[name]();
+      done.push(name);
+    });
+    febPowerMsg.textContent = done.length ? done.length + " powered off" : "";
+  });
+
+  // ---- LV rows ----
+  var lvs = [
+    {name:"SMB_US_0-1", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_US_2-3", ch:"256/256", on:true, current:6.41, adjust:-3.00, ok:true, sense:"1.79V", temp:"29.8°C"},
+    {name:"SMB_US_4-5", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_US_6-7", ch:"256/256", on:false, current:null, adjust:0.00, ok:false, sense:"—", temp:"—"},
+    {name:"SMB_US_8-9", ch:"256/256", on:false, current:null, adjust:0.00, ok:false, sense:"—", temp:"—"},
+    {name:"SMB_US_10-11", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_DS_0-1", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_DS_2-3", ch:"256/256", on:true, current:6.38, adjust:-1.50, ok:true, sense:"1.80V", temp:"28.6°C"},
+    {name:"SMB_DS_4-5", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_DS_6-7", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_DS_8-9", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"},
+    {name:"SMB_DS_10-11", ch:"256/256", on:false, current:null, adjust:0.00, ok:true, sense:"—", temp:"—"}
+  ];
+  var lvBody = document.getElementById("lv-body");
+  var flagNames = ["Alert","Power Good","Over Temp","Vin Under-v","Over Current","Vout Over-v","Interlock"];
+  var lvGroups = [
+    {label:"US", rows: lvs.slice(0,6)},
+    {label:"DS", rows: lvs.slice(6,12)}
+  ];
+  var lvRowPaint = {};
+  lvGroups.forEach(function(group, gi){
+    var dotEl, summaryEl, adjustColEl;
+    function refreshGroup(){
+      var onCount = group.rows.filter(function(c){ return c.on; }).length;
+      var flaggedCount = group.rows.filter(function(c){ return !c.ok; }).length;
+      var totalCurrent = group.rows.reduce(function(sum,c){ return sum + (c.current || 0); }, 0);
+      summaryEl.textContent = onCount + "/" + group.rows.length + " on · " + flaggedCount + " flagged · " + totalCurrent.toFixed(1) + "A total";
+      dotEl.classList.remove("dot-ok", "dot-off", "dot-crit");
+      dotEl.classList.add(flaggedCount > 0 ? "dot-crit" : (onCount === group.rows.length ? "dot-ok" : "dot-off"));
+      var adjusts = group.rows.map(function(c){ return c.adjust; });
+      adjustColEl.textContent = adjusts.every(function(a){ return a === adjusts[0]; }) ? adjusts[0].toFixed(2) : "—";
+    }
+    var onCount0 = group.rows.filter(function(c){ return c.on; }).length;
+    var flagged0 = group.rows.filter(function(c){ return !c.ok; }).length;
+    var current0 = group.rows.reduce(function(sum,c){ return sum + (c.current || 0); }, 0);
+    var summary0 = onCount0 + "/" + group.rows.length + " on · " + flagged0 + " flagged · " + current0.toFixed(1) + "A total";
+    var adjusts0 = group.rows.map(function(c){ return c.adjust; });
+    var adjustColumn0 = adjusts0.every(function(a){ return a === adjusts0[0]; }) ? adjusts0[0].toFixed(2) : "—";
+    var header = renderGroupHeader(7, group.label, summary0, "lv", gi, [adjustColumn0, ""],
+      groupStatusDot(onCount0 === group.rows.length, flagged0 > 0));
+    lvBody.appendChild(header);
+    dotEl = header.querySelector(".group-status-dot");
+    summaryEl = header.querySelector(".group-summary");
+    adjustColEl = header.querySelectorAll(".group-col-value")[0];
+
+    group.rows.forEach(function(c, i){
+      var main = document.createElement("tr");
+      main.className = "row-main group-row";
+      main.dataset.group = "lv-" + gi;
+      main.dataset.target = "lv-detail-" + gi + "-" + i;
+      main.innerHTML =
+        '<td><input type="checkbox" class="rowsel-lv" data-group="lv-' + gi + '" onclick="event.stopPropagation()"></td>' +
+        '<td class="mono">' + c.name + '</td>' +
+        '<td class="mono">' + c.ch + '</td>' +
+        '<td class="lv-on-cell"></td>' +
+        '<td class="mono">' + (c.current != null ? c.current.toFixed(2) + "A" : "—") + '</td>' +
+        '<td><input type="number" class="cell-input lv-adjust-cell" value="' + c.adjust.toFixed(2) + '" step="1.5" onclick="event.stopPropagation()"><span class="unit">%</span></td>' +
+        '<td class="lv-ok-cell"></td>';
+      lvBody.appendChild(main);
+      var onTd = main.querySelector(".lv-on-cell");
+      var okTd = main.querySelector(".lv-ok-cell");
+      var adjustInput = main.querySelector(".lv-adjust-cell");
+      adjustInput.addEventListener("change", function(){
+        c.adjust = Number(adjustInput.value) || 0;
+        refreshGroup();
+      });
+      lvRowPaint[c.name] = function(){
+        onTd.innerHTML = c.on ? '<span class="pill pill-ok">on</span>' : '<span class="pill pill-off">off</span>';
+        okTd.innerHTML = c.ok ? '<span class="pill pill-ok">ok</span>' : '<span class="pill pill-crit">fault</span>';
+        adjustInput.value = c.adjust.toFixed(2);
+        refreshGroup();
+      };
+      lvRowPaint[c.name]();
+
+      var det = document.createElement("tr");
+      det.className = "detail-row group-row";
+      det.dataset.group = "lv-" + gi;
+      det.id = "lv-detail-" + gi + "-" + i;
+      var flagsHtml = '<div class="flag-row">' + flagNames.map(function(n, fi){
+        var bad = !c.ok && fi === 4; // illustrate one tripped flag on the faulted row
+        return '<span class="flag ' + (bad ? "flag-crit" : "flag-ok") + '">' + n + '</span>';
+      }).join("") + '</div>';
+      det.innerHTML = '<td colspan="7"><div class="detail-inner">' +
+        detailGroup("Sense", c.sense) + detailGroup("Temperature", c.temp) +
+        '<div class="detail-group"><span class="k">Fault flags</span>' + flagsHtml + '</div>' +
+        '</div></td>';
+      lvBody.appendChild(det);
+
+      main.addEventListener("click", function(){ toggleDetail(main, det); });
+    });
+  });
+
+  function checkedLvNames(){
+    return Array.prototype.map.call(document.querySelectorAll(".rowsel-lv:checked"), function(cb){
+      return cb.closest("tr").querySelector("td.mono").textContent;
+    });
+  }
+  var lvPowerMsg = document.getElementById("lv-power-msg");
+  document.getElementById("lv-on-btn").addEventListener("click", function(){
+    var done = [], skipped = [];
+    checkedLvNames().forEach(function(name){
+      var c = lvs.find(function(x){ return x.name === name; });
+      if (!c) return;
+      // same shape as FEB's crate-connected gate - a channel in fault
+      // doesn't get powered on. Off always proceeds regardless.
+      if (!c.ok){ skipped.push(name); return; }
+      c.on = true;
+      lvRowPaint[name]();
+      done.push(name);
+    });
+    lvPowerMsg.textContent = skipped.length
+      ? done.length + " on · " + skipped.length + " skipped (fault): " + skipped.join(", ")
+      : (done.length ? done.length + " on" : "");
+  });
+  document.getElementById("lv-off-btn").addEventListener("click", function(){
+    var done = [];
+    checkedLvNames().forEach(function(name){
+      var c = lvs.find(function(x){ return x.name === name; });
+      if (!c) return;
+      c.on = false;
+      lvRowPaint[name]();
+      done.push(name);
+    });
+    lvPowerMsg.textContent = done.length ? done.length + " off" : "";
+  });
+  document.getElementById("lv-adjust-btn").addEventListener("click", function(){
+    var val = Number(document.getElementById("lv-adjust-input").value);
+    if (Number.isNaN(val)) return;
+    checkedLvNames().forEach(function(name){
+      var c = lvs.find(function(x){ return x.name === name; });
+      if (c){ c.adjust = val; lvRowPaint[name](); }
+    });
+  });
+
+  // ---- DCDC crate rows ----
+  var crates = [
+    {name:"DCDC_C_1", hosts:"US_0-1, US_2-3", on:true},
+    {name:"DCDC_C_2", hosts:"US_4-5", on:true},
+    {name:"DCDC_C_3", hosts:"US_6-7, US_8-9", on:false},
+    {name:"DCDC_C_4", hosts:"US_10-11", on:true},
+    {name:"DCDC_C_5", hosts:"DS_0-1, DS_2-3", on:true},
+    {name:"DCDC_C_6", hosts:"DS_4-5", on:true},
+    {name:"DCDC_C_7", hosts:"DS_6-7, DS_8-9", on:true},
+    {name:"DCDC_C_8", hosts:"DS_10-11", on:true}
+  ];
+  var crateBody = document.getElementById("crate-body");
+  var crateGroups = [
+    {label:"US", rows: crates.slice(0,4)},
+    {label:"DS", rows: crates.slice(4,8)}
+  ];
+  crateGroups.forEach(function(group, gi){
+    var onCount = group.rows.filter(function(c){ return c.on; }).length;
+    var summary = onCount + "/" + group.rows.length + " crate on";
+    var header = renderGroupHeader(5, group.label, summary, "crate", gi, null, groupStatusDot(onCount === group.rows.length, false));
+    crateBody.appendChild(header);
+
+    group.rows.forEach(function(c){
+      var tr = document.createElement("tr");
+      tr.className = "group-row";
+      tr.dataset.group = "crate-" + gi;
+      tr.innerHTML =
+        '<td><input type="checkbox" class="rowsel-crate" data-group="crate-' + gi + '"></td>' +
+        '<td class="mono">' + c.name + '</td>' +
+        '<td class="mono faint">' + c.hosts + '</td>' +
+        '<td>' + (c.on ? '<span class="pill pill-ok">on</span>' : '<span class="pill pill-crit">off</span>') + '</td>' +
+        '<td><button class="btn-mini">Reset</button> <button class="btn-mini">Clear fault</button></td>';
+      crateBody.appendChild(tr);
+    });
+  });
+
+  // ---- HV rows ----
+  var hvSides = [
+    { label: "US Top", namesBase: 20, boardBase: 30 },
+    { label: "US Bottom", namesBase: 72, boardBase: 32 },
+    { label: "DS Top", namesBase: 132, boardBase: 34 },
+    { label: "DS Bottom", namesBase: 188, boardBase: 36 }
+  ];
+  var hvBody = document.getElementById("hv-body");
+  var hvRowPaint = {};
+  var hvRowData = {};
+  hvSides.forEach(function(side, gi){
+    var rows = [];
+    for (var ch = 0; ch < 8; ch++){
+      var on = (ch % 5 !== 0);
+      var board = "S" + (side.boardBase + Math.floor(ch / 4)) + "-" + ((ch % 4) + 1);
+      rows.push({ side: side.label, ch: ch, index: side.namesBase + ch, board: board, on: on, enabled: true,
+                  demand: on ? 56.0 : 0.0, current: on ? (1.2 + (ch % 4) * 0.1) : null });
+    }
+
+    var dotEl, summaryEl, demandColEl;
+    function refreshGroup(){
+      var onCount = rows.filter(function(r){ return r.on; }).length;
+      var enabledCount = rows.filter(function(r){ return r.enabled; }).length;
+      var totalCurrent = rows.reduce(function(sum,r){ return sum + (r.current || 0); }, 0);
+      summaryEl.textContent = enabledCount + " enabled · " + onCount + " on · " + totalCurrent.toFixed(1) + "µA total";
+      dotEl.classList.remove("dot-ok", "dot-off", "dot-crit");
+      dotEl.classList.add(onCount === rows.length ? "dot-ok" : "dot-off");
+      var demands = rows.map(function(r){ return r.demand; });
+      demandColEl.textContent = demands.every(function(d){ return d === demands[0]; }) ? demands[0].toFixed(1) : "—";
+    }
+    var onCount0 = rows.filter(function(r){ return r.on; }).length;
+    var enabled0 = rows.filter(function(r){ return r.enabled; }).length;
+    var current0 = rows.reduce(function(sum,r){ return sum + (r.current || 0); }, 0);
+    var summary0 = enabled0 + " enabled · " + onCount0 + " on · " + current0.toFixed(1) + "µA total";
+    var demands0 = rows.map(function(r){ return r.demand; });
+    var demandColumn0 = demands0.every(function(d){ return d === demands0[0]; }) ? demands0[0].toFixed(1) : "—";
+    var header = renderGroupHeader(9, side.label, summary0, "hv", gi, [demandColumn0, "", ""],
+      groupStatusDot(onCount0 === rows.length, false));
+    hvBody.appendChild(header);
+    dotEl = header.querySelector(".group-status-dot");
+    summaryEl = header.querySelector(".group-summary");
+    demandColEl = header.querySelectorAll(".group-col-value")[0];
+
+    rows.forEach(function(r){
+      var rowKey = r.side + " SciFi CH" + (r.ch + 1);
+      hvRowData[rowKey] = r;
+      var tr = document.createElement("tr");
+      tr.className = "group-row";
+      tr.dataset.group = "hv-" + gi;
+      tr.innerHTML =
+        '<td><input type="checkbox" class="rowsel-hv" data-group="hv-' + gi + '"></td>' +
+        '<td class="mono">' + rowKey + '</td>' +
+        '<td class="mono faint" title="index ' + r.index + '">' + r.board + '</td>' +
+        '<td class="faint">—</td>' +
+        '<td class="hv-on-cell"></td>' +
+        '<td><span class="pill pill-ok">yes</span></td>' +
+        '<td><input type="number" class="cell-input hv-demand-cell" value="' + r.demand.toFixed(1) + '" step="0.5" max="60"></td>' +
+        '<td class="mono">' + (r.current != null ? r.current.toFixed(1) + "µA" : "—") + '</td>' +
+        '<td class="mono hv-voltage-cell">' + (r.on ? "55.9V" : "—") + '</td>';
+      hvBody.appendChild(tr);
+      var onTd = tr.querySelector(".hv-on-cell");
+      var demandInput = tr.querySelector(".hv-demand-cell");
+      var voltageTd = tr.querySelector(".hv-voltage-cell");
+      demandInput.addEventListener("change", function(){
+        r.demand = Number(demandInput.value) || 0;
+        refreshGroup();
+      });
+      hvRowPaint[rowKey] = function(){
+        onTd.innerHTML = r.on ? '<span class="pill pill-ok">on</span>' : '<span class="pill pill-off">off</span>';
+        demandInput.value = r.demand.toFixed(1);
+        voltageTd.textContent = r.on ? "55.9V" : "—";
+        refreshGroup();
+      };
+      hvRowPaint[rowKey]();
+    });
+  });
+
+  function checkedHvKeys(){
+    return Array.prototype.map.call(document.querySelectorAll(".rowsel-hv:checked"), function(cb){
+      return cb.closest("tr").querySelector("td.mono").textContent;
+    });
+  }
+  var hvPowerMsg = document.getElementById("hv-power-msg");
+  document.getElementById("hv-on-btn").addEventListener("click", function(){
+    var done = [], skipped = [];
+    checkedHvKeys().forEach(function(key){
+      var r = hvRowData[key];
+      if (!r) return;
+      // same shape as FEB's crate-connected gate - a channel that isn't
+      // Enabled doesn't get its Output On/Demand touched. Off always
+      // proceeds regardless (same shutdown-never-blocked rule).
+      if (!r.enabled){ skipped.push(key); return; }
+      r.on = true;
+      hvRowPaint[key]();
+      done.push(key);
+    });
+    hvPowerMsg.textContent = skipped.length
+      ? done.length + " on · " + skipped.length + " skipped (not enabled): " + skipped.join(", ")
+      : (done.length ? done.length + " on" : "");
+  });
+  document.getElementById("hv-off-btn").addEventListener("click", function(){
+    var done = [];
+    checkedHvKeys().forEach(function(key){
+      var r = hvRowData[key];
+      if (!r) return;
+      r.on = false;
+      hvRowPaint[key]();
+      done.push(key);
+    });
+    hvPowerMsg.textContent = done.length ? done.length + " off" : "";
+  });
+  document.getElementById("hv-demand-btn").addEventListener("click", function(){
+    var val = Number(document.getElementById("hv-demand-input").value);
+    if (Number.isNaN(val)) return;
+    checkedHvKeys().forEach(function(key){
+      var r = hvRowData[key];
+      if (r){ r.demand = val; hvRowPaint[key](); }
+    });
+  });
+
+  // ---- Readout rows ----
+  var readoutModules = [];
+  febs.forEach(function(f){
+    for (var m = 0; m < 2; m++){
+      readoutModules.push({
+        feb: f.name, febIdx: f.idx, module: m,
+        label: f.name + " · Mod " + m,
+        demo: (f.idx === 2 && m === 0)
+      });
+    }
+  });
+  var vbrByModule = {
+    "US SM 2 · Mod 0": { volts: 56.8, source: "last ScanVbr run" }
+  };
+  var thrParamFields = ["threshold_start", "threshold_stop", "offset_start", "offset_end", "noisy_rate_threshold", "settle_seconds", "run_autofinding"];
+  var thrParamDefaults = {
+    threshold_start: 0, threshold_stop: 63, offset_start: 0, offset_end: 2,
+    noisy_rate_threshold: 1000000, settle_seconds: 5, run_autofinding: false
+  };
+
+  function makeDemoAsics(){
+    return [0, 1, 2, 3].map(function(asicPos){
+      var channels = [];
+      for (var c = 0; c < 32; c++){
+        var noisy = (asicPos === 1 && c === 5);
+        var deadRow = (asicPos === 3 && c >= 20 && c <= 22);
+        var masked = noisy || deadRow;
+        var cell = {
+          asic: asicPos, ch: c, masked: masked, maskedByCascade: false,
+          tthresh: 480 + asicPos * 6 + (c % 5) * 3,
+          tthresh_offset: -12 + ((asicPos + c) % 9),
+          fccr: masked ? 0 : Math.round((asicPos === 1 ? 60 : 900) + (c * 37) % 600)
+        };
+        Object.assign(cell, thrParamDefaults);
+        channels.push(cell);
+      }
+      return { pos: asicPos, enabled: true, channels: channels };
+    });
+  }
+  // Readout and Thr scan's per-module parameter table/grid share this SAME
+  // asics array (not independent makeDemoAsics() copies) - Thr scan reads
+  // Readout's own mask/enabled state directly rather than keeping its own
+  // separate copy, matching the "Readout already owns masking" decision.
+  var sharedDemoAsics = makeDemoAsics();
+
+  // Matches the Service Status card above (DCDCCrates: 1 crate flagged) -
+  // calibration scripts gate on shared-equipment health UNCONDITIONALLY
+  // (unlike power scripts, which only gate power-ON), so Start IV/
+  // Threshold scan must refuse here too, same as the real thr_run.py/
+  // vbr_run.py would via check_shared_equipment().
+  var sharedEquipmentOk = false;
+  var sharedEquipmentReason = "DCDCCrates: 1 crate flagged";
+
+  function cellTitle(cell){
+    return "ASIC " + cell.asic + " · Ch " + cell.ch + "\n" +
+      "tthresh: " + cell.tthresh + "\n" +
+      "tthresh_offset: " + cell.tthresh_offset + "\n" +
+      "FCCR: " + cell.fccr + " Hz\n" +
+      (cell.masked ? (cell.maskedByCascade ? "masked (ASIC disabled)" : "masked (individually)") : "unmasked");
+  }
+
+  function asicSummary(asic){
+    var unmasked = asic.channels.filter(function(c){ return !c.masked; }).length;
+    var totalRate = asic.channels.reduce(function(s,c){ return s + c.fccr; }, 0);
+    var avgRate = Math.round(totalRate / asic.channels.length);
+    return { unmaskedLine: unmasked + "/32 unmasked", rateLine: avgRate + " Hz avg" };
+  }
+
+  var rdTooltip = document.createElement("div");
+  rdTooltip.className = "rd-tooltip mono";
+  document.body.appendChild(rdTooltip);
+  function showTooltip(evt, text){
+    rdTooltip.textContent = text;
+    rdTooltip.classList.add("visible");
+    positionTooltip(evt);
+  }
+  function positionTooltip(evt){
+    var pad = 16;
+    var x = evt.clientX + pad, y = evt.clientY + pad;
+    var maxX = window.innerWidth - 232, maxY = window.innerHeight - 90;
+    if (x > maxX) x = evt.clientX - 232;
+    if (y > maxY) y = evt.clientY - 90;
+    rdTooltip.style.left = x + "px";
+    rdTooltip.style.top = y + "px";
+  }
+  function hideTooltip(){ rdTooltip.classList.remove("visible"); }
+
+  function cellClasses(cell){
+    if (!cell.masked) return "unmasked";
+    return cell.maskedByCascade ? "masked masked-cascade" : "masked";
+  }
+
+  function buildReadoutGrid(container, asics, onStateChange){
+    // onStateChange (optional): called after any mask/unmask or enable/
+    // disable action, so a caller outside this grid (the module's own
+    // summary row) can refresh itself instead of going stale.
+    var wrap = document.createElement("div");
+    wrap.className = "grid-toolbar";
+    wrap.innerHTML =
+      '<button class="btn btn-primary" id="readout-mask-btn">Mask ch</button>' +
+      '<button class="btn" id="readout-unmask-btn">Unmask ch</button>' +
+      '<button class="btn btn-ghost" id="readout-clear-btn">Clear selection</button>' +
+      '<span class="grid-legend">' +
+        '<span><span class="sw" style="background:var(--ok)"></span>unmasked</span>' +
+        '<span><span class="sw" style="background:var(--crit)"></span>masked (individually)</span>' +
+        '<span><span class="sw sw-cascade"></span>masked (ASIC disabled)</span>' +
+      '</span>' +
+      '<span class="hint">row header selects the whole ASIC · column header selects that channel position across all 4 ASICs · click a cell for just that channel</span>';
+    container.appendChild(wrap);
+
+    var scroll = document.createElement("div");
+    scroll.className = "grid-scroll";
+    var grid = document.createElement("div");
+    grid.className = "readout-grid";
+
+    var colHeader = document.createElement("div");
+    colHeader.className = "grid-colheader";
+    colHeader.innerHTML = '<span class="rowlabel-spacer"></span>';
+    for (var c = 0; c < 32; c++){
+      var colBtn = document.createElement("button");
+      colBtn.className = "colbtn mono";
+      colBtn.textContent = c;
+      colBtn.title = "select channel " + c + " on every ASIC in this module";
+      colBtn.addEventListener("click", function(){
+        var ch = this.textContent;
+        var cells = grid.querySelectorAll('.ch-cell[data-ch="' + ch + '"]');
+        var allSelected = Array.prototype.every.call(cells, function(el){ return el.classList.contains("selected"); });
+        cells.forEach(function(el){ el.classList.toggle("selected", !allSelected); });
+      });
+      colHeader.appendChild(colBtn);
+    }
+    grid.appendChild(colHeader);
+
+    asics.forEach(function(asic){
+      var row = document.createElement("div");
+      row.className = "asic-row";
+
+      var summary = asicSummary(asic);
+      var header = document.createElement("div");
+      header.className = "asic-row-header";
+      header.innerHTML =
+        '<div class="asic-name-row">' +
+          '<input type="checkbox" class="asic-select">' +
+          '<span class="asic-name">ASIC ' + asic.pos + '</span>' +
+          '<span class="pill asic-state ' + (asic.enabled ? "pill-ok" : "pill-off") + '">' + (asic.enabled ? "enabled" : "disabled") + '</span>' +
+        '</div>' +
+        '<span class="asic-sub asic-sub-unmasked">' + summary.unmaskedLine + '</span>';
+      header.title = "click to select every channel on ASIC " + asic.pos;
+      header.addEventListener("mouseenter", function(evt){ showTooltip(evt, "ASIC " + asic.pos + "\n" + asicSummary(asic).rateLine); });
+      header.addEventListener("mousemove", positionTooltip);
+      header.addEventListener("mouseleave", hideTooltip);
+      header.addEventListener("click", function(evt){
+        if (evt.target.classList.contains("asic-select")) return;
+        var pos = this.parentElement.dataset.asic;
+        var cells = grid.querySelectorAll('.ch-cell[data-asic="' + pos + '"]');
+        var allSelected = Array.prototype.every.call(cells, function(el){ return el.classList.contains("selected"); });
+        cells.forEach(function(el){ el.classList.toggle("selected", !allSelected); });
+      });
+
+      var checkbox = header.querySelector(".asic-select");
+      checkbox.title = "select ASIC " + asic.pos + " for Enable/Disable selected";
+      checkbox.addEventListener("click", function(evt){ evt.stopPropagation(); });
+      // called by the Readout-level Enable/Disable selected ASICs buttons -
+      // enabling/disabling an ASIC cascades to mask/unmask all its channels,
+      // since a disabled ASIC can't produce data on any of them. Marked
+      // maskedByCascade so the cell can render differently from a channel
+      // someone masked individually (e.g. a known-noisy one).
+      checkbox._applyEnabled = function(enabled){
+        asic.enabled = enabled;
+        var stateEl = header.querySelector(".asic-state");
+        stateEl.textContent = enabled ? "enabled" : "disabled";
+        stateEl.classList.toggle("pill-ok", enabled);
+        stateEl.classList.toggle("pill-off", !enabled);
+
+        asic.channels.forEach(function(cell){
+          cell.masked = !enabled;
+          cell.maskedByCascade = !enabled;
+          if (!enabled) cell.fccr = 0;
+          var cellEl = grid.querySelector('.ch-cell[data-asic="' + asic.pos + '"][data-ch="' + cell.ch + '"]');
+          if (cellEl){
+            cellEl.className = "ch-cell " + cellClasses(cell);
+            cellEl.setAttribute("aria-label", cellTitle(cell).replace(/\n/g, ", "));
+          }
+        });
+        var newSummary = asicSummary(asic);
+        header.querySelector(".asic-sub-unmasked").textContent = newSummary.unmaskedLine;
+        if (onStateChange) onStateChange();
+      };
+
+      row.dataset.asic = asic.pos;
+      row.appendChild(header);
+
+      var cellsWrap = document.createElement("div");
+      cellsWrap.className = "channel-cells";
+      asic.channels.forEach(function(cell){
+        var btn = document.createElement("button");
+        btn.className = "ch-cell " + cellClasses(cell);
+        btn.dataset.asic = cell.asic;
+        btn.dataset.ch = cell.ch;
+        btn.setAttribute("aria-label", cellTitle(cell).replace(/\n/g, ", "));
+        btn.addEventListener("mouseenter", function(evt){ showTooltip(evt, cellTitle(cell)); });
+        btn.addEventListener("mousemove", positionTooltip);
+        btn.addEventListener("mouseleave", hideTooltip);
+        btn.addEventListener("click", function(){
+          this.classList.toggle("selected");
+        });
+        cellsWrap.appendChild(btn);
+      });
+      row.appendChild(cellsWrap);
+      grid.appendChild(row);
+    });
+
+    scroll.appendChild(grid);
+    container.appendChild(scroll);
+
+    function setMasked(masked){
+      grid.querySelectorAll(".ch-cell.selected").forEach(function(el){
+        var asic = asics[Number(el.dataset.asic)];
+        var cell = asic.channels[Number(el.dataset.ch)];
+        cell.masked = masked;
+        cell.maskedByCascade = false; // an explicit selection always overrides a cascade reason
+        cell.fccr = masked ? 0 : cell.fccr;
+        el.className = "ch-cell selected " + cellClasses(cell);
+        el.setAttribute("aria-label", cellTitle(cell).replace(/\n/g, ", "));
+      });
+      asics.forEach(function(asic){
+        var summary = asicSummary(asic);
+        var rowEl = grid.querySelector('.asic-row[data-asic="' + asic.pos + '"]');
+        if (!rowEl) return;
+        var unmaskedEl = rowEl.querySelector(".asic-sub-unmasked");
+        if (unmaskedEl) unmaskedEl.textContent = summary.unmaskedLine;
+      });
+      if (onStateChange) onStateChange();
+    }
+    wrap.querySelector("#readout-mask-btn").addEventListener("click", function(){ setMasked(true); });
+    wrap.querySelector("#readout-unmask-btn").addEventListener("click", function(){ setMasked(false); });
+    wrap.querySelector("#readout-clear-btn").addEventListener("click", function(){
+      grid.querySelectorAll(".ch-cell.selected").forEach(function(el){ el.classList.remove("selected"); });
+    });
+  }
+
+  function computeModuleStats(asics){
+    var activeAsics = asics.filter(function(a){ return a.enabled; }).length;
+    var allChannels = asics.reduce(function(acc, a){ return acc.concat(a.channels); }, []);
+    var unmaskedCh = allChannels.filter(function(c){ return !c.masked; }).length;
+    return {
+      asicText: activeAsics + "/" + asics.length,
+      chText: unmaskedCh + "/" + allChannels.length,
+      healthy: activeAsics === asics.length && unmaskedCh === allChannels.length
+    };
+  }
+
+  function buildModuleTargetTable(bodyId, tableKey){
+    // Readout only - Sel+module+ASIC active+ch unmasked+VBR, grid demo.
+    var body = document.getElementById(bodyId);
+    var colspan = 5;
+    var numExtraCols = 3;
+    var groups = [
+      {label:"US", rows: readoutModules.slice(0, 12)},
+      {label:"DS", rows: readoutModules.slice(12, 24)}
+    ];
+    var groupHeaderRefs = []; // {rows, cells} for live re-aggregation
+    var demoRowRefresh = null;
+
+    groups.forEach(function(group, gi){
+      var demoStats = computeModuleStats(sharedDemoAsics);
+      var rowValues = group.rows.map(function(m){
+        var values = m.demo ? [demoStats.asicText, demoStats.chText] : ["—", "—"];
+        var vbr = vbrByModule[m.label];
+        values.push(vbr ? vbr.volts.toFixed(1) + "V" : "—");
+        return values;
+      });
+      var columnCells = [];
+      for (var ci = 0; ci < numExtraCols; ci++){
+        var colVals = rowValues.map(function(v){ return v[ci]; });
+        var allSame = colVals.every(function(v){ return v === colVals[0]; });
+        columnCells.push(allSame ? colVals[0] : "—");
+      }
+      var wiredCount = group.rows.filter(function(m){ return m.demo; }).length;
+      var summary = wiredCount + "/" + group.rows.length + " wired";
+      var header = renderGroupHeader(colspan, group.label, summary, tableKey, gi, columnCells);
+      body.appendChild(header);
+      groupHeaderRefs.push({ rows: group.rows, cells: header.querySelectorAll(".group-col-value") });
+
+      group.rows.forEach(function(m, i){
+        var showDemo = m.demo;
+        var main = document.createElement("tr");
+        main.className = "group-row" + (showDemo ? " row-main" : "");
+        main.dataset.group = tableKey + "-" + gi;
+        var values = rowValues[i];
+        var vbr = vbrByModule[m.label];
+        var moduleDot = showDemo ? groupStatusDot(demoStats.healthy, false) : "";
+        var cellsHtml =
+          '<td><input type="checkbox" class="rowsel-' + tableKey + '" data-group="' + tableKey + '-' + gi + '" onclick="event.stopPropagation()"></td>' +
+          '<td class="mono">' + moduleDot + m.label + (showDemo ? ' <span class="pill pill-ok">wired</span>' : '') + '</td>' +
+          '<td class="mono module-asic-cell">' + values[0] + '</td>' +
+          '<td class="mono module-ch-cell">' + values[1] + '</td>' +
+          '<td class="mono divider-left"' + (vbr ? ' title="' + vbr.source + '"' : '') + '>' + (vbr ? '<span class="xref-dot calibration"></span>' : '') + values[2] + '</td>';
+        main.innerHTML = cellsHtml;
+        body.appendChild(main);
+
+        if (showDemo){
+          var det = document.createElement("tr");
+          det.className = "detail-row group-row";
+          det.dataset.group = tableKey + "-" + gi;
+          det.id = tableKey + "-detail-" + gi + "-" + i;
+          var td = document.createElement("td");
+          td.colSpan = colspan;
+          det.appendChild(td);
+          body.appendChild(det);
+
+          demoRowRefresh = function(){
+            var s = computeModuleStats(sharedDemoAsics);
+            main.querySelector(".module-asic-cell").textContent = s.asicText;
+            main.querySelector(".module-ch-cell").textContent = s.chText;
+            var dotEl = main.querySelector(".group-status-dot");
+            if (dotEl){
+              dotEl.classList.remove("dot-ok", "dot-off", "dot-crit");
+              dotEl.classList.add(s.healthy ? "dot-ok" : "dot-off");
+            }
+            groupHeaderRefs.forEach(function(g){
+              var groupRowValues = g.rows.map(function(mm){
+                if (!mm.demo) return ["—", "—", "—"];
+                var vbrM = vbrByModule[mm.label];
+                return [s.asicText, s.chText, vbrM ? vbrM.volts.toFixed(1) + "V" : "—"];
+              });
+              for (var ci = 0; ci < 3; ci++){
+                var colVals = groupRowValues.map(function(v){ return v[ci]; });
+                var allSame = colVals.every(function(v){ return v === colVals[0]; });
+                g.cells[ci].textContent = allSame ? colVals[0] : "—";
+              }
+            });
+          };
+          buildReadoutGrid(td, sharedDemoAsics, demoRowRefresh);
+          main.dataset.target = det.id;
+          main.addEventListener("click", function(){ toggleDetail(main, det); });
+        }
+      });
+    });
+    wireSelectAll(tableKey + "-select-all", "rowsel-" + tableKey, tableKey);
+  }
+
+  buildModuleTargetTable("readout-body", "readout");
+  document.getElementById("readout-enable-asic-btn").addEventListener("click", function(){
+    document.querySelectorAll("#readout-body .asic-select:checked").forEach(function(cb){ cb._applyEnabled(true); });
+  });
+  document.getElementById("readout-disable-asic-btn").addEventListener("click", function(){
+    document.querySelectorAll("#readout-body .asic-select:checked").forEach(function(cb){ cb._applyEnabled(false); });
+  });
+
+  var ivParamFields = ["iv_start", "iv_end", "iv_step", "settle_seconds", "fit_window_v", "min_peak_prominence", "current_limit_ua", "run_vbr_finding"];
+  var ivParamDefaults = {
+    iv_start: 54.0, iv_end: 58.0, iv_step: 30, settle_seconds: 5,
+    fit_window_v: 0.5, min_peak_prominence: 3.0, current_limit_ua: 1000, run_vbr_finding: false
+  };
+  var ivModuleParams = {};
+  readoutModules.forEach(function(m){ ivModuleParams[m.label] = Object.assign({}, ivParamDefaults); });
+
+  function readIvForm(){
+    var values = {};
+    ivParamFields.forEach(function(field){
+      var el = document.getElementById("iv-form-" + field);
+      values[field] = (el.type === "checkbox") ? el.checked : Number(el.value);
+    });
+    return values;
+  }
+
+  function formatIvValue(value){
+    return (typeof value === "boolean") ? (value ? "yes" : "no") : value;
+  }
+
+  function buildIvTargetTable(){
+    var body = document.getElementById("iv-target-body");
+    var groups = [
+      {label:"US", rows: readoutModules.slice(0, 12)},
+      {label:"DS", rows: readoutModules.slice(12, 24)}
+    ];
+    var rowPainters = [];
+    var headerPainters = [];
+
+    groups.forEach(function(group, gi){
+      var initialColumnCells = ivParamFields.map(function(){ return ""; });
+      var header = renderGroupHeader(10, group.label, "", "iv-target", gi, initialColumnCells);
+      body.appendChild(header);
+      var headerValueCells = header.querySelectorAll(".group-col-value");
+
+      var paintHeader = function(){
+        ivParamFields.forEach(function(field, fi){
+          var values = group.rows.map(function(m){ return ivModuleParams[m.label][field]; });
+          var allSame = values.every(function(v){ return v === values[0]; });
+          headerValueCells[fi].textContent = allSame ? formatIvValue(values[0]) : "—";
+        });
+      };
+      headerPainters.push(paintHeader);
+
+      group.rows.forEach(function(m){
+        var tr = document.createElement("tr");
+        tr.className = "group-row";
+        tr.dataset.group = "iv-target-" + gi;
+        tr.innerHTML =
+          '<td><input type="checkbox" class="rowsel-iv-target" data-group="iv-target-' + gi + '" onclick="event.stopPropagation()"></td>' +
+          '<td class="mono"><span class="xref-dot calibration customized-dot" style="display:none" title="parameters differ from default"></span>' + m.label + '</td>' +
+          ivParamFields.map(function(){ return '<td class="mono"></td>'; }).join("");
+        body.appendChild(tr);
+
+        var valueCells = Array.prototype.slice.call(tr.children, 2); // skip Sel. + module-name cells
+        var customizedDot = tr.querySelector(".customized-dot");
+        var paint = function(){
+          var params = ivModuleParams[m.label];
+          ivParamFields.forEach(function(field, fi){
+            valueCells[fi].textContent = formatIvValue(params[field]);
+          });
+          var isCustom = ivParamFields.some(function(f){ return params[f] !== ivParamDefaults[f]; });
+          customizedDot.style.display = isCustom ? "" : "none";
+        };
+        paint();
+        rowPainters.push(paint);
+      });
+
+      paintHeader();
+    });
+
+    document.getElementById("iv-apply-selected").addEventListener("click", function(){
+      var formValues = readIvForm();
+      document.querySelectorAll(".rowsel-iv-target:checked").forEach(function(cb){
+        var label = cb.closest("tr").querySelector("td.mono").textContent;
+        ivModuleParams[label] = Object.assign({}, formValues);
+      });
+      rowPainters.forEach(function(paint){ paint(); });
+      headerPainters.forEach(function(paint){ paint(); });
+    });
+
+    wireSelectAll("iv-target-select-all", "rowsel-iv-target", "iv-target");
+  }
+  buildIvTargetTable();
+
+  function ivCustomizedCount(){
+    return Object.keys(ivModuleParams).filter(function(label){
+      var p = ivModuleParams[label];
+      return ivParamFields.some(function(f){ return p[f] !== ivParamDefaults[f]; });
+    }).length;
+  }
+  document.getElementById("iv-start-btn").addEventListener("click", function(){
+    var msg = document.getElementById("iv-start-msg");
+    if (!sharedEquipmentOk){
+      msg.textContent = "Refused - shared equipment gate: " + sharedEquipmentReason;
+      msg.classList.add("msg-crit");
+      return;
+    }
+    msg.classList.remove("msg-crit");
+    var customized = ivCustomizedCount();
+    msg.textContent = "IV scan started - " + readoutModules.length + " modules" +
+      (customized ? " (" + customized + " with custom parameters)" : "");
+  });
+
+  // ---- Thr scan targeting: reads/writes directly on sharedDemoAsics, the
+  // SAME objects Readout's own grid owns - masking/ASIC-enable state here
+  // is read-only (Readout's job), selection here is only for choosing
+  // which channels "Set to selected" writes the 7 scan parameters to.
+  function readThrForm(){
+    var values = {};
+    thrParamFields.forEach(function(field){
+      var el = document.getElementById("thr-form-" + field);
+      values[field] = (el.type === "checkbox") ? el.checked : Number(el.value);
+    });
+    return values;
+  }
+
+  function cellThrTooltip(cell){
+    var lines = ["ASIC " + cell.asic + " · Ch " + cell.ch, cell.masked ? "masked (via Readout)" : "unmasked"];
+    thrParamFields.forEach(function(f){ lines.push(f + ": " + formatIvValue(cell[f])); });
+    return lines.join("\n");
+  }
+
+  function asicParamsUniform(asic){
+    return thrParamFields.every(function(f){
+      var vals = asic.channels.map(function(c){ return c[f]; });
+      return vals.every(function(v){ return v === vals[0]; });
+    });
+  }
+
+  function asicThrTooltip(asic){
+    var lines = ["ASIC " + asic.pos + " · " + (asic.enabled ? "enabled" : "disabled")];
+    thrParamFields.forEach(function(f){
+      var vals = asic.channels.map(function(c){ return c[f]; });
+      var allSame = vals.every(function(v){ return v === vals[0]; });
+      lines.push(f + ": " + (allSame ? formatIvValue(vals[0]) : "mixed"));
+    });
+    return lines.join("\n");
+  }
+
+  function buildThrParamGrid(container, asics){
+    var wrap = document.createElement("div");
+    wrap.className = "grid-toolbar";
+    wrap.innerHTML =
+      '<button class="btn btn-ghost" id="thr-grid-clear-btn">Clear selection</button>' +
+      '<span class="hint">selection decides which channels "Set to selected" writes the form\'s parameters to · color/hover here reflect Readout\'s own masking (read-only)</span>';
+    container.appendChild(wrap);
+
+    var scroll = document.createElement("div");
+    scroll.className = "grid-scroll";
+    var grid = document.createElement("div");
+    grid.className = "readout-grid";
+
+    var colHeader = document.createElement("div");
+    colHeader.className = "grid-colheader";
+    colHeader.innerHTML = '<span class="rowlabel-spacer"></span>';
+    for (var c = 0; c < 32; c++){
+      var colBtn = document.createElement("button");
+      colBtn.className = "colbtn mono";
+      colBtn.textContent = c;
+      colBtn.title = "select channel " + c + " on every ASIC in this module";
+      colBtn.addEventListener("click", function(){
+        var ch = this.textContent;
+        var cells = grid.querySelectorAll('.ch-cell[data-ch="' + ch + '"]');
+        var allSelected = Array.prototype.every.call(cells, function(el){ return el.classList.contains("selected"); });
+        cells.forEach(function(el){ el.classList.toggle("selected", !allSelected); });
+      });
+      colHeader.appendChild(colBtn);
+    }
+    grid.appendChild(colHeader);
+
+    var asicHeaders = {};
+
+    asics.forEach(function(asic){
+      var row = document.createElement("div");
+      row.className = "asic-row";
+
+      var summary = asicSummary(asic);
+      var header = document.createElement("div");
+      header.className = "asic-row-header";
+      header.innerHTML =
+        '<div class="asic-name-row">' +
+          '<span class="asic-name">ASIC ' + asic.pos + '</span>' +
+          '<span class="pill ' + (asic.enabled ? "pill-ok" : "pill-off") + '" title="read-only - set from Readout"><span class="xref-dot readout"></span>' + (asic.enabled ? "enabled" : "disabled") + '</span>' +
+        '</div>' +
+        '<span class="asic-sub asic-sub-unmasked"><span class="xref-dot readout"></span>' + summary.unmaskedLine + '</span>' +
+        '<span class="asic-sub asic-sub-params">params: ' + (asicParamsUniform(asic) ? "uniform" : "mixed") + '</span>';
+      header.addEventListener("mouseenter", function(evt){ showTooltip(evt, asicThrTooltip(asic)); });
+      header.addEventListener("mousemove", positionTooltip);
+      header.addEventListener("mouseleave", hideTooltip);
+      header.addEventListener("click", function(){
+        var pos = this.parentElement.dataset.asic;
+        var cells = grid.querySelectorAll('.ch-cell[data-asic="' + pos + '"]');
+        var allSelected = Array.prototype.every.call(cells, function(el){ return el.classList.contains("selected"); });
+        cells.forEach(function(el){ el.classList.toggle("selected", !allSelected); });
+      });
+      row.dataset.asic = asic.pos;
+      row.appendChild(header);
+      asicHeaders[asic.pos] = header;
+
+      var cellsWrap = document.createElement("div");
+      cellsWrap.className = "channel-cells";
+      asic.channels.forEach(function(cell){
+        var btn = document.createElement("button");
+        btn.className = "ch-cell " + (cell.masked ? "masked" : "unmasked");
+        btn.dataset.asic = cell.asic;
+        btn.dataset.ch = cell.ch;
+        btn.setAttribute("aria-label", cellThrTooltip(cell).replace(/\n/g, ", "));
+        btn.addEventListener("mouseenter", function(evt){ showTooltip(evt, cellThrTooltip(cell)); });
+        btn.addEventListener("mousemove", positionTooltip);
+        btn.addEventListener("mouseleave", hideTooltip);
+        btn.addEventListener("click", function(){ this.classList.toggle("selected"); });
+        cellsWrap.appendChild(btn);
+      });
+      row.appendChild(cellsWrap);
+      grid.appendChild(row);
+    });
+
+    scroll.appendChild(grid);
+    container.appendChild(scroll);
+
+    wrap.querySelector("#thr-grid-clear-btn").addEventListener("click", function(){
+      grid.querySelectorAll(".ch-cell.selected").forEach(function(el){ el.classList.remove("selected"); });
+    });
+
+    container._refreshThrGrid = function(){
+      asics.forEach(function(asic){
+        asicHeaders[asic.pos].querySelector(".asic-sub-params").textContent =
+          "params: " + (asicParamsUniform(asic) ? "uniform" : "mixed");
+      });
+      grid.querySelectorAll(".ch-cell").forEach(function(el){
+        var asic = asics[Number(el.dataset.asic)];
+        var cell = asic.channels[Number(el.dataset.ch)];
+        el.setAttribute("aria-label", cellThrTooltip(cell).replace(/\n/g, ", "));
+      });
+    };
+  }
+
+  function buildThrTargetTable(){
+    var body = document.getElementById("thr-target-body");
+    var colspan = 9;
+    var groups = [
+      {label:"US", rows: readoutModules.slice(0, 12)},
+      {label:"DS", rows: readoutModules.slice(12, 24)}
+    ];
+    var moduleRowCells = {};
+    var groupHeaderCells = [];
+    var thrGridContainer = null;
+    var thrCustDotRefresh = null;
+
+    function computeRowValues(m){
+      if (!m.demo) return thrParamFields.map(function(){ return "—"; });
+      var allChannels = sharedDemoAsics.reduce(function(acc, asic){ return acc.concat(asic.channels); }, []);
+      return thrParamFields.map(function(f){
+        var vals = allChannels.map(function(c){ return c[f]; });
+        var allSame = vals.every(function(v){ return v === vals[0]; });
+        return allSame ? formatIvValue(vals[0]) : "—";
+      });
+    }
+
+    groups.forEach(function(group, gi){
+      var rowValuesByIndex = group.rows.map(computeRowValues);
+      var columnCells = thrParamFields.map(function(f, fi){
+        var colVals = rowValuesByIndex.map(function(v){ return v[fi]; });
+        var allSame = colVals.every(function(v){ return v === colVals[0]; });
+        return allSame ? colVals[0] : "—";
+      });
+      var header = renderGroupHeader(colspan, group.label, "", "thr-target", gi, columnCells);
+      body.appendChild(header);
+      groupHeaderCells.push({ rows: group.rows, cells: header.querySelectorAll(".group-col-value") });
+
+      group.rows.forEach(function(m, i){
+        var showDemo = m.demo;
+        var main = document.createElement("tr");
+        main.className = "group-row" + (showDemo ? " row-main" : "");
+        main.dataset.group = "thr-target-" + gi;
+        var customizedDotHtml = showDemo ? '<span class="xref-dot calibration customized-dot" title="at least one channel has non-default parameters"></span>' : '';
+        main.innerHTML =
+          '<td><input type="checkbox" class="rowsel-thr-target" data-group="thr-target-' + gi + '" onclick="event.stopPropagation()"></td>' +
+          '<td class="mono">' + customizedDotHtml + m.label + (showDemo ? ' <span class="pill pill-ok">wired</span>' : '') + '</td>' +
+          thrParamFields.map(function(){ return '<td class="mono"></td>'; }).join("");
+        body.appendChild(main);
+
+        var valueCells = Array.prototype.slice.call(main.children, 2);
+        rowValuesByIndex[i].forEach(function(v, fi){ valueCells[fi].textContent = v; });
+        if (showDemo) moduleRowCells[m.label] = valueCells;
+        if (showDemo){
+          var custDot = main.querySelector(".customized-dot");
+          thrCustDotRefresh = function(){
+            var allChannels = sharedDemoAsics.reduce(function(acc, asic){ return acc.concat(asic.channels); }, []);
+            var isCustom = allChannels.some(function(c){
+              return thrParamFields.some(function(f){ return c[f] !== thrParamDefaults[f]; });
+            });
+            custDot.style.display = isCustom ? "" : "none";
+          };
+          thrCustDotRefresh();
+        }
+
+        if (showDemo){
+          var det = document.createElement("tr");
+          det.className = "detail-row group-row";
+          det.dataset.group = "thr-target-" + gi;
+          det.id = "thr-target-detail-" + gi + "-" + i;
+          var td = document.createElement("td");
+          td.colSpan = colspan;
+          det.appendChild(td);
+          body.appendChild(det);
+          buildThrParamGrid(td, sharedDemoAsics);
+          thrGridContainer = td;
+          main.dataset.target = det.id;
+          main.addEventListener("click", function(){ toggleDetail(main, det); });
+        }
+      });
+    });
+
+    function refreshAll(){
+      groupHeaderCells.forEach(function(g){
+        var rowValuesByIndex = g.rows.map(computeRowValues);
+        var columnCells = thrParamFields.map(function(f, fi){
+          var colVals = rowValuesByIndex.map(function(v){ return v[fi]; });
+          var allSame = colVals.every(function(v){ return v === colVals[0]; });
+          return allSame ? colVals[0] : "—";
+        });
+        g.cells.forEach(function(el, fi){ el.textContent = columnCells[fi]; });
+      });
+      Object.keys(moduleRowCells).forEach(function(label){
+        var m = readoutModules.find(function(mm){ return mm.label === label; });
+        var values = computeRowValues(m);
+        moduleRowCells[label].forEach(function(el, fi){ el.textContent = values[fi]; });
+      });
+      if (thrGridContainer) thrGridContainer._refreshThrGrid();
+      if (thrCustDotRefresh) thrCustDotRefresh();
+    }
+
+    document.getElementById("thr-apply-selected").addEventListener("click", function(){
+      var formValues = readThrForm();
+      var selectedCells = document.querySelectorAll("#thr-target-body .ch-cell.selected");
+      if (selectedCells.length > 0){
+        selectedCells.forEach(function(el){
+          var asic = sharedDemoAsics[Number(el.dataset.asic)];
+          var cell = asic.channels[Number(el.dataset.ch)];
+          Object.assign(cell, formValues);
+        });
+      } else {
+        document.querySelectorAll("#thr-target-body .rowsel-thr-target:checked").forEach(function(cb){
+          if (!cb.closest("tr").dataset.target) return; // only the demo module has real channels
+          sharedDemoAsics.forEach(function(asic){
+            asic.channels.forEach(function(cell){ Object.assign(cell, formValues); });
+          });
+        });
+      }
+      refreshAll();
+    });
+
+    wireSelectAll("thr-target-select-all", "rowsel-thr-target", "thr-target");
+  }
+  buildThrTargetTable();
+
+  function thrCustomizedCount(){
+    var allChannels = sharedDemoAsics.reduce(function(acc, a){ return acc.concat(a.channels); }, []);
+    return allChannels.filter(function(c){
+      return thrParamFields.some(function(f){ return c[f] !== thrParamDefaults[f]; });
+    }).length;
+  }
+  document.getElementById("thr-start-btn").addEventListener("click", function(){
+    var msg = document.getElementById("thr-start-msg");
+    if (!sharedEquipmentOk){
+      msg.textContent = "Refused - shared equipment gate: " + sharedEquipmentReason;
+      msg.classList.add("msg-crit");
+      return;
+    }
+    msg.classList.remove("msg-crit");
+    var customized = thrCustomizedCount();
+    msg.textContent = "Threshold scan started - " + sharedDemoAsics.reduce(function(sum, a){ return sum + a.channels.length; }, 0) + " channels" +
+      (customized ? " (" + customized + " with custom parameters)" : "");
+  });
+
+  function detailGroup(label, value){
+    return '<div class="detail-group"><span class="k">' + label + '</span><span class="v">' + value + '</span></div>';
+  }
+
+  // Group-level health dot (Power tables only, where every row has a
+  // real on/off - and, for LV, a real fault - reading): all on = green,
+  // any real fault = red, otherwise (some off, no fault) = grey/neutral.
+  // Computed only from fields the group summary text already shows.
+  function groupStatusDot(allOn, hasFault){
+    var cls = hasFault ? "dot-crit" : (allOn ? "dot-ok" : "dot-off");
+    return '<span class="dot ' + cls + ' group-status-dot"></span>';
+  }
+
+  // ---- geometric group header: US/DS (FEB, LV) or US/DS Top/Bottom (HV) ----
+  // Collapsed by default. Its own checkbox selects every row inside just
+  // this group - separate from the table-wide select-all in the header.
+  function renderGroupHeader(colspan, label, summary, tableKey, groupIndex, columnCells, statusDot){
+    // columnCells (optional): one HTML string per extra column, rendered
+    // as its own <td> aligned with the data rows below (instead of one
+    // colspan summary cell) - used by the IV target table's per-column
+    // "same value across the whole group?" report.
+    // statusDot (optional): HTML for a small health dot (groupStatusDot())
+    // shown before the label - kept as its own param rather than baked
+    // into `label` so the US/DS side-color detection below (which checks
+    // what `label` literally starts with) isn't thrown off by it.
+    var groupKey = tableKey + "-" + groupIndex;
+    var tr = document.createElement("tr");
+    // US/DS identity accent - same color for "US"/"US Top"/"US Bottom"
+    // etc. everywhere on the page, so the same side reads as the same
+    // color in every table (Power, Readout, Calibration).
+    var sideClass = label.indexOf("US") === 0 ? " side-us" : (label.indexOf("DS") === 0 ? " side-ds" : "");
+    tr.className = "group-header" + sideClass;
+    var headerColspan = columnCells ? (colspan - columnCells.length) : colspan;
+    tr.innerHTML =
+      '<td colspan="' + headerColspan + '"><div class="group-header-inner">' +
+        '<input type="checkbox" class="group-select" onclick="event.stopPropagation()">' +
+        '<span class="group-chevron">▸</span>' +
+        (statusDot || "") +
+        '<span>' + label + '</span>' +
+        (summary ? '<span class="group-summary">' + summary + '</span>' : '') +
+      '</div></td>' +
+      (columnCells ? columnCells.map(function(c){ return '<td class="mono group-col-value">' + c + '</td>'; }).join("") : "");
+
+    var groupCheckbox = tr.querySelector(".group-select");
+    groupCheckbox.dataset.table = tableKey;
+    groupCheckbox.dataset.group = groupKey;
+    groupCheckbox.addEventListener("change", function(){
+      cascadeCheckboxes("rowsel-" + tableKey, groupKey, this.checked);
+      recomputeCheckboxAncestors("rowsel-" + tableKey, tableKey);
+    });
+
+    tr.addEventListener("click", function(){
+      var expand = !tr.classList.contains("expanded");
+      tr.classList.toggle("expanded", expand);
+      // only the MAIN rows open/close with the group - a row's own detail
+      // panel (FEB/LV) stays independent, needs its own click either way
+      document.querySelectorAll('.group-row[data-group="' + groupKey + '"]:not(.detail-row)').forEach(function(row){
+        row.classList.toggle("expanded", expand);
+      });
+      if (!expand){
+        // collapsing - also close any row detail left open inside this group
+        document.querySelectorAll('.group-row[data-group="' + groupKey + '"].open').forEach(function(el){
+          el.classList.remove("open");
+        });
+      }
+    });
+
+    return tr;
+  }
+  function toggleDetail(main, det){
+    var willOpen = !det.classList.contains("open");
+    document.querySelectorAll(".detail-row.open").forEach(function(r){ r.classList.remove("open"); });
+    document.querySelectorAll(".row-main.open").forEach(function(r){ r.classList.remove("open"); });
+    if (willOpen){ det.classList.add("open"); main.classList.add("open"); }
+  }
+
+  // ---- checkbox hierarchy: table-wide select-all -> group-select ->
+  // row -> (readout only) that row's own ASIC checkboxes. Bulk actions
+  // (group-select, table-wide) call these two functions directly instead
+  // of dispatching synthetic events for individual listeners to catch -
+  // simpler and doesn't depend on getting event-bubbling options right.
+  function cascadeCheckboxes(rowClass, groupKey, checked){
+    var selector = "." + rowClass + (groupKey ? '[data-group="' + groupKey + '"]' : "");
+    document.querySelectorAll(selector).forEach(function(cb){
+      cb.checked = checked;
+      var tr = cb.closest("tr");
+      var detId = tr && tr.dataset.target;
+      if (detId){
+        var det = document.getElementById(detId);
+        if (det) det.querySelectorAll(".asic-select").forEach(function(acb){ acb.checked = checked; });
+      }
+    });
+  }
+  function recomputeCheckboxAncestors(rowClass, tableKey){
+    document.querySelectorAll('.group-select[data-table="' + tableKey + '"]').forEach(function(groupCb){
+      var rows = document.querySelectorAll("." + rowClass + '[data-group="' + groupCb.dataset.group + '"]');
+      groupCb.checked = rows.length > 0 && Array.prototype.every.call(rows, function(r){ return r.checked; });
+    });
+    var allRows = document.querySelectorAll("." + rowClass);
+    var tableSelectAll = document.getElementById(tableKey + "-select-all");
+    if (tableSelectAll){
+      tableSelectAll.checked = allRows.length > 0 && Array.prototype.every.call(allRows, function(r){ return r.checked; });
+    }
+  }
+
+  // ---- select-all / deselect-all, one wiring per table ----
+  function wireSelectAll(headerId, rowClass, tableKey){
+    var header = document.getElementById(headerId);
+    if (!header) return;
+    header.addEventListener("change", function(){
+      cascadeCheckboxes(rowClass, null, header.checked);
+      document.querySelectorAll('.group-select[data-table="' + tableKey + '"]').forEach(function(cb){
+        cb.checked = header.checked;
+      });
+    });
+  }
+  wireSelectAll("feb-select-all", "rowsel-feb", "feb");
+  wireSelectAll("lv-select-all", "rowsel-lv", "lv");
+  wireSelectAll("hv-select-all", "rowsel-hv", "hv");
+  wireSelectAll("crate-select-all", "rowsel-crate", "crate");
+
+  // ---- individual row clicks: cascade down to that row's own ASIC
+  // checkboxes (if any) and recompute its group-select/table-select-all.
+  // Delegated (one listener) so it covers every table without each
+  // needing its own per-row wiring. Real clicks bubble natively, so this
+  // needs no synthetic-event help, unlike the bulk paths above.
+  document.addEventListener("change", function(evt){
+    var cb = evt.target;
+    if (!(cb.tagName === "INPUT" && cb.type === "checkbox")) return;
+
+    // ASIC checkbox deselected/selected individually (Readout only) -
+    // propagate upward: its module row checkbox should only stay checked
+    // while EVERY ASIC in that module is still selected.
+    if (cb.classList.contains("asic-select")){
+      var detailRow = cb.closest(".detail-row");
+      if (!detailRow) return;
+      var moduleRow = document.querySelector('[data-target="' + detailRow.id + '"]');
+      if (!moduleRow) return;
+      var siblingAsics = detailRow.querySelectorAll(".asic-select");
+      var allChecked = siblingAsics.length > 0 && Array.prototype.every.call(siblingAsics, function(a){ return a.checked; });
+      var moduleCheckbox = moduleRow.querySelector('[class^="rowsel-"]');
+      if (moduleCheckbox && moduleCheckbox.checked !== allChecked){
+        moduleCheckbox.checked = allChecked;
+        var moduleRowClass = Array.prototype.find.call(moduleCheckbox.classList, function(c){ return c.indexOf("rowsel-") === 0; });
+        recomputeCheckboxAncestors(moduleRowClass, moduleRowClass.slice("rowsel-".length));
+      }
+      return;
+    }
+
+    var rowClass = Array.prototype.find.call(cb.classList, function(c){ return c.indexOf("rowsel-") === 0; });
+    if (!rowClass) return;
+    var tableKey = rowClass.slice("rowsel-".length);
+
+    var tr = cb.closest("tr");
+    var detId = tr && tr.dataset.target;
+    if (detId){
+      var det = document.getElementById(detId);
+      if (det) det.querySelectorAll(".asic-select").forEach(function(acb){ acb.checked = cb.checked; });
+    }
+
+    recomputeCheckboxAncestors(rowClass, tableKey);
+  });
+})();
+</script>
+</body>
+</html>

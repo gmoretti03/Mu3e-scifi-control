@@ -1,0 +1,163 @@
+====================================================================
+PROPOSAL: wiring sequencer_scripts into the real PySequencer on mu3ebe
+====================================================================
+STATUS: designed and verified locally on 2026-08-13, then DELIBERATELY
+REVERTED the same day (user: the local online/ checkout shouldn't carry
+live PySequencer wiring until this is actually approved). The bootstrap
+code (section 2a) was left in place in sequencer_scripts/scifi_scripts/
+scripts/*.py - it's inert without the symlink (MIDAS_EXPTAB is never
+set in the normal dev/test workflow, so it silently no-ops). The one
+symlink (section 2b) was removed again - online/online/userfiles/
+sequencer/ is back to its original pre-proposal state. Nothing here has
+ever touched mu3ebe. See section 6 for the one-command local re-
+creation once this is approved.
+
+--------------------------------------------------------------------
+1. THE PROBLEM
+--------------------------------------------------------------------
+sequencer_scripts (scifi_scripts/pixel_scripts/common_scripts) is a
+standalone dev repo (bitbucket.org:mu3e/sequencer_scripts.git), checked
+out as a sibling of online/ under the same home directory (confirmed
+both locally and on the real mu3ebe layout: ~/sequencer_scripts/ and
+~/online/... sit side by side under ~).
+
+The real PySequencer only looks for scripts inside the experiment's own
+userfiles/sequencer/ directory (part of the online/ repo). scifi_
+scripts/thr_scan.py etc. are not there - they live in the separate dev
+repo - so today there is no path from "operator clicks Start on the
+SciFi page" to "the real prepare()/execute()/finalise() code actually
+runs".
+
+A second, independent constraint (checked directly in PySequencer's own
+source, midas/python/midas/sequencer.py): it loads a script by reading
+its text and exec()-ing it into a fresh globals dict - no __file__, no
+sys.path help. So even a symlinked script can't discover its own
+location to find its own imports. Whatever loads it must already know
+how to make `import detector.scifi`, `import common.setup`, etc. work.
+
+--------------------------------------------------------------------
+2. THE DESIGN
+--------------------------------------------------------------------
+Two problems, solved separately:
+
+a) Making the entry-point scripts importable (detector/calibrations/
+   actions/common). Each PySequencer entry-point script (scripts/
+   vbr_run.py, thr_run.py, lv_bringup_run.py, hv_bringup_run.py,
+   feb_bringup_run.py) starts with a self-contained _bootstrap_sys_
+   path() function, run before any of the script's real imports:
+     - reads MIDAS_EXPTAB / MIDAS_EXPT_NAME from the environment (the
+       same variables every MIDAS client already needs to connect -
+       nothing new to configure)
+     - looks up the experiment directory in the exptab file
+     - computes <expt_dir>/../../sequencer_scripts/scifi_scripts and
+       .../common_scripts (sequencer_scripts is a sibling of the
+       experiment directory's own grandparent - true both locally and
+       on the real mu3ebe layout shown by the user)
+     - prepends both to sys.path if not already there
+   If MIDAS_EXPTAB isn't set, the function silently no-ops - the
+   existing PYTHONPATH-based dev/test workflow is completely
+   unaffected (verified: full 13-file scifi_scripts test suite stays
+   green with this code in place).
+   This step needs NO symlink at all - it walks straight to the real
+   sequencer_scripts checkout on disk.
+
+b) Letting the operator actually find/pick a script in PySequencer's
+   own file browser. This is the only piece that needs a symlink,
+   and only one:
+     userfiles/sequencer/scifi_scripts -> <path-to-sequencer_scripts>/
+                                            scifi_scripts/scripts
+   i.e. it points at the scripts/ SUBFOLDER only, not the whole scifi_
+   scripts/ repo folder - so what an operator actually sees under that
+   name is exactly the 5 runnable entry points (vbr_run.py, thr_run.py,
+   lv_bringup_run.py, hv_bringup_run.py, feb_bringup_run.py), nothing
+   else (no detector/, calibrations/, actions/, tests/, .git/...).
+   No common_scripts symlink is needed under userfiles/sequencer/ at
+   all - common_scripts isn't something an operator ever picks, only
+   something the scripts import, already covered by (a).
+
+--------------------------------------------------------------------
+3. WHAT'S ALREADY DONE AND VERIFIED (locally only)
+--------------------------------------------------------------------
+- All 5 scripts in sequencer_scripts/scifi_scripts/scripts/ have
+  _bootstrap_sys_path() as described above.
+- Locally, online/online/userfiles/sequencer/scifi_scripts is a real
+  symlink pointing at ../../../../sequencer_scripts/scifi_scripts/
+  scripts (relative, since sequencer_scripts and online are siblings
+  locally too).
+- Verified end-to-end by literally reproducing PySequencer's own load
+  mechanism: read the file's text through the symlink, exec() it into
+  a fresh globals dict, with ONLY MIDAS_EXPTAB/MIDAS_EXPT_NAME set (no
+  PYTHONPATH pointing at scifi_scripts/common_scripts at all) - all 5
+  scripts load cleanly and define sequence()/define_params().
+- Full scifi_scripts 13-file test suite green throughout.
+
+--------------------------------------------------------------------
+4. STEPS TO APPLY ON MU3EBE (once approved - not done)
+--------------------------------------------------------------------
+Prerequisite: scifi_scripts needs to be checked out on mu3ebe first -
+today ~/sequencer_scripts/ there only has common_scripts/pixel_scripts/
+README.md (confirmed via a real terminal session, 2026-08-13). This is
+presumably a normal `git pull`/checkout inside the existing
+~/sequencer_scripts repo (same remote the local dev repo uses),
+whatever the user's usual process for that is.
+
+Once scifi_scripts exists at ~/sequencer_scripts/scifi_scripts on
+mu3ebe, the only remaining step is ONE symlink:
+
+    cd <mu3ebe's real userfiles/sequencer/ path>
+    ln -s ~/sequencer_scripts/scifi_scripts/scripts scifi_scripts
+
+(adjust the target to an absolute path, or a correct relative one from
+wherever userfiles/sequencer/ really sits relative to ~/sequencer_
+scripts/ on that machine - the local proposal used a relative link,
+but an absolute one is equally fine and arguably clearer for a
+one-off manual step like this).
+
+No other symlink is needed - not for common_scripts, not for a topic-
+folder mirror under a "scifi/" directory (an earlier draft of this
+proposal tried that; the old scifi/pixels folders under userfiles/
+sequencer/ are legacy from before this dev-repo setup and shouldn't be
+built on further).
+
+--------------------------------------------------------------------
+5. HOW TO VERIFY AFTER APPLYING
+--------------------------------------------------------------------
+- In PySequencer's own file browser, navigate to userfiles/sequencer/
+  scifi_scripts/ - it should show exactly the 5 .py files listed above.
+- Load one (e.g. vbr_run.py) and let PySequencer parse it - define_
+  params() should register its parameters without an import error. An
+  ImportError at this point means either scifi_scripts isn't actually
+  checked out where expected, or MIDAS_EXPTAB/MIDAS_EXPT_NAME aren't
+  set in the PySequencer process's own environment (they should be -
+  every MIDAS client needs them - but worth checking first if this
+  step fails).
+- Running it for real touches real hardware (HV/LV/FEB power) - only
+  do that once satisfied the import step above works cleanly, and with
+  is_odb_available/can_send_commands_to_odb parameters set deliberately
+  (both default True - a dry run needs is_odb_available=False set
+  explicitly).
+
+--------------------------------------------------------------------
+6. QUICK LOCAL RE-CREATION (once this proposal is approved)
+--------------------------------------------------------------------
+The bootstrap code (section 2a) is already in place in sequencer_
+scripts/scifi_scripts/scripts/*.py - nothing to redo there. Only the
+symlink itself needs recreating, from the repo root:
+
+    cd online/online/userfiles/sequencer
+    ln -s ../../../../sequencer_scripts/scifi_scripts/scripts scifi_scripts
+
+Then re-verify with the same exec()-mimicking check used originally:
+
+    export MIDAS_EXPTAB=online/online/exptab MIDAS_EXPT_NAME=Mu3e
+    export PYTHONPATH=midas/python
+    python3 -c "
+    code = open('online/online/userfiles/sequencer/scifi_scripts/vbr_run.py').read()
+    g = {}
+    exec(code, g)
+    print('sequence defined:', 'sequence' in g)
+    "
+
+(repeat for thr_run.py/lv_bringup_run.py/hv_bringup_run.py/
+feb_bringup_run.py, or just re-run the scifi_scripts test suite -
+tests/test_*.py - to confirm nothing else regressed first).

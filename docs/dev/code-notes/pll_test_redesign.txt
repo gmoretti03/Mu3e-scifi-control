@@ -1,0 +1,1051 @@
+PLL TEST - FULL REDESIGN, STARTED 2026-08-28
+====================================================================
+STATUS as of 2026-08-28 end of session: BUILT AND WORKING END-TO-END
+against the local test ODB (port 8080). On explicit "vai": removed
+cal_pll_tab entirely from SciFi_Calibration.js and Calibration's tabs;
+added Configuration's `.mtabs`/`.mpanel` split ("FEB Configuration" +
+"PLL Test") in SciFi_main.html with a real form (FEB select, ASIC
+select, 3 DAC inputs, "Run step" button, 3 extra optional SMB_control
+buttons, a result panel). SciFi_Configuration.js got the full
+single-step implementation (`cfgPllRunStep` and its helpers) - mask
+ASIC -> SMB_control/asic -> zero DACs -> set DACs -> Set FEBs into
+running -> wait 1s -> Set FEBs into idle -> read_hist (polled, bounded,
+degrades gracefully if it never completes) -> read FCTM temp + bins +
+locked -> `cfgPllSaveStep` writes Verdict/LastStep/Bins and GROWS the
+Steps/Temp0|Temp1|Verdict arrays by one entry per step (delete+recreate
+at the new length, since ODB arrays don't resize in place - fine for a
+manual tool, one extra round-trip per button press). The fix-ODB script
+in this doc WAS run against the local ODB (schema is live there now).
+Real FEB number (144-155) resolved via `LinksFibre/Settings/LinkFEB[
+febIndex]` (found live, not guessed - see below). Simulated the full
+RPC sequence directly against the local ODB (bypassing the browser) to
+verify it end-to-end - see "TESTING NOTES" below for what that caught
+and fixed, and what's still genuinely untested (needs a live firmware
+target, not this local ODB, which isn't wired to any real device).
+
+Companion docs: calibration_page_plan.txt (the ScanVbr/ScanThr page
+design this mirrors), calibration_open_items.txt section 7 (PLL Test's
+full prior history - the HIST-guide-based build 2026-08-14, and why it
+was wrong), todo.txt (has a pointer to this file).
+
+====================================================================
+FINAL STATE AS OF 2026-08-28 END OF SESSION - READ THIS FIRST
+====================================================================
+The design went through several pivots in one session (all kept below
+for the reasoning trail, but this section is the one to trust if it
+conflicts with anything further down):
+
+1. NOT a multi-FEB automated sweep. Concluded a JS-page-driven loop
+   over thousands of DAC combinations isn't realistic (browser-tab-
+   dependent, no backend resilience - see "ARCHITECTURE CHANGE"
+   section below for why no PySequencer/Python is involved at all).
+   FINAL: the page is a MANUAL, SINGLE-STEP tool. The operator sets one
+   FEB + one ASIC (+ the 3 DAC values) and presses an action that runs
+   ONE iteration of what used to be the loop body (mask -> set SMB_
+   control/asic -> zero DACs -> set chosen DACs -> Set FEBs Into
+   Running -> wait 1s -> Set FEBs Into Idle -> read_hist -> read FCTM
+   temp) - then the operator repeats manually for the next combination
+   they want to try. No automated iteration, no Start/Stop/Pause state
+   machine, no PySequencer.
+2. SELECTION MODEL, changed to match #1: a single active FEB+ASIC
+   target, NOT the multi-FEB checkbox list (`pllSelectedFebs`) ScanVbr/
+   ScanThr use - that model was for an automated sweep across selected
+   FEBs, which no longer exists. `selected_febs` in ODB is likely not
+   needed anymore for PllTest specifically (not yet removed from ODB,
+   see "STILL OPEN" below).
+3. SECTION PLACEMENT, changed AGAIN: given #1/#2, this is a live manual
+   diagnostic/probing tool, not a calibration producing a persisted
+   physics constant the way ScanVbr/ScanThr do - so it goes back to
+   CONFIGURATION (reversing the Calibration-vs-Configuration reversal
+   earlier in this same doc). This matches the ORIGINAL 2026-08-14
+   decision, but arrived at for a better reason this time (the real
+   mechanism turned out to be a manual per-step tool, not guessed at).
+4. PERSISTENCE EXCEPTION, explicit: Configuration's established
+   philosophy is "nothing written/saved to ODB, fully live" (2026-08-14
+   decision, still true for everything else in Configuration). PLL
+   TEST IS A DELIBERATE EXCEPTION to that rule: the user explicitly
+   wants the per-step trace (Temp0/Temp1/Verdict) and the last
+   histogram PERSISTED to ODB (not just shown live and discarded), so
+   the temperature-vs-lock correlation can be reviewed later after
+   leaving the page. Reason given: "teniamola persistita, così vediamo
+   la correlazione dopo".
+5. ODB LOCATION: stays exactly where already designed and confirmed -
+   `/CosmicRun/Calibration/SciFi/PllTest/<FEB>/...` (schema below,
+   still valid). NOT moved to a Configuration-owned path, even though
+   the PAGE TAB itself moves to SciFi_Configuration.js. Precedent for
+   this split already exists today: SciFi_Configuration.js already
+   reads `CFG_CAL_ODB_BASE + "/PllTest"` (= this same path) read-only
+   for its status pill (`CFG_CAL_ODB_BASE = "/CosmicRun/Calibration/
+   SciFi"`, confirmed live in the file 2026-08-28) - so a Configuration
+   tab reading/writing a `/CosmicRun/Calibration/...` path is not a new
+   pattern, just now with write access too (manual step actions write
+   there, not just a read-only status pill).
+6. ParametersUsed CHANGES SHAPE (not yet re-confirmed with the user,
+   flagged in "STILL OPEN" below): with no automated sweep, there is no
+   "range" to record - `vnvcodelay_start/stop/step` etc. (as designed
+   in the schema section below) should probably become 3 SINGLE values
+   (`vnvcodelay`, `vncnt`, `vnhitlogic` - whatever the operator actually
+   set for that manual step), matching the existing "ParametersUsed
+   is a historical record of what was actually run" convention used by
+   ScanVbr/ScanThr/the old PllTest. NOT YET RE-DISCUSSED WITH THE USER
+   - the schema section below still shows the old range-triple version,
+   needs updating before implementation.
+
+STILL OPEN, carried over / newly surfaced by this pivot:
+- RESOLVED 2026-08-28: `selected_febs` (top-level PllTest ODB field) -
+  DROPPED. No longer needed now that there's no multi-FEB sweep
+  (single active FEB+ASIC target instead, see point 2 above).
+- RESOLVED 2026-08-28: `SMB_control/init_temp`/`stop_temp`/`read_temp` -
+  meaning still not understood, but decided to expose them on the page
+  as EXTRA OPTIONAL controls/buttons (not part of the required single-
+  step sequence, not gated on anything) - the operator can trigger them
+  manually if needed even without the assistant/user fully knowing
+  their semantics yet. Revisit the wording/grouping once their real
+  purpose is known.
+- RESOLVED 2026-08-28: locked-bit ODB path was NOT actually open - found
+  live in -4.json as `ShiftReport/PLL/<FEB>/locked-<asic>` (BOOL),
+  already imported locally. No longer needs Yfeng.
+- STILL UNDECIDED ("non so ancora", 2026-08-28): FCCP as a possible
+  cheap health signal, Steps/Temp0|Temp1|Verdict array sizing, and the
+  top-level `PllTest/exposure_seconds` leftover - all still open, no
+  direction chosen yet.
+- The exact page interaction for "one manual step" (a form with FEB
+  dropdown + ASIC dropdown + 3 DAC number inputs + one "Run step"
+  button?) - not yet designed, this doc only has the data model side
+  settled, not the concrete page layout.
+
+====================================================================
+WHY THIS EXISTS - THE OLD DESIGN WAS BUILT ON A GUESS THAT DIDN'T HOLD
+====================================================================
+2026-08-14: PllTest was built end-to-end (page + pll_scan.py/pll_run.py
++ ODB tree) against top_hist_20260720_MIDAS_GUIDE.md, on the strength
+of a Slack message from Yifen Wan that "HIST supersedes pll_test.py".
+The guide's assumed tree (Settings/Histogram, Commands/Histogram/
+{Apply,Snapshot}, Variables/Histogram/{Valid,Bins}) never existed on
+the real system - confirmed against multiple real ODB exports through
+2026-08-26, nothing under /Equipment/SciFiFibre matched it. Same day,
+2026-08-14, it was ALSO decided (todo.txt) that PllTest should move
+from Calibration into Configuration and become a live/non-persisted
+check - that decision predates everything below and is EXPLICITLY
+RECONSIDERED in this doc (see "Where it lives" below).
+
+2026-08-28: the real firmware landed. The user provided 3 real ODB
+exports of /Equipment/SciFiFibre from the actual system (not the local
+test ODB), taken minutes apart while live-testing:
+  - SciFiFibre-2.json (14:49)
+  - SciFiFibre-3.json (15:08)
+  - SciFiFibre-4.json (15:11) - superseded -3, used as the final import
+All three confirmed: no Histogram tree exists. Instead:
+
+  Settings/Names FCCH|FCCF|FCCE|FCCP: grew 16 -> 96 entries (now named
+  "Fibres hits ASIC 0".."Fibres hits ASIC 95" - full per-ASIC coverage
+  across all 12 FEBs x 8 ASICs, was a partial/prototype subset before).
+  Settings/Names FCCR: 512 -> 3072 (96 ASICs x 32 channels). FCCP is
+  labelled "PLL Diff (SciFi-only PLL health counter)" in
+  SciFi_Configuration.js - may be relevant to PLL health independently
+  of the mechanism below, not yet explored.
+  These 9 keys (5 Names + 4 Variables, FCCR's Variable was already the
+  right size locally) were imported into the local test ODB (port
+  8080) via db_delete+db_create+db_paste, done 2026-08-28 - this part
+  IS applied locally already, unlike everything else in this doc.
+
+  ShiftReport/PLL/<FEB 144-155>/<ASIC 0-7> - THE REAL histogram data.
+  256-entry DWORD (hex-formatted) array per FEB+ASIC. Only "0" and "1"
+  existed in the real export because the user had only exercised ASIC
+  0 and 1 as a manual test - not because it's per-module. Imported
+  into local ODB 2026-08-28 (24 arrays, FEB x {0,1} only, matching what
+  the real export actually had - ASICs 2-7 not yet created anywhere,
+  real or local).
+
+  SMB_control/{init_temp, stop_temp, read_temp, read_hist (bool,
+  ODBBooleanCommand pattern - write True, firmware processes, reverts
+  to False - confirmed live: True in -3.json, back to False in -4.json
+  three minutes later), asic (int, target selector, confirmed changing
+  1->0->1 across the three exports)}. -2.json ALSO had SMB_control/
+  PLL/<FEB>/0 (a 256-DWORD array, one per FEB, no per-ASIC split) -
+  gone entirely in both -3 and -4, so NOT imported locally - treated as
+  a removed/abandoned mechanism, not a stable part of the design.
+  init_temp/stop_temp/read_temp meaning NOT YET UNDERSTOOD - open
+  question, see below.
+
+  Imported into local ODB 2026-08-28: SMB_control/{init_temp,
+  stop_temp, read_temp, read_hist, asic} (from -4.json's values -
+  False/False/False/False/1) and ShiftReport/PLL/<feb>/{0,1} for all 12
+  FEBs (all-zero data, real system had FEBsOn=false/SWBOn=false at
+  export time, i.e. detector not even powered).
+
+====================================================================
+THE REAL MECHANISM AND ALGORITHM - FROM THE USER DIRECTLY, 2026-08-28
+====================================================================
+Verbatim substance of what the user described (paraphrasing their own
+message, not guessed):
+
+  Select the ASIC via SMB_control/asic, then trigger SMB_control/
+  read_hist. The firmware reads that ASIC's histogram and writes it to
+  ShiftReport/PLL/<feb>/<asic>. ASIC range is 0-7 (only 0-1 tested so
+  far - hardware/firmware-side, not a page limitation).
+
+  "locked" - CORRECTED 2026-08-28 (found by re-checking -4.json, not in
+  -2/-3): the user first floated this as an unbuilt proposal ("one bit
+  per ASIC, 8 bits total"), but the firmware had ALREADY added it by
+  the time of the -4.json export (15:11), just not as a bitmask - it's
+  a separate BOOL per asic, sibling of the histogram itself:
+  `ShiftReport/PLL/<FEB>/locked-<asic>` (type 8/BOOL, e.g. `locked-0`,
+  `locked-1` - same "only the tested asics exist" growth pattern as the
+  histogram keys `0`/`1`). Both were `True` for every FEB in the
+  -4.json export. Imported into local ODB 2026-08-28 (24 booleans, FEB
+  x {0,1}). NO Yfeng conversation needed for this - already real,
+  already live, path confirmed by direct inspection.
+
+  User also asked, if possible, to plot the histogram on the page -
+  confirmed useful, reuses the exact plotting approach the old design
+  already had (calPllRenderPlotInto / MPlotGraph, same pattern IV/Thr
+  scan's detail panels use).
+
+  The real calibration ALGORITHM (this is what pll_scan.py must become
+  - a full DAC sweep, not a single histogram snapshot):
+    set FEB into bypass
+    for vnvcodelay:
+      for vncnt:
+        for vnhitlogic:
+          for asic:
+            set_asic_mask (LinksFibre) - only this asic active
+            set SMB_control/asic to the target
+            set_all_to_zero - the 3 DAC values (vnvcodelay, vncnt,
+              vnhitlogic), reset before applying the next combination
+            apply the next combination's values
+            "Set FEBs Into Running" (start_run)
+            wait 1 second
+            "Set FEBs Into Idle" (stop_run)
+            read_hist (SMB_control/read_hist trigger)
+  DAC write targets CONFIRMED 2026-08-28: `/Equipment/SciFiFibre/
+  Settings/ASICs/TDCs/{vnvcodelay, vncnt, vnhitlogic}` (INT32[96],
+  indexed by global asic index 0-95, same scheme as FCCH/FCCP) - real,
+  writable, already checked against a live export. Legal min/max still
+  unknown (needs Yfeng), but the mechanism itself is implementable now.
+
+  All of this only makes sense while the chip is in PLL/test-pulse
+  mode (reuses the existing configure_pll_mode()/revert_pll_mode() on
+  SciFiDetector, already written 2026-08-14 - ported from
+  Scifi-monitor.js's configure_pll()/configure_short(), see
+  calibration_open_items.txt section 7 for that history - unaffected
+  by this redesign, still the right mechanism for entering/leaving PLL
+  mode itself).
+  User also wants the FEB's temperature (MuTRiG Temp0/Temp1) read back
+  at EACH step, to correlate PLL lock quality against temperature -
+  this reuses FCTM (Docs devolpment session 2026-08-2x, SciFi_PowerFEB.
+  js + SciFi_Geometry.js already display it) as the data source, no
+  new temperature mechanism needed, just a new read call inside the
+  loop.
+
+====================================================================
+DESIGN DECISIONS AGREED WITH THE USER, 2026-08-28 - SUPERSEDED
+====================================================================
+SUPERSEDED by "FINAL STATE" above (points 1-3): the multi-FEB
+automated-sweep idea below (points 1-2) was abandoned once the page-JS-
+loop approach was judged unrealistic - the section stays only for the
+reasoning trail. Point 3 (per-asic result split, raw-vs-lightweight
+persistence) and point 4 (old param form is obsolete) are still
+correct and still apply.
+
+1. WHERE IT LIVES: back in Calibration (NOT Configuration). This
+   REVERSES the 2026-08-14 decision. Reasoning discussed and agreed:
+   that decision assumed a quick, one-shot live check; the real
+   algorithm is a genuine multi-DAC sweep across 8 ASICs x 12 FEBs
+   with a real result worth keeping (like ScanVbr/ScanThr), not a
+   transient live probe. Confirmed explicitly by the user ("andiamo in
+   calibration").
+
+2. SELECTION: only the FEBs the operator selects get swept - same
+   multi-FEB checkbox UX already built for ScanVbr/ScanThr/old PllTest
+   (pllSelectedFebs), NOT an automatic whole-detector sweep. Confirmed
+   explicitly ("giriamo solo le feb selezionate").
+
+3. WHAT GETS PERSISTED, per FEB per ASIC:
+   - The full raw 256-bin histogram: ONLY for the LAST step swept (or
+     whichever step's data is being shown) - keeping every step's
+     histogram would be enormous (thousands of steps x 256 bins x 12
+     FEBs x 8 ASICs).
+   - A LIGHTWEIGHT full trace across EVERY step: Temp0, Temp1 (from
+     FCTM, FEB-granularity - shared across that FEB's 8 ASICs at a
+     given step, not asic-specific), plus a small per-step verdict/
+     metric derived from that step's histogram (e.g. peak/width or the
+     future locked bit) - NOT the histogram itself. This is what makes
+     the "correlate against temperature" plot possible without storing
+     every histogram. Confirmed explicitly by the user ("tenerla su
+     ogni step va bene") after the assistant proposed this raw-vs-
+     lightweight split specifically to answer "per la temperatura come
+     facciamo?" (if only the last step's full result were kept, the
+     temperature-vs-progress correlation the user wants would be
+     impossible - hence the split).
+
+4. THE OLD PAGE PARAMETER FORM IS FULLY OBSOLETE. Confirmed by reading
+   SciFi_Calibration.js live (2026-08-28): pllParamFields = [preset,
+   left_bound, bin_width, interval_clocks, filter_mode, filter_field,
+   filter_asic, filter_channel, poll_budget] plus pllSharedFields =
+   [exposure_seconds, make_plots, save_to_root] - ALL of these belong
+   to the old Histogram-guide-based single-shot design and correspond
+   to nothing in the real mechanism. The user's own framing ("i
+   parametri di selezione dentro la pagina sono inutili, non vengono
+   calcolati") is correct: none of these are computed/consumed by
+   anything real. They will NOT be ported into the new design as-is.
+   The new page has essentially no operator-editable per-step
+   parameters at all - the DAC sweep loop (vnvcodelay/vncnt/
+   vnhitlogic ranges) lives entirely inside the future pll_scan.py
+   script, not exposed as editable page fields. Confirmed explicitly:
+   "possiamo solo fare partire da odb il test" - the page's job is
+   limited to: select FEBs, Start/Stop/Pause (same PySequencer command
+   mechanism already used by ScanVbr/ScanThr), and display live
+   status/results as the script writes them to ODB - exactly the same
+   architecture as ScanVbr/ScanThr already have, just with a different,
+   much smaller, parameter form (or none at all on the page side - the
+   DAC ranges below are recorded to ODB for provenance/audit but are
+   NOT proposed as page-editable inputs; whether they ever become
+   editable is an explicit open question, not decided).
+
+====================================================================
+ARCHITECTURE CHANGE, 2026-08-28: NO PYTHON/PYSEQUENCER AT ALL
+====================================================================
+User, explicit: the page acts DIRECTLY on ODB - the whole 4-nested-loop
+algorithm (bypass, per-asic mask, DAC reset+set, start_run/wait/
+stop_run, read_hist, FCTM temp read, ODB writes) runs as JS on the page
+itself, NOT as a PySequencer-launched Python script. This replaces the
+"same architecture as ScanVbr/ScanThr" assumption made earlier in this
+doc (section "THE OLD PAGE PARAMETER FORM IS FULLY OBSOLETE" above) -
+that assumption is WRONG, corrected here.
+
+`calibrations/pll_scan.py` and `scripts/pll_run.py` (written 2026-08-14
+against the old HIST-guide design) will NOT be used for this - but the
+user said explicitly to leave them in the repo as-is, unused ("non
+verranno utilizzati, ma lasciali lì, non si sa mai"). Do not delete or
+refactor them as part of this redesign.
+
+CONSEQUENCES:
+- No ROOT save (`build_root_report`/`ResultSaverROOT`) and no CDB/RunDB
+  save (`ResultSaverRunDB`) - both were Python-script-side mechanisms
+  that only made sense when a `_run.py` script executed the scan
+  server-side. With the page driving ODB directly, there is no
+  process to do this saving - dropped entirely for PLL Test specifically
+  (ScanVbr/ScanThr keep their own ROOT/CDB paths unchanged, this only
+  affects PllTest).
+- No saved plot FILES either (the old `make_plots` shared field, which
+  meant "have the Python script render and save a plot image to disk")
+  - also dropped, same reasoning. This is DIFFERENT from the user's
+  earlier ask to plot the histogram live ON the page (MPlotGraph,
+  in-browser) - that stays, it's a page display feature, not a
+  Python-side saved artifact. Don't conflate the two "plot" asks.
+- CAL_PYSEQ_SCRIPT_FOR.PllTest / the PySequencer Start-script-Load-new-
+  file-Stop-Pause mechanism does NOT apply to PllTest anymore. Start/
+  Stop/Pause on the new PLL Test tab must be page-native JS state (a
+  running/stopped/paused flag the loop checks between iterations), not
+  PySequencer commands. ScanVbr/ScanThr are UNAFFECTED, they keep using
+  PySequencer as today.
+
+OPEN CONCERN - RESOLVED by the pivot in "FINAL STATE" above: a page-JS-
+driven AUTOMATED loop would only progress while the browser tab stayed
+open (no backend resilience, unlike a PySequencer script). This is what
+led the user to conclude "non penso sia possibile implementare uno
+scan" and settle on the manual single-step model instead - there is no
+long unattended run anymore, so this concern no longer applies. Each
+manual action is one short round-trip (mask, DAC set, run/wait 1s/idle,
+read_hist, temp read), not a multi-hour background sweep.
+
+====================================================================
+PROPOSED NEW ODB SCHEMA - AGREED WITH THE USER 2026-08-28, NOT APPLIED
+====================================================================
+Same base paths and per-FEB partitioning as today (US_SM0..5, DS_SM0..5
+under /CosmicRun/Calibration/SciFi/PllTest, single non-partitioned
+template under /CosmicRun/CalibrationDefaults/SciFi/PllTest - same
+split ScanVbr/ScanThr already use). Status/Message/Warnings at the FEB
+level are UNCHANGED (kept as-is, same pattern as ScanVbr/ScanThr).
+
+<FEB>/
+  Status, Message, Warnings          (unchanged)
+  ParametersUsed/
+    vnvcodelay, vncnt, vnhitlogic       (INT32, single values - the
+      exact 3 DAC values the operator set for that one manual step,
+      NOT a range. Changed 2026-08-28 from the original range-triple
+      design (vnvcodelay_start/stop/step etc.) once the sweep became a
+      manual single-step tool instead of an automated loop - confirmed
+      with the user. Same "ParametersUsed is a historical record of
+      what was actually run" convention as ScanVbr/ScanThr.)
+  Result/
+    Asic0 .. Asic7/
+      Verdict                        (STRING, final per-asic outcome)
+      LastStep/
+        vnvcodelay, vncnt, vnhitlogic (INT32, the combo whose histogram
+                                        is kept below)
+      Bins[256]                      (DWORD, hex - same type/shape as
+                                       the real ShiftReport/PLL data,
+                                       last step only)
+      Steps/
+        Temp0[], Temp1[]             (FLOAT/DOUBLE, one entry per step
+                                       actually swept - full trace)
+        Verdict[]                    (STRING or lightweight per-step
+                                       metric, one entry per step -
+                                       full trace, NOT the histogram)
+
+Old fields being REMOVED entirely from ParametersUsed: preset,
+left_bound, bin_width, interval_clocks, filter_mode, filter_field,
+filter_asic, filter_channel, poll_budget, exposure_seconds. Old Result
+fields being REMOVED (replaced by the per-Asic structure above):
+Verdict/Peak/Width/Bins at the flat FEB level.
+
+NOT YET DECIDED / NOT PART OF THIS SCHEMA:
+- The "locked" field - RESOLVED, see above: real path is
+  `ShiftReport/PLL/<FEB>/locked-<asic>` (BOOL, already live in
+  firmware, already imported locally). Consider reading this directly
+  into Result/Asic<n>/Verdict or a dedicated Locked field instead of
+  deriving a verdict from the histogram ourselves.
+- Whether the top-level PllTest/exposure_seconds (currently still in
+  ODB as a leftover shared field, sibling of selected_febs/status/
+  message) gets removed too - not raised with the user yet, left as-is
+  for now, flagging here so it isn't silently dropped later without
+  asking.
+- Array length for Steps/Temp0, Steps/Temp1, Steps/Verdict - depends on
+  the actual number of steps the sweep will run (unknown until
+  vnvcodelay/vncnt/vnhitlogic ranges are decided, presumably with
+  Yfeng). The script that implements this must resize these arrays
+  itself once it knows the real step count for a given run - db_create
+  with a placeholder array_length=1 is only a structural scaffold, not
+  a sizing decision.
+- SMB_control's init_temp/stop_temp/read_temp meaning - unclear,
+  possibly a separate temperature-readback mechanism distinct from
+  FCTM. Not investigated yet.
+- FCCP ("PLL Diff (SciFi-only PLL health counter)") - already exists,
+  now full-detector (96 ASICs), never explored for whether it's useful
+  input to this redesign (e.g. as a cheap always-on health signal
+  alongside the on-demand histogram test). Flagged, not pursued.
+
+====================================================================
+READY-TO-RUN SCRIPT (LOCAL TEST ODB ONLY) - WRITTEN, NOT EXECUTED
+====================================================================
+Saved at (session scratchpad, may not survive - copy below is the
+source of truth): /private/tmp/claude-501/-Users-gmoretti-Work-Mu3e/
+7220a7a1-e294-4b43-a70c-73b0fad86426/scratchpad/fix_plltest_odb.py
+
+Deletes the old ParametersUsed+Result under all 12 FEBs + the defaults
+template, then recreates them per the schema above. The assistant's
+first attempt to run db_delete directly was blocked by the Claude Code
+auto-mode classifier (bulk delete on a live ODB path) - needs the user
+to run it (or explicitly re-authorize the assistant to try again).
+
+    import json, urllib.request
+
+    BASE = "http://localhost:8080/?mjsonrpc"
+
+    def call(method, params):
+        body = json.dumps({"jsonrpc": "2.0", "method": method, "params": params, "id": 1}).encode()
+        req = urllib.request.Request(BASE, data=body, headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read())
+
+    FEBS = ["US_SM0", "US_SM1", "US_SM2", "US_SM3", "US_SM4", "US_SM5",
+            "DS_SM0", "DS_SM1", "DS_SM2", "DS_SM3", "DS_SM4", "DS_SM5"]
+
+    CAL_BASE = "/CosmicRun/Calibration/SciFi/PllTest"
+    DEF_BASE = "/CosmicRun/CalibrationDefaults/SciFi/PllTest"
+
+    PARAM_FIELDS = ["vnvcodelay", "vncnt", "vnhitlogic"]
+
+    delete_paths = []
+    for feb in FEBS:
+        delete_paths.append(CAL_BASE + "/" + feb + "/ParametersUsed")
+        delete_paths.append(CAL_BASE + "/" + feb + "/Result")
+    delete_paths.append(DEF_BASE + "/ParametersUsed")
+    delete_paths.append(DEF_BASE + "/Result")
+
+    r = call("db_delete", {"paths": delete_paths})
+    print("DELETE:", r.get("result", r))
+
+    def result_items(base):
+        items = []
+        for a in range(8):
+            asic_base = base + "/Asic" + str(a)
+            items.append({"path": asic_base + "/Verdict", "type": 12, "string_length": 32})
+            items.append({"path": asic_base + "/LastStep/vnvcodelay", "type": 7})
+            items.append({"path": asic_base + "/LastStep/vncnt", "type": 7})
+            items.append({"path": asic_base + "/LastStep/vnhitlogic", "type": 7})
+            items.append({"path": asic_base + "/Bins", "type": 6, "array_length": 256})
+            items.append({"path": asic_base + "/Steps/Temp0", "type": 10, "array_length": 1})
+            items.append({"path": asic_base + "/Steps/Temp1", "type": 10, "array_length": 1})
+            items.append({"path": asic_base + "/Steps/Verdict", "type": 12, "array_length": 1, "string_length": 16})
+        return items
+
+    create_items = []
+    for feb in FEBS:
+        feb_base = CAL_BASE + "/" + feb
+        for f in PARAM_FIELDS:
+            create_items.append({"path": feb_base + "/ParametersUsed/" + f, "type": 7})
+        create_items.extend(result_items(feb_base + "/Result"))
+
+    for f in PARAM_FIELDS:
+        create_items.append({"path": DEF_BASE + "/ParametersUsed/" + f, "type": 7})
+    create_items.extend(result_items(DEF_BASE + "/Result"))
+
+    r = call("db_create", create_items)
+    statuses = r.get("result", r).get("status", [])
+    print("CREATE: total", len(statuses), "ok" if all(s == 1 for s in statuses) else "SOME FAILED")
+    for path, status in zip([i["path"] for i in create_items], statuses):
+        if status != 1:
+            print("  FAILED:", path, status)
+
+    check = call("db_get_values", {"paths": [CAL_BASE + "/US_SM0/Result/Asic0", CAL_BASE + "/US_SM0/ParametersUsed"]})
+    print("VERIFY US_SM0/Result/Asic0 + ParametersUsed:")
+    print(json.dumps(check.get("result", check), indent=1)[:1500])
+
+====================================================================
+TESTING NOTES, 2026-08-28
+====================================================================
+No browser available in this environment, so the JS logic was verified
+by replaying the exact same mjsonrpc calls `cfgPllRunStep`/
+`cfgPllSaveStep` make, directly against the local ODB via Python, for
+FEB "US SM 0" (febIndex 2, real FEB number 146, ASIC 0, globalAsicIndex
+16). All RPC calls returned status 1 (mask write, SMB_control/asic,
+DAC zero+set, Set FEBs into running/idle, read_hist trigger, FCTM+bins+
+locked read). `read_hist` never reverted to False in this replay -
+expected, the local ODB is static hand-seeded data with no real
+frontend program watching it, so `cfgPllWaitReadHistDone`'s bounded
+poll (20 x 300ms) timing out and proceeding anyway (not rejecting) is
+the correct/intended behavior here, exercised for real.
+
+REAL BUG FOUND AND FIXED this way: `cfgPllSaveStep`'s original
+`Array.isArray(steps.temp0) ? steps.temp0 : []` treated a genuine
+existing 1-length value as "not an array" - MIDAS/mjsonrpc returns an
+ODB array of length 1 as a bare scalar, not `[x]`. On a real second
+step this would have silently DISCARDED the first step's Temp0/Temp1/
+Verdict entry instead of appending to it. Fixed with a normalizing
+`asArray()` helper (wraps a non-array, non-null value in `[v]`).
+Verified by replaying two steps back to back: second step correctly
+produced `[127.937, 99.9]`, not `[99.9]`.
+
+NOT tested (no live firmware/frontend behind this local ODB to test
+against): whether `read_hist` actually completes in real conditions,
+whether `Set FEBs into running`/`Set FEBs into idle` behave as expected
+when only one ASIC is unmasked on the target FEB (assumption: these
+are whole-branch commands per their existing button tooltips in
+SciFi_Configuration.js/SciFi_main.html - "broadcasts ... to ALL SciFi
+FEBs" - reused as-is, not re-scoped per-FEB), and whether `SMB_control/
+asic` is genuinely local-to-the-target-FEB (0-7) as assumed, with the
+firmware inferring WHICH FEB from something else (bypass/mask state) -
+this last point is an ASSUMPTION, not confirmed with Yfeng or against
+real hardware. Flag this before trusting the tool on the real system.
+
+====================================================================
+CORRECTED 2026-08-28, LATER SAME SESSION: NO FEB TARGET - WHOLE-DETECTOR BROADCAST
+====================================================================
+The "how does the firmware know which FEB" question above was NOT
+actually left for Yfeng - pushed to resolve it from the data already in
+hand instead. Compared `last_written` timestamps across all 12 FEBs'
+`locked-0`/histogram-0 entries in `-4.json`: all 12 written within the
+same ~1 second, and all 12 `locked-1`/histogram-1 entries within
+another ~1 second window, ~12s later. A sequence of 12 separate
+per-FEB manual tests (each with the algorithm's own "wait 1sec") could
+not produce that timing. CONCLUSION: `read_hist` broadcasts to and
+writes EVERY FEB at once for the chosen ASIC position - there is no
+per-FEB target for RUNNING a step. "FEB" only matters for which saved
+result you look at afterward.
+
+Rebuilt accordingly:
+- `SciFi_main.html`'s PLL Test tab is now: one global ASIC (0-7)
+  select + 3 DAC inputs + one "Run step (whole detector)" button,
+  feeding a per-FEB TABLE (one row per FEB, grouped US/DS, click a row
+  to expand its histogram/last-step detail for the current ASIC
+  position - same `row-clickable`/`toggleRowDetail`/
+  `restoreRowDetailState` pattern the old cal_pll_tab and today's
+  IV/Thr tables use). The old FEB-picker dropdown is gone entirely.
+- `cfgPllRunStep()` masks ALL 12 FEBs' `ASICMask` to the same position,
+  writes the 3 DACs to all 12 corresponding global-asic indices, fires
+  ONE `read_hist`, then reads and saves EVERY FEB's result in parallel
+  (`Promise.all` over 12 `cfgPllSaveStep` calls).
+- Also, same message: the 3 "extra controls" (`init_temp`/`stop_temp`/
+  `read_temp`) became TICKS (checkboxes bound directly to the ODB
+  booleans, reflecting live state each poll) instead of one-shot
+  buttons - their meaning is still unknown, only the control shape
+  changed.
+
+REAL BUG FOUND testing this rebuild: writing `null` into an ODB array
+field (`Bins`, for any asic the firmware has never populated - true for
+every asic beyond 0/1 today) makes `db_paste` fail per-path (status
+317) while the JS Promise still resolves as if nothing went wrong -
+would have silently no-op'd the Bins write with no visible error.
+Fixed: `cfgPllSaveStep` only includes the Bins path/value when `bins`
+is a real array; otherwise it's left untouched. Verified: saving a step
+for an asic with no real histogram data now returns all-1 statuses and
+leaves the (placeholder) Bins value alone, instead of erroring
+silently.
+
+Renamed the Configuration sub-tab "FEB Configuration" -> "MuTrig"
+(label only, `cfg_feb_tab` id unchanged).
+
+====================================================================
+NOT STARTED YET - THE ACTUAL IMPLEMENTATION WORK, FOR WHEN WE RESUME
+====================================================================
+(Reflects the FINAL STATE pivot: manual single-step tool, in
+Configuration, no PySequencer, no automated loop, whole-detector
+broadcast per step - see the correction above.)
+
+ALL DONE, 2026-08-28, EXCEPT:
+1. DAC input validation - no min/max on the 3 number inputs yet, needs
+   Yfeng's legal ranges for vnvcodelay/vncnt/vnhitlogic (mechanism
+   itself works without this, see "PROPOSED NEW ODB SCHEMA" item 6).
+2. Whether `Set FEBs into running/idle` behave as expected when every
+   FEB has only one ASIC position unmasked at once (whole-detector,
+   not per-FEB, so this is a smaller/different risk than originally
+   flagged - the old "which FEB" ambiguity itself is resolved) -
+   unconfirmed against real hardware/firmware.
+3. `init_temp`/`stop_temp`/`read_temp` semantics still unknown - the 3
+   ticks write the ODB boolean and nothing else, no validation of
+   effect.
+4. Not yet exercised against a live device/frontend - only replayed
+   against the static local test ODB (see "TESTING NOTES").
+
+====================================================================
+POLISH PASS, 2026-08-28 (still same day) - table/UI, all 6 done
+====================================================================
+User asked "cosa manca? aggiugeresti altro?" - offered 6 additions, all
+approved and built:
+1. Double-click guard: `cfgPllStepRunning` flag + disables "Run step"
+   while a step is in flight, re-enabled in a final `.then()` that runs
+   after both success and `.catch()`.
+2. Per-step verdict shown as a colored dot strip under the temp-vs-step
+   plot (green/red/gray for Locked/Not locked/unknown) - NOT per-point
+   marker coloring on the graph itself, mplot.js only supports one
+   color per whole series, so this is a separate plain-HTML row instead
+   of fighting the charting library.
+3. "Last updated" column in the table (`calFormatAge` on
+   `Result/Asic<n>/Verdict`'s own `last_written`).
+4. "Steps recorded" shown in the detail panel (length of Steps/Verdict).
+5. "Clear trace" button per FEB+ASIC in the detail panel - resets
+   Steps/Temp0|Temp1|Verdict back to the empty placeholder, leaves the
+   last saved Verdict/LastStep/Bins untouched.
+6. The 3 DAC inputs are pre-filled once (not on every 2s poll) from
+   `cfgFebs[0]`'s own `ParametersUsed` (same values on every FEB, it's
+   a whole-detector broadcast) - shows the last real values used
+   instead of the hardcoded 20/40/20 default.
+
+REAL BUG FOUND AND FIXED while building #5: `cfgPllSaveStep`'s
+"is this the first step" check read the wrong field
+(`existing.verdict`, the FEB-level Result/Asic<n>/Verdict) instead of
+`steps.verdict` (Result/Asic<n>/Steps/Verdict). Both start empty
+together on a fresh ODB, so this only diverges after a "Clear trace" -
+without the fix, clearing the trace and then running a new step would
+NOT actually start fresh (Verdict/LastStep/Bins survive on purpose, so
+the old field stayed non-empty, and the new step would append onto the
+just-cleared placeholder [0]/[""] instead of replacing it). Verified by
+replaying a clear+first-step sequence directly against the local ODB.
+
+Also fixed the same-day earlier bug: `graph.param.yAxis.title.text`
+used the HTML entity `&deg;C`, but MPlotGraph draws plain text, not
+HTML - the entity was rendering literally instead of as "°". Changed
+to the literal Unicode "°C" character, matching the convention already
+used everywhere else in this codebase's JS (`"°C"`, never `&deg;C`,
+outside of `innerHTML` strings).
+
+====================================================================
+SEMANTICS CORRECTION, 2026-08-28 (same day): asic=N reads 0..N, not
+just N - display rebuilt to a per-FEB / all-8-ASICs breakdown
+====================================================================
+User confirmed directly (re-reading the original algorithm text
+together): `SMB_control/asic` is NOT a single-target selector -
+writing N makes `read_hist` populate ASICs 0 through N INCLUSIVE in
+one trigger (confirmed explicitly: "se selezioni N prende anche N").
+This also explains why the original algorithm's innermost `for asic`
+loop never needed a FEB loop around it in the first place - one
+mask+set+run+read cycle, whole-detector-broadcast, already sweeps
+every FEB x every ASIC up to N. It also means the earlier "automation
+isn't feasible" conclusion was based on an inflated step-count
+estimate (had assumed a x12-FEB multiplier that never existed) - total
+steps for a full sweep would really be (DAC combo count) x 8, not x12
+on top of that. Worth REOPENING the automation question once the real
+DAC range sizes come back from Yfeng - not decided either way, flagged
+here so it isn't forgotten.
+
+DISPLAY REBUILT (chosen: Option A - aggregate row, expand for the
+8-ASIC breakdown, over Option B - one row per FEB x ASIC):
+- Table row per FEB now shows an aggregate `Locked` pill (e.g. "2/2
+  locked" - counts only ASICs with a known locked state, ASICs never
+  populated by the firmware don't count against the ratio) instead of
+  a single asic's status. FEB/FEB#/Link/Temp0/Temp1 columns unchanged
+  (temperature is FEB-level, not per-ASIC, so it never needed to move).
+  "Last updated" is now the max `last_written` across all 8 ASICs.
+- Row detail (click to expand) now shows ALL 8 ASICs stacked, each
+  its own `detail-block` with a header (ASIC N + its own Locked pill)
+  wrapping the EXACT same per-asic content as before (`cfgPllBuildDetail`
+  unchanged internally, just called 8 times via new
+  `cfgPllBuildFebDetail()` instead of once for "the selected asic").
+- `updateConfigPllTab()` fetches Result/Asic0..7 + locked-0..7 for
+  EVERY FEB now (12 x 8 x 2 = 192 paths + 3 SMB flags = 195 total,
+  verified against the local ODB - indexing lines up exactly).
+- The ASIC dropdown above the table keeps its ORIGINAL role unchanged
+  (which asic value to write via SMB_control/asic for "Run step") -
+  only the READ/DISPLAY side changed. `cfgPllRunStep()` itself was
+  NOT touched in this pass - it still masks/sets DACs for only the
+  single selected asic's global index, even though we now know
+  read_hist would report on 0..N regardless. Whether the mask/DAC-set
+  step should ALSO cover 0..N (so those lower ASICs get real, fresh,
+  intentionally-driven data instead of just being read back stale) is
+  an open question, not yet decided or built - the display now
+  correctly reflects whatever end up in ODB either way.
+
+RESOLVED 2026-08-28, later same session: user chose to fix this rather
+than reword the badge. `cfgPllRunStep()` now masks ASICs 0..N (not just
+N) on every FEB (`(1 << (N+1)) - 1`), writes the same 3 DAC values to
+all of 0..N's global indices on every FEB, and after the single
+running/idle/read_hist cycle, reads AND saves (via `cfgPllSaveStep`)
+every (FEB, asic) pair in 0..N - not just N. So "next run: ASIC 0-N"
+is now actually true. Verified against the local ODB with N=3: mask
+correctly became 0x0F, 144 DAC writes (12 FEB x 4 asics x 3 fields)
+all succeeded, and the read/save indexing (1 + feb_index*len(scope)*2
++ asic_index_in_scope*2) lines up exactly (97 values expected and
+received).
+
+Per-FEB table row also got a dedicated "Next run" column (previously
+inline text next to the FEB label) - moved out on request for its own
+column.
+
+====================================================================
+GAP FOUND AND FIXED, 2026-08-28: "Set Bypass" was never called
+====================================================================
+Did a final line-by-line comparison of `cfgPllRunStep()` against the
+original algorithm text, together with the user. Everything matched
+except the very first line, "set FEB into bypass" - `cfgPllRunStep()`
+never called it at all. Fixed: now calls `SwitchingFibre/Commands/Set
+Bypass` before masking, and `Unset Bypass` in the final cleanup step
+(runs regardless of success or failure, same guarantee as the
+`cfgPllStepRunning`/button-re-enable cleanup it sits next to - a
+separate `.catch()` around the Unset Bypass call itself so a failure
+there doesn't skip re-enabling the button). Verified both commands
+paste successfully against the local ODB.
+
+====================================================================
+MAJOR CORRECTION, 2026-08-28 (same day): the DAC sweep is IMPLEMENTED
+IN FIRMWARE - the page never drives it
+====================================================================
+User, explicit, after re-comparing the algorithm one more time: "questo
+è già implementato nel firmware, l'unico posto dove posso agire è
+SMB_control e Set FEBs in bypass" - the whole mask/DAC-set/run/idle
+sequence already happens inside the firmware on its own. Everything
+`cfgPllRunStep()` had been doing to DRIVE that sequence (ASICMask
+writes, DAC zero+set writes, Set FEBs into running/idle) was
+duplicating work the firmware already does - removed entirely.
+
+REBUILT, much smaller surface:
+- The 3 DAC inputs (`vnvcodelay`/`vncnt`/`vnhitlogic`) are now
+  read-only text fields (`readonly`, no more `type="number"` with a
+  settable value) - they display the CURRENT live value from
+  `/Equipment/SciFiFibre/Settings/ASICs/TDCs/*` for `cfgFebs[0]` at the
+  selected ASIC position, refreshed every 2s poll via
+  `cfgPllUpdateDacDisplay()`. The page never writes them, at any point.
+- `cfgPllRunStep()` (button relabelled "Read now (whole detector)")
+  reduces to: write `SMB_control/asic`, trigger `read_hist`, poll,
+  then read+save bins/locked/FCTM (and the live DAC values, purely for
+  the audit-trail fields - ParametersUsed/LastStep still record what
+  the firmware was actually using) for every (FEB, asic) in 0..N. No
+  masking, no DAC writes, no running/idle calls left in this function.
+- `Set Bypass`/`Unset Bypass` are now their OWN explicit buttons in the
+  PLL tab (`cfg-pll-set-bypass-btn`/`cfg-pll-unset-bypass-btn`, reusing
+  the existing `cfgTriggerSwitchingCommand()` helper) - a prerequisite
+  the operator sets once before reading, not something fired
+  automatically inside every "Read now" click anymore.
+- Removed: `cfgPllPreloadDacFields()` (obsolete one-shot ParametersUsed
+  preload for editable inputs - no longer applicable), the
+  `cfgPllDacFieldsInitialized` flag, all ASICMask/DAC-write code.
+- Verified against the local ODB: select-asic + read_hist + the
+  4-path-header (FCTM + 3 DAC arrays) + per-(FEB,asic) bins/locked
+  fetch all still line up exactly (52 values expected/received for
+  N=1); the DAC display correctly shows whatever real value already
+  sits in ODB (not something the page put there).
+
+This is a significant simplification - the tool's only real actions
+now are: pick ASIC position, Set/Unset Bypass, Read now, plus the 3
+still-unexplained init_temp/stop_temp/read_temp ticks. Everything about
+*driving* the sweep itself is entirely the firmware's responsibility.
+
+====================================================================
+LAYOUT PASS, 2026-08-28 (same day): DAC display moved per-ASIC, top bar reordered
+====================================================================
+The shared top-level DAC display (fixed to cfgFebs[0] at whatever ASIC
+the dropdown pointed to) was wrong - user wants each ASIC's OWN live
+DAC value shown where it belongs: inside that ASIC's own expanded
+detail panel (`cfgPllBuildDetail`), not a single shared readout at the
+top. Removed the 3 `cfg-pll-form-*` inputs and `cfgPllUpdateDacDisplay`
+entirely; the 3 raw DAC arrays are now kept in `cfgPllDacArrays`
+(populated each poll in `updateConfigPllTab`) and each per-ASIC detail
+panel looks up its own `feb.asics[asic].globalAsicIndex` into them -
+new "Live DAC (firmware, read only)" line, one real value per ASIC.
+
+Top control bar reordered per the user's layout: Bypass (tick + Set/
+Unset) sits next to the ASIC selector on one row; init_temp/stop_temp/
+read_temp (tick + Set/Unset each) sit together on the next row,
+followed immediately by the "Read now" button - so the whole flow
+reads left to right as: pick target -> optional extras -> go.
+
+HISTOGRAM MADE LIVE, 2026-08-28 (same day): user noticed an asymmetry -
+"Locked now" was already fetched live from SciFiFibre/ShiftReport/PLL
+every 2s poll, but the histogram plot only showed the last CosmicRun-
+saved snapshot (only updated on "Read now"). Fixed: `updateConfigPllTab`
+now uses a descriptor-based fetch (path + {feb, asic, kind} instead of
+fixed offset math, since the path list length varies) and additionally
+fetches the LIVE histogram from SciFiFibre for any ASIC whose detail
+panel is currently open (`openDetailKeys.has("pll-"+feb.label+"-asic-"+a)`)
+- not all 96 every poll, that would be wasteful (256 DWORDs each).
+`cfgPllBuildDetail` prefers this live value over the saved one when
+present, and the plot label says "Live histogram (SciFiFibre)" vs
+"Last saved histogram (CosmicRun)" so it's clear which one you're
+looking at. Verified against the local ODB (10-path fetch including
+one liveBins entry, indices line up).
+
+Also clarified for the user: the Steps/Temp0|Temp1|Verdict TRACE is
+NOT something read live from anywhere - SciFiFibre only ever has the
+CURRENT value, no history. The page itself builds that history: each
+"Read now" click reads the current live FCTM temp + locked/verdict
+once and APPENDS that single point to the CosmicRun-saved Steps arrays
+- the trace only grows on manual read presses, it's not a continuous
+live recording.
+
+Found a real PRE-EXISTING bug while adding the Bypass tick (not fixed,
+out of scope - flagging only): `BypassEnabled` is TID_DWORD, hex-string
+formatted (e.g. "0x00000000"), not a plain bool. The already-existing
+`cfgRenderSwitchingReadback()` (MuTrig tab's "N/M bypassed" readout)
+does `bypassEnabledArr.filter(v => !!v).length` - `!!"0x00000000"` is
+`true` (any non-empty string is truthy), so that counter has likely
+ALWAYS shown every FEB as bypassed regardless of the real state. The
+new PLL Test Bypass tick uses the correct `parseInt(v, 16) !== 0`
+instead - verified structurally (all-zero locally reports unchecked
+correctly; couldn't verify the true/checked case, no live frontend on
+the local test ODB flips this field on Set Bypass).
+
+Label cleanup: "Live DAC (firmware, read only)" shortened to just
+"Live DAC" per request - the "read only, firmware sets it" explanation
+already lives in the form-group label above and the input's own
+`readonly` attribute, didn't need repeating on every ASIC's detail kv
+line too.
+
+Re-confirmed against the original algorithm's temperature line ("read
+back the temperature values of the mutrig 0/1 of that FEB at each
+step... correlate that vs temperature during the run"): our trace is a
+genuine but SPARSE approximation of this - a data point only exists
+for whichever ASIC-position/moment the operator happens to press "Read
+now" at, not a continuous sample of "during the run" the way the
+original phrasing implies (the firmware's own internal sweep keeps
+progressing between button presses, at a rate/granularity the page has
+no way to observe). Accepted as the best available approximation given
+the manual-tool constraint - not silently glossed over, the user was
+told explicitly.
+
+RESOLVED 2026-09-02, by the "MAJOR REVERSAL" above: this caveat no
+longer applies. There is no more internal firmware sweep to fall out
+of sync with - the page IS the sweep now. Each "Run step" press writes
+that exact DAC combination, runs for a real 1s window, then reads FCTM
+immediately after - so Temp0/Temp1 genuinely correspond to that one
+step's own measurement, not a decoupled snapshot of wherever an
+unobservable firmware loop happened to be. Confirmed to the user
+directly (they asked "ora le temperature le puoi leggere effettivmente
+step by step no?" - yes).
+
+====================================================================
+VERIFIED AGAINST 3 REAL ODB EXPORTS FROM THE ACTUAL ONLINE SYSTEM, 2026-08-28
+====================================================================
+User provided fresh real exports: `SciFiFibre-4.json` (already had it),
+`CosmicRun-6.json`, and a full root `root.json`. Checked EVERY ODB path
+the page touches for PLL Test (and its prerequisites) actually exists
+there - not just the SciFiFibre/CosmicRun paths already spot-checked
+earlier, but also `/Equipment/LinksFibre/*` (FEBType, FEBName,
+NumASICsMax, ASICMask, LinkFEB, LinkStatus, BypassEnabled, RunState),
+`/Equipment/FEBCrates/*`, `/Equipment/SwitchingFibre/*` (Names/
+Variables SFSO/SFCN, Commands Set/Unset Bypass + Set FEBs into
+running/idle + Reset Counters), the branch-signal equipment
+(ROSWBF/ROSWBC/ROSWBDS, `/Experiment/Run Parameters/SciFi readout`) -
+ALL present.
+
+Went further than existence - checked the actual SHAPES/semantics the
+page's indexing logic depends on hold up against real data: all 12
+FEBs have `NumASICsMax=8` (confirms the `asicCursor += 8` global-index
+math), `LinkFEB` values are exactly 144-155 in FEBType order,
+`Channels/mask` is exactly 3072 = 12x8x32, `FCCR`/`FCCH` are 3072/96
+matching the channel-vs-asic global indexing split, `BypassEnabled`
+has exactly 12 entries, and `ShiftReport/PLL`'s only populated local
+asic-position keys are "0"/"1" (nothing outside 0-7, no surprise
+numbering scheme). Nothing found broken - full green light.
+
+SEPARATE, NOT DONE BY THE ASSISTANT: the user noticed (via a
+`CosmicRun-5.json` local vs `CosmicRun-4.json` online diff) that the
+pixel-side `Setup/Power/Map_Subsystem` taxonomy differs between local
+and online - local has one monolithic 23-entry "SCF" block where
+online splits the same space into `OPC` (12) + `FKE` (2) + `SCF` (6).
+Confirmed via real values these are NOT a simple rename (same array
+position holds different codes) - a genuine 1-to-3 split requiring
+domain knowledge of what OPC/FKE physically are, which the assistant
+does not have. Declined to guess or execute this - flagged it back to
+the user, who then did the alignment on the real system themselves
+(confirmed via the follow-up `CosmicRun-6.json` dump, which shows the
+correct online-matching split while `Calibration/SciFi/PllTest`
+remains intact). Consistent with "pixel is not our scope."
+
+====================================================================
+MAJOR REVERSAL, 2026-09-02: the DAC sweep is NOT firmware-automatic -
+cfgPllRunStep() now drives it, live on a Marius Zoom call
+====================================================================
+The "MAJOR CORRECTION, 2026-08-28" section above (the one that reduced
+cfgPllRunStep to a read-only "ask the firmware for its latest result")
+was itself wrong. Marius asked live "how to configure the chip into
+PLL mode" and "how to configure the chips at all" (no push button
+existed), which surfaced that the earlier 2026-08-28 assumption
+("questo e gia implementato nel firmware") did not hold. The user then
+re-pasted the exact same algorithm text already in this doc (see "THE
+REAL MECHANISM AND ALGORITHM" above) with "read_hist - questo dobbiamo
+implementarlo noi" next to the last line. Asked explicitly via
+AskUserQuestion whether this meant "only read_hist" (already built) or
+"the whole loop" (mask/DAC-set/running-idle too, not just read_hist) -
+user confirmed: THE WHOLE LOOP.
+
+`cfgPllRunStep()` REBUILT to actually drive every step of the
+pseudocode (bypass stays a separate one-time button, unchanged):
+  mask every FEB down to only the selected ASIC (LinksFibre/Settings/
+    ASICMask[febIndex] = 1<<asic, whole-detector broadcast, no per-FEB
+    target on this page - same scope-less shape as read_hist/Running/
+    Idle already have)
+  -> SMB_control/asic = selected value
+  -> zero then write vnvcodelay/vncnt/vnhitlogic (TDCs, per-FEB global
+    asic index) - the 3 DAC inputs are editable number fields again
+    (were made readonly in the 08-28 "LAYOUT PASS" under the wrong
+    firmware-drives-it assumption - reverted)
+  -> SwitchingFibre "Set FEBs into running"
+  -> wait 1s
+  -> SwitchingFibre "Set FEBs into idle"
+  -> SMB_control/read_hist (unchanged: trigger, bounded poll, read
+    bins/locked/FCTM, cfgPllSaveStep)
+CORRECTED same day: first pass dropped the 08-28 "SEMANTICS
+CORRECTION" 0..N scope (reasoned that explicit masking made it
+redundant) and drove/read only the single selected asic - user caught
+this ("ma lascia che legge gli asic 0..N no?") and asked to keep it.
+Reverted: mask now covers 0..N ((1<<(N+1))-1 on every FEB), DAC zero+
+set writes go to every global asic index in 0..N, and read+save covers
+every (FEB, asic) pair in 0..N, exactly matching the working
+pre-"MAJOR CORRECTION" design from 08-28. (The 0..N finding itself, an
+empirical timestamp-correlation result about read_hist's own behavior,
+predates this rebuild and is not re-verified against the new
+mask/DAC-driving model - flagged, not retested.)
+
+WARNING surfaced in the button's own tooltip, not just here: pressing
+"Run step" overwrites every FEB's ASICMask down to just the selected
+ASIC - the operator has to re-enable the others afterward from the
+Configuration tab if that matters for other work in progress. Not
+auto-restored, matching the pseudocode as given (no restore step in
+it) - explicit product choice, not an oversight.
+
+NOT tested against real hardware (same standing caveat as every PLL
+Test iteration before this one, per "TESTING NOTES" above) - built and
+syntax/path-verified against the local ODB schema only. All field
+names/widths (Channels/mask,cml,cml_sc,tdctest_n,recv_all @ 3072;
+TDCs/dmon_select @ 96; LinksFibre/Settings/ASICMask @ 12) reused from
+the "Configure PLL (selected)" work done the same session, already
+confirmed live against the local ODB there.
+
+====================================================================
+PYTHON AUTOMATED SWEEP, 2026-09-02: calibrations/pll_scan.py rewritten,
+runs the same algorithm as cfgPllRunStep() in a loop via PySequencer
+====================================================================
+User asked for a Python-side implementation, specifically to revive the
+automated-sweep idea (explicitly abandoned in the "ARCHITECTURE CHANGE"
+section above for being unrealistic via browser) - now realistic since
+a PySequencer script has no browser-tab dependency. Scope confirmed via
+AskUserQuestion: "sweep automatico via PySequencer", not a standalone
+CLI diagnostic script.
+
+REUSED AS-IS: `core.detector.SciFiDetector.configure_pll_mode()`/
+`revert_pll_mode()` already existed (written 2026-08-14 for the old
+HIST design, never actually tied to it) and already matched what got
+ported to the page's "Configure PLL" button the same session - cleaned
+up here too (dropped the same asic-8-15 channel-4 hack and the stale
+`Settings/ASICs/cml` bare-path write, for the same reason: that path
+does not exist in the current real ODB schema, confirmed live).
+`prepare_switching()`/`configure()` also reused unchanged.
+
+NEW in `core/detector.py`: `read_asic_field`/`write_asic_field_bulk`
+(TDCs-level, mirrors the existing Channels-level helpers), `global_asic_index()`
+(same accumulation scheme as the page's `globalAsicIndex`), `read_asic_mask_all`/
+`write_asic_mask_bulk` (LinksFibre ASICMask, bulk), `read_fctm_pair`,
+`pll_select_asic`/`pll_read_hist` (SMB_control, `ODBBooleanCommand` -
+already the exact right primitive for "write True, wait for it to
+revert to False", just never used for read_hist before), `read_pll_shiftreport`,
+`switching_command`.
+
+`calibrations/pll_scan.py` REWRITTEN from scratch (the old file was
+entirely HIST-based, unusable). New `PllTest.prepare()`: loads a NEW
+whole-detector `/CosmicRun/Calibration/SciFi/PllTest/Sweep/{field}_start|stop|step`
+ODB node (created+seeded on first use - see "DAC RANGES" below),
+validates it, computes total combinations against a `MAX_COMBINATIONS=5000`
+safety cap (refuses to run an unbounded sweep), checks required
+programs + LV/FEB chain health, saves the current ASICMask for
+restore, calls `configure_pll_mode()`, and pre-sizes every (FEB, asic)
+pair's `Result/Asic<n>/Steps/{Temp0,Temp1,Verdict}` arrays to the
+EXACT total step count up front (`client.odb_set(..., resize_arrays=True)`
+handles the resize - much simpler than the page's own delete+recreate
+dance, which only exists there because the manual tool never knows how
+many presses are coming; Python knows the combo count in advance).
+`execute()` is `itertools.product` over the 3 DAC ranges, one call to
+the same per-combo body as `cfgPllRunStep()` (mask 0..7 -> SMB_control/asic=7
+-> zero+set DACs -> running -> wait 1s -> idle -> read_hist -> read+save
+every FEB x every asic) per combination, writing directly into each
+step's own array index (no delete+recreate needed, arrays are already
+sized). `finalise()` reverts PLL mode, restores the saved ASICMask, and
+unsets Bypass - all three run via try/finally so a mid-sweep crash
+still cleans up.
+
+DAC RANGES - the one thing this script was never going to invent: per
+the user's explicit instruction ("leggi i valori dall'odb e metti
+quelli"), on first run (no `/Sweep` node yet) it searches every FEB's
+existing `ParametersUsed` for the last real combination actually run
+(found: US_SM0 had 21/41/19, left over from earlier local-ODB replay
+testing) and seeds `Sweep` as a DEGENERATE single-point range
+(start=stop=that value, step=1) - a 1-combination "sweep", exactly as
+safe/inert as pressing the page's "Run step" once. NOT a guessed real
+range. An operator widens it by editing `/CosmicRun/Calibration/SciFi/PllTest/Sweep`
+in ODB once Yfeng/Marius confirm real vnvcodelay/vncnt/vnhitlogic
+bounds - same standing external dependency as PRBS's MuTRiG3 tx_mode
+table, not blocking the mechanism itself.
+
+`build_root_report()`/`build_plots()` rewritten: added a `Steps` ROOT
+tree (folder, asic, step_index, the 3 DACs, temp0, temp1, verdict) -
+new, doesn't exist in the old HIST-based version - this is the actual
+point of an automated sweep (temperature/lock correlation across many
+combinations), reconstructed from ODB's presized Steps arrays plus
+`itertools.product` replayed in the same order execute() used. Plots
+changed from a single-FEB histogram (old, HIST-based, gone) to one
+figure per FEB x ASIC: MuTRiG0/1 temperature vs step index, points
+colored by that step's Locked/Not locked/unknown verdict.
+
+TESTED FOR REAL against the local test ODB (not just py_compile) -
+connected `midas.client.MidasClient` to the local experiment (port
+8080) and exercised the real code paths directly: `__load_sweep_params()`
+correctly created and seeded `/Sweep` from US_SM0's 21/41/19; ran a
+full `__run_one_combo()` across all 12 FEBs x 8 ASICs for real (mask
+write, SMB_control/asic, DAC zero+set on all 96 global indices,
+Running/Idle trigger, read_hist - timed out waiting to revert, same
+expected/correct degrade-gracefully behavior as the JS side on this
+static local ODB with no real frontend watching it); verified
+ASICMask was saved and correctly restored afterward.
+
+REAL BUG FOUND AND FIXED by this test: `read_pll_shiftreport()`'s raw
+`client.odb_get()` RAISES `KeyError` for an ASIC position the firmware
+has never populated (confirmed live: only ShiftReport/PLL/144/{0,1}
+exist locally, 2-7 don't) - unlike the JS side's `mjsonrpc_db_get_values`,
+which returns `null` for a missing path instead of erroring. Without a
+fix this would have crashed the whole sweep the first time it touched
+an unpopulated ASIC. Fixed with a new `SciFiDetector.__read_optional()`
+(catches `KeyError`, returns `None`) used by `read_pll_shiftreport()`.
+Verified after the fix: ASIC 0 (real data) correctly saved
+Verdict="Locked" from the real `locked-0` bit; ASIC 2 (no data)
+correctly saved Verdict="unknown" and left `Bins` untouched (the
+`isinstance(bins, list)` guard, already proven on the JS side for the
+same reason, skips writing when there's nothing real to write) -
+no crash either way.
+
+NOT tested: the full `prepare()`/`execute()`/`finalise()` sequence
+end-to-end as PySequencer would call it (blocked locally by the
+program-health/LV-chain checks, which correctly fail fast against a
+sandbox with no real frontends running - by design, not a bug); against
+real hardware; `build_root_report()`/`build_plots()`'s CDB/ROOT-saving
+path. Same standing caveat as every PLL Test iteration this session.

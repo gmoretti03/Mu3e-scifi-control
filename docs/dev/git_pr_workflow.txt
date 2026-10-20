@@ -1,0 +1,61 @@
+GIT WORKFLOW - PRIMA DI APRIRE UNA PULL REQUEST
+====================================================================
+Procedura generale, non legata a un repo specifico (vale per online/,
+midas/, sequencer_scripts/, ecc.). Nell'esempio da cui e' stata
+ricavata, il branch "main" del repo era dev_beam2026 e il branch di
+lavoro era un branch qualunque creato dall'utente - i nomi cambiano da
+repo a repo, la sequenza di comandi no.
+
+PERCHE': mergiare il branch main nel proprio branch di lavoro PRIMA di
+pushare/aprire la PR permette di risolvere gli eventuali conflitti in
+locale, sul proprio branch, invece che nella PR stessa. La PR arriva
+cosi' gia' pulita e mergeabile.
+
+PASSAGGI
+--------
+1. Finire il lavoro e committare tutto sul proprio branch.
+     git status
+   deve risultare pulito (working tree clean, niente da committare).
+
+2. Posizionarsi nel repo giusto.
+     cd online        # o midas/, sequencer_scripts/, ecc.
+
+3. Passare al branch main del repo (il branch target della PR).
+     git checkout dev_beam2026
+
+4. Aggiornarlo dal remoto.
+     git pull
+
+5. Tornare al proprio branch di lavoro.
+     git checkout -
+   (worka come "torna al branch precedente"; in alternativa
+   git checkout <nome-branch> se si preferisce essere espliciti)
+
+6. Mergiare il main aggiornato nel proprio branch.
+     git merge dev_beam2026
+
+7. Se ci sono conflitti: risolverli a mano, poi
+     git add <file risolti>
+     git commit
+   per chiudere il merge.
+
+8. Verificare che tutto sia a posto.
+     git status
+   Deve dire che il branch e' pulito e "ahead of" origin di N commit,
+   nessun conflitto pendente.
+
+9. Pushare il proprio branch.
+     git push
+   (se e' il primo push del branch: git push -u origin <nome-branch>)
+
+10. Aprire la pull request verso il branch main (dev_beam2026 o
+    equivalente), via interfaccia web o `gh pr create`.
+
+NOTE
+----
+- Non skippare il passo 6 (merge di main nel branch) per pigrizia:
+  e' quello che evita conflitti a sorpresa dentro la PR.
+- Se il merge porta conflitti importanti o tocca file sensibili,
+  fermarsi e chiedere prima di procedere con add/commit, non risolvere
+  alla cieca.
+- MAI --force push su main/dev_beam2026 o branch condivisi.

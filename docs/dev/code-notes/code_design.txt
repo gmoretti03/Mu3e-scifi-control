@@ -1,0 +1,461 @@
+STRUCTURE SCIFI - FUTURE DESIGN NOTES FOR scifi_scripts
+====================================================================
+SCOPE, tightened 2026-07-20: how scifi_scripts/ (the code) should be
+structured - its core/ classes, what to reuse from common/, what to
+promote there, what to implement and how. NOT concepts/brainstorm (see
+hackathon.txt), NOT a change log (see code_implem.txt), NOT ODB/
+hardware facts (see topology.txt - this file assumes those facts,
+doesn't re-derive them), and NOT anything about the custom control page
+- pixel's or SciFi's - that belongs in docs/page/custom_page.txt regardless of how
+code-adjacent it looks (e.g. a masking editor's write path is a control-
+page concern, goes there, not here). scifi_scripts itself is currently
+empty (git init only, no files, no folder skeleton - deliberately, per
+user request "non ho pensato alla struttura" - not on hold due to lack
+of interest, on hold because the user wants to look at what scifi-
+userfiles actually has before building anything blind. scifi-userfiles
+itself stays untouched and in active use - it is NOT being replaced
+unless scifi_scripts, as an architectural experiment, actually works
+out.
+
+
+1) common/'s channel-lookup helper assumes pixel's model, not scifi's
+--------------------------------------------------------------------
+common_scripts/common/odb.py's find_channel_number_from_power_partition_name()
+(used by common/power_supply.py's DCDCPowerSupply.find_odb_channel_number
+and HVBoxNPowerSupply.find_odb_channel_number) does an EXACT match:
+
+    vector.index(partition_name)
+
+i.e. one partition_name -> exactly one channel index in Names[]. This
+mirrors pixel's PowerPartition model (each partition has one precise
+name).
+
+scifi-userfiles/scripts/lv_power.py and hv_power.py do NOT work this
+way - they scan Names[] for a PATTERN (prefix "SMB_" for LV, substring
+"SciFi CH" for HV) and act on every matching channel at once, because
+scifi has no per-channel/per-partition selection concept yet (both
+scripts' docstrings say this explicitly - deferred to a future masking
+editor).
+
+Consequence: common/'s exact-match helper does not directly serve
+scifi's real usage pattern as-is. When core/ gets designed for real
+(Feb/Asic/Channel classes, see SCIFI_DAQ.txt section 2.5/3 and
+HACKATHON.txt 5.2), this needs either:
+  - a second, pattern-based lookup helper in common/odb.py (promoted
+    once scifi_scripts actually needs it - don't add on spec), or
+  - scifi's core/ classes doing their own Names[] pattern scan and
+    only calling into common/power_supply's read/write primitives
+    per-channel, bypassing find_channel_number_from_power_partition_name
+    entirely.
+Not urgent - common/ itself is otherwise clean (no pixel-specific
+hardcoded equipment names/paths found, verified 2026-07-17 against
+live ODB and against lv_power.py/hv_power.py byte-for-byte - see
+code_implem.txt for how).
+
+
+2) Findings from Luigi Vigani's "Operation Scripts" hackathon
+   presentation, cross-checked against common/ and scifi-userfiles
+--------------------------------------------------------------------
+(Full presentation content/rationale is in hackathon.txt section 3 and
+11 - this section is only the parts that are directly actionable for
+scifi_scripts specifically.)
+
+2.1) "Services" object (TDK/DCDCCrates pre-calibration check) is a
+     pre-existing, explicitly unassigned ToDo, not a new idea
+   TDK/DCDC crates are SHARED across power partitions - turning one off
+   could turn off hardware belonging to a different, unrelated power
+   partition. Explicitly scoped as READ-ONLY status checks. Now
+   implemented in common/services.py (TDKService, DCDCCratesService) -
+   see code_implem.txt - standalone, not yet wired into any caller,
+   applies to scifi too since TDK/DCDCCrates are shared with pixel.
+
+2.2) Open question, answered differently in practice: does SciFi want
+     pixel's "Power Partition" as its base element?
+   The presentation left this open ("Sci* wants to do the same?"). The
+   later 2026-07-16 hackathon brainstorm (HACKATHON.txt 5.2) went a
+   different direction: scifi's core/ should use its own Feb/Asic/
+   Channel classes matching scifi's real topology (FEB->ASIC(mutrig)->
+   fibre, no MPDC, no power-partition concept) - reusing pixel's
+   PATTERN (ODBCommand dispatch, prepare/execute/finalise, injected
+   MidasClient), not its literal PowerPartition class. Keep this as
+   explicit context for WHY core/ diverges, in case it's ever
+   revisited.
+
+2.3) RESOLVED 2026-07-20 (was: named, concrete gap - no HVBoxP class
+   for SciFi's HV box model)
+   PowerSupply -> HVPowerSupply -> HVBoxNPowerSupply exists (pixel, now
+   in common/), with an explicit side-note in the presentation: "But
+   also Keithley (for test setups), HVBoxP for Sci*,... ToDo!". SciFi's
+   real HV box hardware IS physically a different model (HVBoxP,
+   PSI-built Cockcroft-Walton positive generator, per Mu3eSpecBook.pdf
+   section 3.7) than pixel's HVBoxN - confirmed genuinely different
+   hardware, own separate MSCB bus/fibre. BUT: cross-checked against
+   live odb.json (see todo.txt) - Pixel/SciFi/Tile HV channels all live
+   in the SAME /Equipment/HV tree with an IDENTICAL field schema
+   (Names, Output On, Enabled, Board, MSCB, Current limit, Demand,
+   Current, Voltage) - the hardware difference doesn't surface as an
+   ODB schema difference. User confirmed from domain knowledge: the
+   write path is identical to pixel's (same Demand[]/Output On[] write,
+   same way) - polarity is a hardware-level detail the board applies
+   automatically, not something software needs to distinguish.
+   Conclusion: HVBoxNPowerSupply's existing ODB access pattern can be
+   reused for SciFi's HV boxes as-is - no separate HVBoxP class is
+   needed at the ODB-interaction level (a HVBoxP-named subclass might
+   still be worth it purely for naming clarity when scifi_scripts/core/
+   gets built, but not because the ODB interaction differs).
+
+2.4) Other common/ promotion candidates, deferred until scifi's core/
+     exists to confirm the shape against (see hackathon.txt section 9)
+   - utils/results.py's ResultSaver family (pixel_scripts) - generic
+     save-results pattern, but couples to pixel's exact method
+     vocabulary (det.power_partitions, chip.get_positional_id(),...).
+   - core/daq.py's DAQSCReads/DAQSCReadsArray base classes - generic
+     ODB-path-building for slow-control reads, zero pixel-specific
+     content in the base classes themselves.
+   Neither promoted yet - no second real caller to confirm against
+   until scifi_scripts/core/ exists for real.
+
+2.5) Still-open items from scifi-userfiles/docs/HACKATHON.txt's
+     2026-07-16 brainstorm (section 5.1-5.11) - only the parts NOT
+     since resolved/implemented (most of 5.1-5.11 was satisfied by the
+     common/ promotion or the pixel_scripts pattern already - see
+     hackathon.txt section 10 for the full status). HACKATHON.txt
+     itself left untouched in scifi-userfiles, per user decision -
+     these three are just the genuinely still-open design items worth
+     carrying forward:
+   - 5.1) Per-channel selection during calibrations, not just ASICMask.
+     SciFi's active_channels today comes only from ASICMask (an ASIC is
+     fully in or fully out). Idea: let the user pick individual
+     channels for a calibration run via the per-channel ODB mask that
+     already exists (.../ASICs/Channels/mask), instead of/alongside
+     ASICMask. Directly relevant to scifi_scripts/core/'s future
+     Channel class.
+   - 5.4) Per-power-partition (or per-module, for scifi) scan ranges,
+     stored in ODB, instead of one PySequencer parameter applied
+     identically to every channel (today's scan_vbr.py behaviour).
+     CONFIRMED a real precedent already exists on the pixel legacy MSL
+     side (VTX_iv_scan.msl, per-partition Start_HV/Stop_HV/Step_HV) -
+     worth reading before designing scifi's version from scratch.
+
+     READ BOTH 2026-07-22 (VTX_iv_scan.msl in full, and scifi-userfiles/
+     scripts/scan_vbr/{scan_vbr.py,iv_scan.py} in full) - full comparison
+     below, triggered by reasoning about scan_thr's own granularity
+     ceiling (docs/page/custom_page.txt's "USER'S OWN VISION" note)
+     and wanting real precedent, not a guess, before ever redesigning
+     scan_vbr's loop.
+
+     GRANULARITY - pixel's MSL already does, in production, exactly the
+     redesign scan_thr's own loop would need for per-channel ranges:
+       - Loops over power partitions 0..$VTX_n_partitions, each gated by
+         its own user_mask flag (get_user_mask) - a shifter picks WHICH
+         partitions get IV-scanned this run, not all-or-nothing. Maps
+         directly onto Marius's "a handful of channels" scope
+         (docs/page/custom_page.txt section 4.5).
+       - Each partition stores its OWN Start_HV/Stop_HV/Step_HV in ODB
+         (Parameters/ subtree) - genuinely independent ranges, not one
+         shared parameter.
+       - n_iterations is computed PER PARTITION from its own range, then
+         max_iterations = the largest one sizes the single outer loop -
+         exactly the "global tick, per-item cursor" shape reasoned about
+         for scan_thr. Each partition has its own CurrentState/Done flag
+         - once a shorter-range partition reaches its own stop voltage,
+         it's skipped in every later iteration (IF $iv_done == 0) while
+         longer-range partitions keep going. Working proof this pattern
+         costs nothing extra in scan time (bounded by the max, not the
+         sum) - not just a theoretical property.
+     scan_vbr.py/iv_scan.py today has NONE of this: get_scifi_hv_channels()
+     returns every "SciFi CH"-matching channel found, run_iv_scan() sweeps
+     ALL of them together through ONE shared (iv_start, iv_end, iv_step) -
+     no selection, no per-channel/per-group range, no early-stop.
+
+     SAFETY GAP - not just granularity, a real missing protection.
+     VTX_iv_scan.msl has two checks scan_vbr.py's loop has neither of:
+       (a) per-partition over-current abort: reads a configurable
+           Max_Current_per_Chip parameter, computes max_hv_current =
+           that x n_chips, and if the measured current reaches it,
+           immediately writes that partition's demand to 0 and marks it
+           Done - stops sweeping a partition that's already breaking
+           down hard, instead of continuing to ramp voltage into it.
+       (b) a pre-check (check_if_dcdc_power_good) refusing to start the
+           HV sweep on a partition whose LV isn't confirmed on first.
+     CHECKED WHETHER THE HV FRONTEND ITSELF COVERS (a) THE WAY IT DOES
+     FOR VOLTAGE (docs/page/custom_page.txt's HV Demand finding,
+     mdev_hv4.cxx) - it does NOT. HV/Settings has both "Voltage limit"
+     (real, enforced - the exact clamp already documented) and "Current
+     limit" (confirmed present in the live ODB dump, docs/
+     odb_220726_121718.json - 224-length array, e.g. 1000uA for SciFi
+     channels) - but grepping mdev_hv4.cxx shows "Current limit" is only
+     ever STORED and DISPLAYED (m_settings["Current limit"] = m_current_
+     limit, set once from a config value), never compared against the
+     live "Current" variable anywhere in the frontend's own logic. So
+     unlike Demand/voltage, there is NO hardware-level safety net for
+     current at all - a script-level over-current check (mirroring
+     VTX_iv_scan.msl's own Max_Current_per_Chip logic) would be filling
+     a real gap, not duplicating an existing protection.
+
+     WHAT SCIFI'S VERSION ADDS THAT PIXEL'S DOESN'T: vbr_finding.py's
+     automated breakdown-voltage extraction (derivative-peak + Gaussian
+     refit, confidence-checked) - VTX_iv_scan.msl only ever records the
+     raw I-V curve to a JSON snapshot for later offline analysis, no
+     in-sequencer VBR extraction at all.
+
+     SETTLE TIME - both sides are guessing, neither is confirmed against
+     real hardware: VTX_iv_scan.msl hardcodes WAIT SECONDS, 7 with its
+     own "#TODO: what is the wait time?" comment; scan_vbr.py defaults
+     wait_seconds_per_step to 5s, also unverified.
+
+     NOT ACTED ON YET - this is a research note, not a decision: whether
+     to actually port the per-partition-range/selection/abort pattern
+     into a scifi_scripts redesign of ScanVbr is still open, same as
+     scan_thr's own granularity question - the user flagged (2026-07-22)
+     that usefulness itself needs Marius's input before investing in it,
+     independent of how proven the pattern is on pixel's side.
+   - 5.9) Results destinations, framed as complementary not
+     alternative: local JSON (scratch/debug), live ODB (real-time
+     monitoring during a scan, transient), RunODB (free per-run
+     traceability), Conditions DB (the offline-reconstruction
+     destination - ties into whatever scifi_scripts' own "finalise"
+     step ends up writing).
+     CONFIRMED REQUIREMENT 2026-07-20 (Marius, direct reply to "where
+     should scan_thr/scan_vbr results ultimately live": ".root and CDB
+     would be good"): CDB is no longer just brainstormed - it's a
+     confirmed target, alongside .root (not instead of it). A CDB
+     writer doesn't exist anywhere yet - ResultSaverODB is still an
+     unimplemented stub on the pixel side too, and there's no
+     ResultSaverCDB at all. This is now real, scoped follow-up work,
+     not a someday-maybe idea - whoever designs scifi_scripts/core/'s
+     finalise() step needs to account for it from the start.
+     DELEGATED 2026-07-20 (user): asked whoever is already working on
+     the CDB piece directly, rather than picking this up ourselves -
+     not on our plate right now, just needs to stay on the radar for
+     when scifi_scripts/core/'s finalise() step gets designed, so
+     whatever they build can be hooked in.
+
+
+2.6) DECIDED 2026-07-21: Feb owns LV, NOT HV - power/HV/LV brainstorm
+     for scifi_scripts/core/ (todo.txt section B), before calibrations
+   Checked whether a future Feb class can own its LV/HV supply the way
+   pixel's PowerPartition owns one LV+one HV (core/power_partition.py).
+   Live ODB (odb_210726_091138.json) + Mu3eSpecBook.pdf cross-check
+   (full evidence: topology.txt section 4c):
+     - LV (DCDCCrates): 12 channels, exactly 1:1 with the 12 real FEBs
+       (each channel = one super-module's SMB pair). Feb owns one
+       LVPowerSupply directly, one-to-one - clean.
+     - HV: 32 channels (8 physical HV+ boxes x 4 channels, confirmed
+       against spec book section 3.5.2's crate tables), does NOT divide
+       evenly against 12 FEBs or 24 SMBs. No channel-to-SMB table exists
+       in the spec book, and no current script needs one - hv_power.py/
+       apply_vbr.py already work on all-channels-at-once or one exact-
+       matched channel, never per-FEB.
+   DECISION: Feb owns its LVPowerSupply directly. HV is modeled as a
+   separate, flat/independent concept (own class or a simple channel
+   list), NOT a Feb attribute - avoids blocking Feb's design on an
+   unresolved mapping nobody currently needs. Revisit only if a real
+   per-FEB/per-SMB HV control requirement shows up later (most likely at
+   calibration time, e.g. per-module IV-scan ranges per item 2.5's 5.4
+   above) - don't pre-build for it now.
+
+   common/power_supply.py's DCDCPowerSupply/HVBoxNPowerSupply are still
+   the right base classes to reuse for both (ODB schema is identical to
+   pixel's, per item 2.3 above) - this decision is only about whether
+   Feb HOLDS a reference to one, not about reimplementing the ODB access
+   itself.
+
+   Still open, not needed to unblock this decision (item 1 above):
+   common/'s find_odb_channel_number() is exact-match
+   (Names[].index(name)), while scifi's lv_power.py/hv_power.py scan for
+   a PATTERN across multiple channels. Feb's future LV ownership will
+   need its own exact-match lookup (fine, 1 channel per Feb, exact match
+   works directly), but any bulk/pattern-based HV action stays outside
+   Feb's object graph entirely per the decision above - so this gap only
+   matters for a hypothetical future per-channel HV/Channel-level need,
+   not for Feb/LV.
+
+   IMPLEMENTED 2026-07-21 (same day, after asking Marius "where's the HV
+   channel<->SMB mapping documented" and getting "In the specbook" -
+   full evidence trail: topology.txt section 4c): built core/hv.py's
+   ScifiHv exactly as this decision specified - a flat/independent class
+   (not a Feb attribute), owned by SciFiDetector as det.hv, scanning
+   Names[] once for every "SciFi CH" match rather than per-channel
+   exact-match lookups. The channel<->SMB order is STILL not documented
+   anywhere (checked spec book text/figures, live hv_fe.cxx, the online
+   repo's wiki) even though Marius's pointer did surface the real
+   channel COUNT (24, confirmed 1:1 with SMB by design, not 32 as first
+   misread from the crate-assignment table) - so this implementation
+   doesn't change: still bulk/pattern-based, still no per-Feb/per-SMB
+   targeting. Revisit only if the ordering itself ever gets confirmed.
+
+
+2.7) REAFFIRMED 2026-07-21: scifi_scripts/core/ targets SciFiFibre only,
+     no Labor support - Feb/Asic/Channel design has begun for real
+   topology.txt section 4 already dropped the "Labor" equipment-name
+   family (ScifiLabor/SciFiLabor, Geneva testbench) from the research
+   scope on 2026-07-20 - this reaffirms the same call now that it
+   actually matters for code, not just research: scifi_scripts/core/'s
+   detector-level class (SciFiDetector or similar) targets
+   /Equipment/SciFiFibre + /Equipment/LinksFibre directly, hardcoded -
+   NO detect_equipment_prefix()-style auto-detection between Labor/Fibre
+   like scifi-userfiles' scripts have. scifi-userfiles keeps that
+   auto-detect (it still runs on the Geneva testbench too); scifi_scripts
+   is the production-only rebuild and doesn't need to carry the Labor
+   branch. Simplifies the detector-construction code - one hardcoded
+   equipment path pair, not a lookup+RuntimeError-on-ambiguity dance.
+
+
+2.8) DECIDED 2026-07-21: calibrations/'s CalibrationBase is deliberately
+     simpler than pixel_scripts' own - no per-partition parallelisation
+   pixel_scripts/calibrations/calibration.py's CalibrationBase carries
+   real complexity (power_partition_done tracking,
+   loop_over_power_partitions()/loop_over_chips_in_power_partitions())
+   whose entire purpose is letting multiple independent PowerPartitions
+   run the same parameter sweep at different paces, each stopping on its
+   own restrictions/schedule. SciFi has no PowerPartition (section 2.2/
+   2.6 above), and more importantly no equivalent NEED: a SciFi
+   calibration acts on every active channel at once via
+   SciFiDetector's bulk channel-field read/write (get_active_channels()/
+   write_channel_field_bulk()/set_channel_field_all(), added 2026-07-21 -
+   see todo.txt section B), so there's no per-unit pacing problem to
+   solve in the first place.
+   DECISION: calibrations/calibration.py's CalibrationBase keeps only
+   the genuinely generic shape - CalibrationResult enum,
+   prepare()/execute()/finalise() lifecycle, self.parameters - and drops
+   the parallelisation machinery entirely, not as a "not built yet" gap
+   but as a deliberate scope cut (the problem it solves doesn't exist
+   for us). Does NOT yet wire a result_saver (unlike pixel's
+   OperationBase) - .root/ODB/CDB is still open (item 2.5's 5.9 above) -
+   finalise() is the intended hook, left undesigned until scan_thr
+   (the first real calibration) needs it.
+   calibrations/calibrationfactory.py's CalibrationFactory mirrors
+   pixel's shape (get-what-to-run/check-shared-equipment/dispatch-and-
+   run) directly, including reusing the same TDK/DCDCCrates
+   check_shared_equipment() logic already wired into pixel's
+   ActionFactory (item 2.1 above) - this part IS a close mirror, since
+   the underlying problem (shared equipment, ODB-driven calibration
+   selection) is genuinely the same for both subsystems, unlike
+   PowerPartition-parallelisation which isn't.
+
+
+2.9) DECIDED 2026-07-21: result-saving DOES mirror pixel's
+     utils/results.py architecture after all - user's own call, made
+     while comparing the two directly
+   Earlier in the day, result-saving was built as a single, scan_thr-
+   specific write_scan_root_file() call at the very end of a run
+   (calibrations/root_writer.py) - deliberately NOT mirroring pixel's
+   generic ResultSaver/ResultSaverMultiple pattern (utils/results.py),
+   since that seemed like unnecessary structure for one calibration's
+   worth of output.
+   REVISITED same day: comparing the two directly surfaced a real
+   weakness in the write-once-at-the-end approach - pixel's ResultSaver
+   base class calls append_step_result() DURING execute() (incremental,
+   step by step), not just once at the end, so a crash mid-run doesn't
+   lose completed steps. The end-of-run-only approach did lose that
+   property for no real benefit.
+   DECISION: adopt pixel's ResultSaver shape for real (generic base +
+   swappable backends + a Multiple container), but targeting SciFi's
+   own confirmed destinations - ResultSaverRoot (.root, INCREMENTAL via
+   uproot tree.extend() per step - the actual fix for the crash-loses-
+   data problem), ResultSaverODB (live/transient monitoring, item 2.5's
+   5.9), ResultSaverCDB (pure stub, still delegated - mirrors pixel's
+   own ResultSaverRunDB, also never implemented) - instead of pixel's
+   own three (local NDJSON/ODB/RunDB). calibrations/root_writer.py's
+   pure array-building helpers (_build_long_format_arrays/
+   _build_calibration_arrays/_feb_channel_range) are reused by
+   ResultSaverRoot, not duplicated - root_writer.write_scan_root_file()
+   itself stays as a still-valid lower-level utility/reference
+   implementation (and its own test, test_root_writer.py) even though
+   it's no longer the primary way ScanThr saves its results.
+   Full detail/verification: docs/todo.txt section B (REDESIGNED
+   2026-07-21 entry).
+
+   REVERSED 2026-07-21 (same day, user's own call): the whole
+   ResultSaver/ResultSaverRoot/ResultSaverODB/ResultSaverCDB machinery
+   described above, plus the older root_writer.py it was built on, was
+   DELETED (utils/result_saver.py, utils/root_writer.py, their tests,
+   and globals/odb_paths.py's current_state_path() helper which existed
+   only to serve ResultSaverODB). Result saving is explicitly deferred -
+   "ci penserò poi" - not abandoned, just not carried as half-built code
+   in the meantime. calibrations/thr_scan.py's ScanThr is back to scan
+   mechanics + optional threshold-finding only, no save step anywhere in
+   its lifecycle. This section (2.9) is kept as-is for the reasoning
+   history, not as a description of current code - see 2.10/2.11 below
+   for what replaced it structurally.
+
+
+2.10) DECIDED 2026-07-21: naming pass across core/calibrations/scripts -
+      user feedback that file/folder names were "veramente antiintuitivi"
+   Renamed, in order, once each rationale was confirmed:
+     - core/ -> detector/ (and its detector.py -> scifi.py, avoiding a
+       file with the same name as its own folder)
+     - calibrations/calibration.py -> calib_base.py (was going to be
+       "base.py", user picked "calib_base.py" instead)
+     - calibrations/calibrationfactory.py -> calib_run.py (was going to
+       be "runner.py", user picked "calib_run.py")
+     - calibrations/scan_thr.py -> thr_scan.py,
+       calibrations/find_thr.py -> thr_find.py (consistent thr_ prefix)
+     - scripts/thr_scan.py -> thr_run.py (resolves a real same-basename
+       collision against calibrations/thr_scan.py that re-appeared once
+       the calibrations/ file above was renamed - scripts/ entry points
+       now read as "<topic>_run.py": feb_power.py/lv_power.py/
+       hv_power.py stay as-is since they have no colliding counterpart
+       in calibrations/, only the scan one did)
+   No functional change from any of these - every import site was
+   updated and the full test suite re-verified passing after each step.
+
+
+2.11) DECIDED 2026-07-21: power scripts (feb_power/lv_power/hv_power)
+      read and check EVERY real ODB field available, not a subset -
+      "tutto o niente", explicit user design goal
+   User's own framing: these three scripts stay whole-detector-only
+   ("act on everything, with every possible check"), deliberately with
+   NO per-FEB/per-channel selection exposed as script parameters -
+   granularity, when it's needed, belongs in the future custom control
+   page writing selection/parameters directly into ODB, which these same
+   scripts would then read and act on. So there is no "add per-channel
+   selection to these scripts" work item - that granularity question is
+   fully owned by docs/page/custom_page.txt going forward, not by scripts/.
+   Audited this same day against the real ODB dump (full detail:
+   topology.txt section 4d) and closed 2 real gaps found:
+     - detector/feb.py's check_lv_current() -> check_lv_status():
+       extended from Current[]-only to also read Voltage/Sense/
+       Temperature and check all 7 real DCDCCrates boolean fault flags
+       (Alert, Power Good, Over Temperature, Vin Under-voltage, Over
+       Current, Vout Over-voltage, Interlock) - required extending
+       common_scripts/common/power_supply.py's DCDCPowerSupply itself
+       (shared code with pixel_scripts) since most of these weren't
+       wired into any ODBPowerSupplyReadAndCheckCommand before.
+     - detector/hv.py's check_current() -> check_status(): extended to
+       also read Voltage and check Settings/Enabled[] - HV's ODB tree
+       has nothing further to check (topology.txt 4d confirms this).
+     - detector/feb.py's new get_power_monitoring(): FEBCrates/
+       Variables/SCFC per-FEB temperature + per-crate voltage rails/CC
+       temperature, reported informationally (no invented pass/fail
+       threshold - no reference "normal" value exists anywhere for
+       these, unlike LV/HV's own UNVERIFIED-but-sourced current
+       defaults) by scripts/feb_power.py after a successful power-on.
+   Extended this same day, for the same "chosen future" reason (a second
+   calibration is coming): calibrations/thr_scan.py's ScanThr
+   constructor params renamed rate_scan_start/rate_scan_stop ->
+   threshold_start/threshold_stop (the old names implied the RATE was
+   being scanned - it's actually measured, the THRESHOLD is what's
+   scanned) and wait_seconds_per_step -> settle_seconds (aligns with the
+   same concept's name in lv_power.py/hv_power.py).
+
+   Confirmed pattern for adding a second calibration (e.g. the deferred
+   IV scan) later: CalibrationBase/CalibrationFactory (calib_base.py/
+   calib_run.py) and the /CosmicRun/Calibration/SciFi/CurrentCalibration
+   ODB selector path are already calibration-agnostic - adding one only
+   needs a new CalibrationBase subclass, one new CalibrationExecute enum
+   value, one new dispatch branch in perform_calibration(), and a new
+   scripts/ entry point. Nothing about ScanThr's own implementation
+   needs to change.
+
+
+3) [REMOVED 2026-07-20, scope cleanup] Infrastructure items (symlink,
+   PYTHONPATH aliases) and the pixel-custom-page note that used to live
+   here moved out - this file is now scoped to scifi_scripts code
+   structure only (see header). Infrastructure items live in todo.txt
+   (still open there, same postponement condition: not before
+   sequencer_scripts is pushed AND pulled for real on mu3ebe). Anything
+   about a custom control page (pixel's or SciFi's) lives in
+   docs/page/custom_page.txt (see its section 2.4/2.5 for pixel's VTX_Generic.html
+   status, section 3 for SciFi's own page proposal).

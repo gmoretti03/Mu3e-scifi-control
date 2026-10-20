@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SciFi Control — Merged</title>
+<style>
+  html, body{margin:0;height:100%;background:#0f151b;}
+  .split{display:flex;width:100%;height:100vh;}
+  .pane{flex:1;min-width:0;height:100%;}
+  .pane.left{flex:0.84;}
+  .pane.right{flex:1.16;}
+  iframe{width:100%;height:100%;border:0;display:block;}
+  .divider{flex:0 0 1px;background:#293544;}
+</style>
+</head>
+<body>
+  <div class="split">
+    <div class="pane left"><iframe src="custom_page_mockup_v3.html" title="Custom page (Power/Readout/Calibration)"></iframe></div>
+    <div class="divider"></div>
+    <div class="pane right"><iframe src="geometry_view_mockup.html" title="Geometry view"></iframe></div>
+  </div>
+</body>
+</html>

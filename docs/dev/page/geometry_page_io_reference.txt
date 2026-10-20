@@ -1,0 +1,286 @@
+GEOMETRY PAGE (PAGE 1) I/O REFERENCE
+====================================================================
+NEW DOC 2026-07-24. Sibling of page_io_reference.txt (Page 2 - Power/
+Readout/Calibration), kept separate on purpose (user's own call): Page 1
+(Geometry view) is a genuinely distinct page in the two-page split
+already decided in custom_page.txt section 3, not another mega-section
+of Page 2 - mixing the two into one doc/one mockup would blur that
+split. Cross-reference custom_page.txt section 3's "Page 1 - geometry
+page" entry for the full design history/reasoning; this file tracks the
+same per-element INPUT/OUTPUT breakdown discipline as page_io_
+reference.txt, applied to Page 1 instead.
+
+STARTING CONTEXT (already decided before this doc existed, not
+re-litigated here): Page 1 is PURE DIAGNOSTIC, read-only - NOT an editor
+(REVISED 2026-07-22, custom_page.txt section 3). Editing masks/
+parameters happens on Page 2 (Readout/Calibration mega-sections);
+Page 1 only visualizes current state. Spatial ring/module map (real
+SciFi topology, US/DS x 12 modules each), color-coded status for every
+subdivision shown. Clicking an element opens a detail panel aggregating
+that element's info FROM the other sections (Power/Readout/
+Calibration) - read-only here, not editable. Known granularity mismatch
+to design around (custom_page.txt 3's own note): a "module" maps to 1
+LV channel SHARED with its pair-partner, up to 2 HV channels (Top/
+Bottom), and its own slice of ASIC/channels on a FEB - shared resources
+must be shown as shared, not as if each module were fully independent.
+
+Legend - INPUT origin (same categories as page_io_reference.txt):
+  ODB-LIVE    = read directly from a real ODB path, live state
+  COMPUTED    = derived client-side from ODB-LIVE data already read
+                elsewhere on the page - no separate ODB read
+  PAGE-LOCAL  = exists only in the page's own JS state (selection,
+                which element is currently clicked) - never read from
+                ODB
+  HARDCODED   = a JS-side constant, not sourced from ODB at all
+
+Legend - OUTPUT destination:
+  Expected to be overwhelmingly NONE (display) or PAGE-LOCAL (selecting
+  an element to open its detail panel) - Page 1 has no editing actions
+  by design (see STARTING CONTEXT above). Flag prominently, don't
+  silently build, anything that looks like it wants to write ODB - that
+  would contradict the read-only decision and needs to go back to the
+  user before being treated as correct.
+
+STATUS: filled in 2026-07-24, built in one pass rather than section-by-
+section like page_io_reference.txt was - user's own call ("dovrebbe
+essere facile, alla fine è molto simile al reference e geometry è un
+processo di sola lettura"). Almost every field below is the SAME
+underlying data as an already-documented Page 2 field (this page is a
+different VIEW of it, not a different SOURCE) - cross-referenced by
+section number rather than re-derived from scratch. Genuinely NEW
+INPUT/OUTPUT decisions specific to this page (ring layout, color
+computation, selection/expand state) are written out in full.
+
+
+1) RING TOPOLOGY - static layout, not per-instance state
+--------------------------------------------------------------------
+  US/DS module order (usSequence/dsSequence arrays), which position on
+  the ring each module number sits at, which 2 consecutive positions
+  form one super-module (FEB)
+    INPUT: HARDCODED - derived from Mu3e Spec Book Figure 6.1/6.2's
+      numbering convention (US and DS are mirror images, opposite
+      rotational sense - verified programmatically this session, see
+      conversation record). This is fixed detector wiring, not
+      something that changes at runtime - no ODB field carries "which
+      position is module N at", so there is nothing to read live here,
+      unlike everything else on this page.
+  SVG coordinates (angleForPosition, module/ASIC/SM-arc/health-dot
+  radii, tangent-vector offsets for ASIC dot spacing)
+    INPUT: COMPUTED - pure trigonometry from the HARDCODED layout above,
+      no ODB involvement at any step.
+  OUTPUT (both of the above): NONE - layout only, never written anywhere
+
+  Super-module index (smIndex) - which SM (0-5) a module/health-dot
+  belongs to, and which FEB its Power-block data comes from
+    BUG FOUND AND FIXED 2026-07-24: was computed from RING POSITION
+      (Math.floor(p/2)), not from the real module number
+      (Math.floor(modNum/2)) - wrong on every one of the 12 US
+      positions (verified by direct computation) because the US ring
+      starts at module 2, not 0, to match the Spec Book figure (section
+      1's own HARDCODED note above). Effect: wrong SM number/arc shown,
+      wrong FEB looked up on health-dot click. Fixed at both call sites
+      (buildModules()'s per-module smIndex, renderRing()'s SM-arc loop -
+      renamed to pairIndex there, since "which arc position to draw"
+      and "what SM number labels it" are different things once smIndex
+      is module-number-based instead of position-based).
+    RELATED BUG FOUND AND FIXED same day: the per-module LinkStatus
+      override list (section 3 below) could assign different LinkStatus
+      to the two modules of one SM/FEB - real bug, since LinkStatus is
+      per-FEB (page_io_reference.txt 3.1), not per-module. Fixed by
+      gating the overrides on smIndex instead of modNum. Deliberately
+      NOT reconciled with custom_page_mockup_v2.html's own different
+      per-SM LinkStatus values - user's own call, the two mockups are
+      allowed to disagree on WHICH SMs are Fault/Disabled/Unknown, only
+      the per-FEB internal-consistency bug needed fixing.
+
+
+2) SM HEALTH DOT (ring, inner radius ~128, one per super-module)
+--------------------------------------------------------------------
+  fill color (ok / fault / off)
+    INPUT: COMPUTED - febHealth() derives "off" from !crateLink,
+      "fault" from lvFaultCount>0, "ok" from power && lvOn. Every one of
+      those inputs is the SAME ODB-LIVE data as page_io_reference.txt's
+      FEB (2.1) and LV (2.2) sections - crate link/FEB power (2.1),
+      LV On + the 7 fault flags (2.2). No new ODB read - this dot is
+      just a compressed one-glance summary of data Page 2 already reads
+      per-FEB, aggregated here instead of shown as separate rows.
+  click -> opens SM-level detail panel (section 5 below)
+    OUTPUT: PAGE-LOCAL - sets which health dot is `.selected`, calls
+      selectSm(). No ODB write.
+
+
+3) MODULE DOT (ring, outer radius 210, one per module - 24 total)
+--------------------------------------------------------------------
+  fill color (LinkStatus: OK/Fault/Disabled/Unknown)
+    INPUT: ODB-LIVE - identical field to page_io_reference.txt 3.1's
+      "link status": LinksFibre/Variables/LinkStatus[link], the real
+      4-value enum (Disabled=0, OK=1, Unknown=2, Fault=3), per-FEB not
+      per-module (both modules of a FEB share the value). INDEXING
+      CONFIRMED 2026-07-24 (same proof as page_io_reference.txt 3.1):
+      feb_index, not link_feb.
+  stroke color (HV status: enabled+on / enabled+off / disabled)
+    INPUT: COMPUTED - same source as page_io_reference.txt 2.3's HV
+      Enabled + Output On fields, combined into one 3-state color here
+      instead of 2 separate columns.
+  module number text
+    INPUT: COMPUTED - the module number from the HARDCODED sequence
+      (section 1), painted in black; no ODB read.
+  click -> opens module-level detail panel (section 6 below)
+    OUTPUT: PAGE-LOCAL - sets which module dot is `.selected`, calls
+      selectModule(). No ODB write.
+
+
+4) ASIC DOT (ring, radius ~244, 4 per module - one per MuTRiG ASIC)
+--------------------------------------------------------------------
+  fill color (enabled=green / disabled=red)
+    INPUT: ODB-LIVE - identical field to page_io_reference.txt 3.1's
+      ASIC row "enabled (ASICMask bit)": LinksFibre/Settings/
+      ASICMask[feb_index], one bit per ASIC (Asic.is_enabled()). Same
+      2026-07-24 fix applies here as in Page 2: a module whose own
+      LinkStatus is Fault/Unknown (not just Disabled) is cascade-treated
+      as all-ASICs-disabled, matching the GATE HIERARCHY note in
+      page_io_reference.txt (acting on/reading from a module with a bad
+      link is meaningless regardless of which of the 3 non-OK states).
+  stroke color (all/some/no channels active - asicChannelColor)
+    INPUT: COMPUTED - derived from the same per-channel `masked` state
+      as page_io_reference.txt 3.1's channel cell fields (section 6
+      below), just reduced to a 3-way summary color instead of shown
+      cell-by-cell at this zoom level.
+  ASIC number text
+    INPUT: HARDCODED - position within the module (0-3), painted black.
+  click -> opens module-level detail panel AND expands that ASIC's
+  channel grid inline (selectModule + expandAsic together)
+    OUTPUT: PAGE-LOCAL - selection + expand state only. No ODB write.
+
+
+5) DETAIL PANEL - SUPER-MODULE LEVEL (populateFebPanel)
+--------------------------------------------------------------------
+Populated by clicking EITHER an SM health dot OR any module dot on that
+SM (module click adds the module-level blocks in section 6 on top of
+this, per the cumulative disclosure hierarchy - SM info alone is shown
+whichever way you got there).
+
+  Power - FEB block (feb_index/link_feb, crate/slot, crate link, FEB
+  power, active channels FEB-wide, crate rails/temps)
+    INPUT: identical fields/sources to page_io_reference.txt 2.1 (FEB) -
+      no new ODB read, this is the same block re-shown here.
+    OUTPUT: NONE - unlike Page 2, which has real power-ON/OFF PYSEQ
+      buttons for FEB power (2.1), Geometry shows the same data with
+      every action button removed (diagnostic-only, reaffirmed this
+      session: "ricordati che è una pagina diagnostica, non di azione").
+  Power - LV block (LV channel name, present, on/off, current, adjust,
+  sense, temperature, fault flags)
+    INPUT: identical fields/sources to page_io_reference.txt 2.2 (LV),
+      including the "present" field (ODB-LIVE, DCDCCrates/Settings/
+      Present[ch]) and the fault-flag formatting bug fixed this session
+      (formatLvFlags returns "n/a (LV off)" when !lvOn, same fix as
+      Page 2's check_lv_status() semantics - both files were patched
+      the same way, same root cause).
+    OUTPUT: NONE - Page 2's Adjust/on-off actions (2.2) are not present
+      here, same diagnostic-only reasoning as the FEB block above.
+  Power - DCDC crate block (crate id, enabled, crate on, hosts)
+    INPUT: identical fields/sources to page_io_reference.txt 2.4 (DCDC
+      crate block).
+    OUTPUT: NONE - Page 2's Reset/Clear Fault actions (2.4) are not
+      present here.
+
+
+6) DETAIL PANEL - MODULE LEVEL (selectModule, only when a specific
+   module - not just its SM - has been clicked)
+--------------------------------------------------------------------
+Adds the following blocks ON TOP OF section 5's SM-level blocks, per
+the cumulative disclosure hierarchy confirmed this session (SM click ->
+SM info only; module click -> adds this; ASIC click -> adds section
+6's channel grid inline under that one ASIC row).
+
+  Module / Super-module (FEB) labels at the top of the panel
+    INPUT: PAGE-LOCAL (which module is selected) + COMPUTED (m.side +
+      " " + m.module / m.febName string built from the HARDCODED
+      topology, section 1) - not read from ODB.
+  Power - HV block (channel name + index, Demand, Current, Voltage)
+    INPUT: identical fields/sources to page_io_reference.txt 2.3 (HV).
+    OUTPUT: NONE - Page 2's HV Demand-setting action (2.3) is not
+      present here.
+  Readout block
+    module summary rows (ASIC active count, channels unmasked, VBR)
+      INPUT: COMPUTED (ASIC active / channels unmasked - aggregated
+        client-side from the per-ASIC data already read for this
+        module, no separate ODB read, same as page_io_reference.txt
+        3.1's own "<N>/4 ASIC active" / "<N>/128 channels unmasked"
+        entries) except VBR, which is NOT ODB-LIVE - FLAGGED 2026-07-24,
+        same catch and same fix as page_io_reference.txt 3.1's VBR
+        entry: ScanVbr's found value has no real ODB field to land in
+        (checked, absent), so it will have to come from the same
+        result-side JSON mechanism proposed there (4.3/4.4 cross-ref) -
+        not yet designed, revisit together with Page 2's VBR fix.
+    per-ASIC row (unmasked count, avg FCCR)
+      INPUT: identical fields/sources to page_io_reference.txt 3.1's
+        ASIC row.
+    per-channel grid, shown inline under its own ASIC row when expanded
+    (tthresh, tthresh_offset, FCCR, masked/masked-by-cascade state,
+    diagonal-stripe pattern distinguishing the two masked reasons)
+      INPUT: identical fields/sources to page_io_reference.txt 3.1's
+        channel cell block. Same NOT CONFIRMED caveat carried over:
+        whether the ODB's flat Asic/Channel index order matches this
+        grid's assumed physical layout 1:1 (topology.txt 132-135) -
+        cells are labelled by ODB index here too, not asserted to be
+        true physical position.
+    expand/collapse of a given ASIC's channel grid (independent per
+    ASIC, tracked via openAsics{})
+      INPUT/OUTPUT: PAGE-LOCAL only - which ASIC rows are currently
+        expanded. Never touches ODB.
+    OUTPUT (whole Readout block): NONE - Page 2's Mask/Unmask and ASIC
+      Enable/Disable actions (3.2) are not present here, same
+      diagnostic-only reasoning as every other block on this page.
+  Calibration block (IV eligible / Thr eligible only)
+    INPUT: identical eligibility criteria to page_io_reference.txt's
+      Calibration section - IV eligible = HV Enabled, Thr eligible =
+      LinkStatus OK.
+    DELIBERATELY EXCLUDED (not an oversight): the actual IV/Thr scan
+      PARAMETER VALUES (iv_start/iv_end/threshold_start/... , page_io_
+      reference.txt 4.1/4.2) are not shown here - user explicitly
+      declined showing more Calibration detail than eligibility when
+      asked during the completeness audit ("1. no assolutamente").
+      Per-module parameter values stay Page-2-only.
+    OUTPUT: NONE.
+
+
+7) SELECTION / CLOSE STATE (page-wide)
+--------------------------------------------------------------------
+  Which SM/module/ASIC dot is `.selected` on the ring, which detail
+  blocks are populated, "Module detail" header click closing the panel
+  back to its empty placeholder state
+    INPUT/OUTPUT: PAGE-LOCAL throughout (selectedDot, selectedHealthDot,
+      openAsics, the detail-empty/detail-content toggle) - none of this
+      is ODB state, all of it resets to empty on load and on explicit
+      close. Added 2026-07-24 (close-on-header-click).
+
+
+8) OUTPUT SUMMARY (whole page)
+--------------------------------------------------------------------
+Confirms the STARTING CONTEXT claim field-by-field rather than just
+asserting it: every OUTPUT line above is either NONE (display) or
+PAGE-LOCAL (selection/expand/close state). Zero ODB writes anywhere on
+this page - no exceptions found during this pass.
+
+
+9) GAPS CARRIED OVER FROM page_io_reference.txt (identical underlying
+   data, so identical open questions - not re-litigated, just flagged
+   here too since this page reads the same fields)
+--------------------------------------------------------------------
+  - VBR has no real ODB field yet (section 6 above / page_io_
+    reference.txt 3.1 + 4.4) - affects this page's Readout block same
+    as Page 2's.
+  - RESOLVED 2026-07-24: feb_index vs link_feb indexing (page_io_
+    reference.txt 2.1/3.1) - confirmed via fresh ODB dump, see sections
+    2/3 above. No longer a gap.
+  - ODB flat channel index vs assumed physical layout not confirmed
+    (page_io_reference.txt 3.1, topology.txt 132-135) - affects this
+    page's channel grid/tooltips same as Page 2's.
+  - CROSS-CUTTING GROUPING GAP (page_io_reference.txt, "found
+    2026-07-24, DECIDED NOT TO FIX"): this page's ring layout
+    (usSequence/dsSequence, section 1) is an even more hardcoded
+    version of the same simplification Page 2 accepted for its
+    US/DS groupings - not derived from any live ODB field, just a
+    fixed JS array. Same accepted-simplification status, not
+    re-opened here.

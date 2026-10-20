@@ -1,0 +1,160 @@
+ZOOM CON MARIUS - 2026-07-23 - PUNTI DA TOCCARE
+====================================================================
+
+1) REVISIONE PAGINA (scopo principale della call)
+--------------------------------------------------------------------
+Mostrare custom_page/custom_page_mockup_colored.html. Chiedere:
+  - La struttura generale va bene? (pannello sicurezza, tab FEB/LV/HV,
+    sezione Calibration vuota come placeholder, Geometry a destra come
+    pagina separata)
+  - Il modello di selezione a 3 livelli (tutto / settore geografico /
+    singola riga) è quello che intendeva con "limitato a una manciata
+    di canali"?
+  - I bottoni Emergency separati per FEB/LV/HV, oltre a quello totale,
+    hanno senso per come lavora davvero un turnista?
+  - AGGIORNATO 2026-07-23: la call non era ancora avvenuta quando è
+    iniziata la sessione di oggi - deciso di procedere comunque a
+    costruire il mockup, quindi quello che segue non è più un'idea da
+    proporre ma qualcosa da MOSTRARE e far approvare/rigettare. Terza
+    mega-sezione "Readout", stesso livello di Power e Calibration - non
+    un sotto-tab. Configurazione generale di presa dati (non
+    calibrazione-specifica): attivare/disattivare ASIC e canali singoli.
+    Geometry (Page 1) resta PURA DIAGNOSTICA, non editor.
+    STRUTTURA (fondata sullo spec book, sezione 6.4.2, Fig. 6.1/6.2 -
+    non solo inferenza): righe = 24 MODULI (=SMB, non FEB), raggruppati
+    US/DS come FEB/LV. Aprire un modulo porta DIRETTAMENTE a una griglia
+    4 righe (ASIC) x 32 colonne (canale) - non un doppio drill-down -
+    perché la Fig. 6.2 mostra i 32 canali di un ASIC su una striscia
+    lineare (nessuna struttura 2D dentro un singolo ASIC), mentre
+    l'intero modulo (4 ASIC x 32 canali) è naturalmente una griglia.
+    Selezione: click su riga (ASIC intero), colonna (stessa posizione-
+    canale sui 4 ASIC, un vero taglio fisico), o cella singola. Mask/
+    Unmask sulla selezione; colore cella = stato mask, bordo = stato
+    selezione (due dimensioni indipendenti sulla stessa cella).
+    QUESTIONE MASK-PERSISTENCE CHIUSA 2026-07-23 (decisione dell'utente,
+    non più da chiedere a Marius): il reset incondizionato di
+    ScanThr.execute() è comportamento corretto così com'è, nessuna
+    modifica di codice necessaria.
+    ASICMask WRITE - COSTRUITO 2026-07-23: Feb.set_asic_mask_bit() in
+    detector/feb.py, read-modify-write del bitmask con verifica
+    readback, test dedicato (tests/test_asic_mask.py, 4 casi, passa).
+    STATO MOCKUP: solo 1 modulo su 24 ("US SM 2 · Mod 0") è cablato alla
+    griglia interattiva; gli altri 23 sono righe placeholder statiche,
+    stessa forma quando verranno costruite per davvero.
+    Full dettaglio: custom_page.txt sezione 3.5 (custom_page_spec.txt è
+    stato archiviato in docs/old/ 2026-07-23, contenuto confluito lì).
+    AGGIORNATO 2026-07-23, stesso giorno, PRIMA che la call avvenisse
+    (vedi sopra): costruito molto più di quanto questo file anticipasse -
+    mega-sezione Calibration completa (IV scan/Threshold scan, prima solo
+    uno stub), sistema di colori cross-reference (identità US/DS, identità
+    mega-sezione, health-status dot), bottoni Power funzionanti con i veri
+    gate di sicurezza, e una gerarchia esplicita di bottoni PAGE/HARDWARE
+    su tutte e tre le mega-sezioni (dettaglio in custom_page.txt 3.5). File
+    mockup live: custom_page_mockup_colored.html (l'originale non
+    colorato è archiviato in docs/old/). Tutto questo È da mostrare/far approvare
+    alla call, non solo la struttura Readout descritta sopra.
+
+  - NUOVE DOMANDE APERTE emerse costruendo il mockup, da chiedere oggi:
+    a) L'indice flat dell'ODB (Asic/Channel, module*4+asic_in_module poi
+       position_in_asic) corrisponde davvero alla numerazione fisica
+       dello spec book 1:1? Già flaggato come non confermato in
+       topology.txt (righe 132-135) prima di oggi - ora però la griglia
+       di Readout ci costruisce sopra direttamente, quindi vale la pena
+       chiuderla.
+       RINFORZATO 2026-07-23 da un thread Slack (Nicolas/bbuttwil/
+       msakurai/mkoeppel, non nostra ricerca): mismatch REALE già
+       successo una volta - nel 2025 il cablaggio fibre non rispettava
+       lo specbook (mkoeppel: "the fibre cabling for the scifi detector
+       was not correct"), e i valori FEB<->SM del log mu3eSort non
+       combaciavano con lo specbook (US SM1->FEB144, DS SM1->FEB145 in
+       notazione 1-indexed di Nicolas - impatto mascherato nel 2025 solo
+       perché un solo lato era mai in dati). Per il 2026 (la campagna
+       che conta, bbuttwil conferma FEB installati secondo specbook)
+       mkoeppel ha dato una regola di derivazione indipendente - 96 ASIC
+       totali (48 US + 48 DS), FEB mappati US-poi-DS, ID locale per-FEB
+       = global_asic_id % 8, ID FEB da un offset sul global_asic_id -
+       MAI usata né verificata nel nostro codice (grep confermato: zero
+       occorrenze di un concetto "global asic id" in detector/*.py). Il
+       nostro Feb.__build_febs_from_odb() si fida semplicemente
+       dell'ordine con cui LinksFibre restituisce i suoi array per
+       feb_index - stessa forma della regola di Marius, mai incrociata
+       con dati 2026 reali. Non ancora chiuso via Slack (Nicolas non ha
+       confermato la lettura DS SM1/FEB145). Full dettaglio:
+       topology.txt (stessa sezione, 132-135).
+       NON ANCORA CHIESTO alla call di oggi (2026-07-23) - resta aperta.
+    b) HV: confermato via ODB reale (Equipment/HV/Settings/Board) che
+       ogni gruppo di 8 canali è in realtà 2 board fisiche da 4 (es. US
+       Top = S30-1..4, S31-1..4). Ma quali 2 degli 8 canali per gruppo
+       sono gli spare veri? Controllato Enabled[]/Group[] come possibili
+       campi risolutivi - nessuno dei due lo è (Enabled è True ovunque,
+       Group è solo un flag di visualizzazione MIDAS). Serve una lista
+       diretta da Marius.
+       RISPOSTA 2026-07-23 (call): NON IMPORTANTE - Marius dice di non
+       preoccuparsene, non serve la lista degli spare veri.
+    c) Il comando di scrittura per ASICMask (sopra) esiste ora a livello
+       di codice - ha senso operativamente attivare/disattivare interi
+       ASIC dalla pagina, o è un caso raro/pericoloso da nascondere
+       dietro una conferma extra?
+       RISPOSTA 2026-07-23 (call): SÌ, ha senso attivare/disattivare gli
+       ASIC dalla pagina.
+    d) Dato che ASICMask può spegnere un intero chip durante la presa
+       dati, deve passare dallo stesso gate di sicurezza già usato per
+       il Power-on (check_shared_equipment(), common/services.py) prima
+       di eseguire, o è un'azione abbastanza rara/locale da non
+       giustificare quel livello di protezione? Nessuno l'ha ancora
+       deciso esplicitamente.
+       RISPOSTA 2026-07-23 (call): SÌ, ASICMask deve passare dallo stesso
+       gate di sicurezza del power-on. CODE TODO: wire
+       check_shared_equipment() into Feb.set_asic_mask_bit() (o il suo
+       chiamante) prima della write - non fatto oggi, solo deciso.
+
+
+2) GRANULARITA' CALIBRAZIONE
+--------------------------------------------------------------------
+  - IV scan: sua stessa domanda aperta - "we have to decide how this
+    looks between DS/US" - chiudere ora. Chiedere se vuole range
+    indipendenti per settore (come fa già pixel con VTX_iv_scan.msl,
+    per power-partition) o un unico range per tutto.
+  - Threshold scan: la nostra visione era "parametri per-canale o
+    applicati uniformemente su gruppi" - chiedere conferma diretta, non
+    ancora verificata con lui.
+  - In generale: la granularità calibrazione dovrebbe rispecchiare i
+    gruppi di potenza già nella pagina (US/DS per FEB/LV, i 4 crate per
+    HV)? Chiedere se questo schema torna anche a lui.
+  - AGGIUNTO 2026-07-22: usare docs/scripts_io_reference.txt come
+    checklist concreta durante la call - ogni parametro dei 5 script
+    (feb_power/lv_power/hv_power/thr_run/vbr_run) è lì elencato con la
+    sua fonte attuale (hardcoded/PySequencer/ODB) - utile per chiedere a
+    Marius, uno per uno, quali vuole a grana fine invece di restare sul
+    generico.
+
+
+3) LIMITE DI CORRENTE PER L'OVER-CURRENT DELL'IV SCAN
+--------------------------------------------------------------------
+AGGIORNATO 2026-07-22: il meccanismo è stato costruito (non più un buco
+di sicurezza) - scan_vbr.py ora confronta Current[] contro Settings/
+"Current limit"[] ad ogni step e taglia il Demand del canale in fault,
+mirror di VTX_iv_scan.msl. Quello che resta aperto è solo il VALORE
+numerico: oggi usa qualunque cosa sia in ODB (default reale 1000uA per
+canale, mai validato contro l'hardware SiPM). Chiedere a Marius quali
+sono i limiti di corrente ragionevoli per i SiPM SciFi, per impostare
+quel valore correttamente (non per decidere se costruire il controllo -
+quello è già fatto).
+RISPOSTA 2026-07-23 (call): NON IMPORTANTE - i valori massimi/soglie e
+tutto ciò che è marcato "unverified" nel mockup (current_limit_ua qui,
+ma anche expected_current/tolerance di LV e HV, fit_window_v,
+min_peak_prominence) può restare così com'è per ora, Marius non ha dato
+numeri specifici e ha detto che non è prioritario chiuderli.
+
+
+4) SE C'E' TEMPO - bassa priorità
+--------------------------------------------------------------------
+L'ordine esatto canale HV <-> SMB/FEB - non blocca nulla ora, ma se
+emerge naturalmente vale la pena chiuderlo (topology.txt sezione 4c).
+RISPOSTA 2026-07-23 (call): NON IMPORTANTE - Marius conferma che non
+serve sapere la corrispondenza SMB/FEB da HV channels.
+
+
+Riferimenti: custom_page/custom_page.txt,
+custom_page/custom_page_mockup_colored.html, code_design.txt sezione 5.4 (IV
+scan vs VTX_iv_scan.msl), topology.txt.

@@ -1,0 +1,245 @@
+CALIBRATION STARTUP PROCEDURE - FROM PYSEQUENCER ENTRY TO execute()
+====================================================================
+Companion to pixel_bringup_sequence.txt (bring-up = power only, ends at
+"HV/LV stable"). This doc picks up from there: what happens between "an
+operator/sequencer starts a calibration script" and "the calibration's
+own execute() loop actually begins" - including where (and whether) a
+result saver gets involved. Written 2026-08-06, PLANNING ONLY, no code
+changed.
+
+Both subsystems reconstructed independently below, because they turned
+out NOT to follow the same path - pixel goes through a Factory, SciFi's
+real scripts bypass their own Factory. That divergence, not just the
+individual steps, is the main finding.
+
+SOURCES
+--------------------------------------------------------------------
+Pixel: sequencer_scripts/pixel_scripts/scripts/run_calibration.py,
+  calibrations/calibrationfactory.py, calibrations/calibration.py
+  (CalibrationBase), core/operation_base.py (OperationBase),
+  core/detector.py (Detector.__init__/create_partitions_from_odb),
+  actions/actions.py (ActionBase.post_perform, for contrast),
+  globals/operation_parameters.py.
+SciFi: sequencer_scripts/scifi_scripts/scripts/thr_run.py, scripts/
+  vbr_run.py, calibrations/calib_run.py (CalibrationFactory),
+  calibrations/calib_base.py (CalibrationBase).
+Shared: common_scripts/common/results.py (ResultSaver family),
+  common/services.py (check_shared_equipment), common/setup.py.
+
+====================================================================
+A) PIXEL'S REAL PATH (run_calibration.py -> CalibrationFactory)
+====================================================================
+1. PySequencer registers params: read_febs_from_odb, is_odb_available,
+   can_send_commands_to_odb (run_calibration.py:9-11).
+2. sequence(seq) copies those into globals.setup / common.setup flags
+   (run_calibration.py:15-17), THEN calls
+   CalibrationFactory.perform_calibration(seq) - note: passes seq
+   itself, not a midas.client.MidasClient (see GAP 3 below).
+3. Det = Detector("Test_Detector", client=seq) (calibrationfactory.py:36)
+   - this alone is a whole sub-procedure: builds Febs from ODB
+   (LinksCentral), builds PowerPartitions from ODB (CosmicRun/Setup/
+   Power + .../DAQ), and for each partition assigns power_distribution/
+   lv_supply/hv_supply via PowerSupplyFactory + initialise_by_power_
+   partition_name() (channel-by-name lookup + __check_all_reads()
+   sanity print), then assigns chips to febs.
+4. Daq = DAQControl(Det.client) - same client, shared.
+5. CalibrationFactory.check_shared_equipment(Det.client) - TDK +
+   DCDCCrates read-only health check. On failure: return POWER_FAIL
+   HERE - before any Calibration object, prepare(), or result saver
+   exists at all.
+6. what = CalibrationExecute(get_calibration_to_perform_from_odb(...))
+   reads /CosmicRun/Calibration/VTX/CurrentCalibration.
+7. Dispatch: calib = IVScan(Det, Daq) or SmokeTest(Det, Daq).
+   THIS CONSTRUCTOR CALL is where the result saver enters:
+   CalibrationBase.__init__ -> OperationBase.__init__
+   (operation_base.py:9-21) creates ResultSaverMultiple(name,
+   has_local_result=True, has_odb_result=False, has_rundb_result=False,
+   output_folder) - all three booleans are HARDCODED, not read from
+   ODB despite the "#TODO: from ODB? or what?" comment right next to
+   them (operation_base.py:15-17) - then immediately calls
+   result_saver.initialise(detector, daq_control), which writes the
+   FIRST LINE of the run's .ndjson file (selected_power_partitions,
+   selected_chips) via ResultSaverLocal.record_initial_status()
+   (results.py:92-97). So the result saver is live and has already
+   written to disk before prepare() is even called.
+   CalibrationBase.__init__ also sets self.restrictions (max_hv_current
+   safety margin) and self.power_partition_done, and self.parameters =
+   {} "#TODO: read from ODB" - in practice IVScan/SmokeTest overwrite
+   this in their own __init__ with hardcoded values (ivscan.py:7-11)
+   the ODB read never happens.
+8. calib.prepare() (e.g. IVScan: check_all_pp_on(); SmokeTest: exactly-
+   one-partition-selected check).
+9. If prepare() != SUCCESS: print + return the failure - the result
+   saver's init line stays on disk with no step results and no final
+   result ever appended (see GAP 4 below).
+10. calib.execute() - the real loop; calls append_step_result_and_check()
+    repeatedly, which DOES append to the result saver (results.py:145-147
+    via ResultSaverMultiple.append_step_result).
+11. calib.finalise().
+12. return finalisation result to run_calibration.py, which just prints
+    it. NOTHING calls result_saver.save_final() or save_step_results()
+    anywhere in this whole chain for a calibration (see GAP 4).
+
+--- GAPS FOUND in this path (documented, not fixed) ------------------
+  GAP 3 - client identity risk. run_calibration.py passes `seq` (the
+  PySequencer script object) directly as the "client" used everywhere
+  ODBCommand.execute() calls self.client.odb_get()/.odb_set(). SciFi's
+  own scripts (feb_power.py, hv_power.py, thr_run.py, vbr_run.py) all
+  explicitly avoid this: each creates its OWN midas.client.MidasClient
+  and gives THAT to detector/, with a comment saying PySequencer's
+  seq.odb_get/odb_set is "a different interface" than a real
+  MidasClient's. If that's true, pixel's calibration entry could be
+  relying on `seq` happening to expose a compatible enough odb_get/
+  odb_set - UNVERIFIED either way here (no live run checked while
+  writing this note), but it is a real, checkable inconsistency between
+  the two subsystems' own entry-script conventions, worth resolving one
+  way or the other rather than leaving accidental.
+
+  GAP 4 - calibrations never call save_final()/save_step_results().
+  Contrast with ActionBase.post_perform() (actions.py:48-51), which
+  explicitly does append_step_result({"Final_Result":...}) +
+  save_step_results() + save_final() after every action - and IS called,
+  by ActionFactory.perform_action() (actionfactory.py:44-45). No
+  equivalent call exists anywhere in CalibrationFactory.perform_calibration()
+  or in CalibrationBase/IVScan/SmokeTest. A calibration's .ndjson file
+  today only ever gets an init line plus whatever execute() appended
+  step by step - never a closing final-result line, success or failure.
+
+====================================================================
+B) SCIFI'S REAL PATH (thr_run.py / vbr_run.py) - BYPASSES ITS OWN
+   FACTORY
+====================================================================
+1. PySequencer registers scan-specific params (thresholds, voltages,
+   settle times, etc.) PLUS is_odb_available/can_send_commands_to_odb -
+   no read_febs_from_odb equivalent (SciFiDetector always builds from
+   ODB, no config.json fallback unlike pixel's Detector).
+2. sequence(seq) sets the two common.setup flags, then creates its OWN
+   midas.client.MidasClient("SciFiScripts_ThrScan"/"...VbrScan") inside
+   a try/finally that always calls client.disconnect() - see
+   feb_power.py's docstring for why this matters (an unclosed ad-hoc
+   client floods the alarm log - happened once already).
+3. shared_ok, msg = services.check_shared_equipment(client) - the
+   canonical common/services.py function, called DIRECTLY. Both
+   docstrings say explicitly: "bypassing CalibrationFactory itself
+   here, same as before" - i.e. this is a KNOWN, DELIBERATE bypass, not
+   an oversight.
+4. det = SciFiDetector(client); bail out with seq.msg(is_error=True) if
+   no active FEBs / no HV channels found - a check pixel's path has no
+   equivalent of (Detector.__init__ has no "nothing found" bail-out,
+   it just proceeds with empty collections).
+5. calib = ScanThr(det, <every scan param taken straight from
+   seq.get_param(...)>) or ScanVbr(det, ...). CalibrationBase.__init__
+   (calib_base.py:31-35) sets self.detector, self.name, self.parameters
+   = {} and NOTHING ELSE - no result saver, no restrictions dict, no
+   power_partition_done (SciFi has no power-partition concept to track
+   "done" per, see calib_base.py's own docstring on this).
+6. calib.prepare() -> calib.execute() -> calib.finalise(), called
+   directly by the script, checking CalibrationResult after each and
+   printing calib.warnings (a plain list the calibration appends
+   strings to - not a result-saver mechanism, just accumulated messages
+   surfaced via seq.msg()).
+7. Script ends with an explicit, honest
+   seq.msg("NOTE: result saving (.root/ODB/CDB) is not built yet.")
+
+--- calib_run.py's CalibrationFactory: real, but UNUSED -------------
+scifi_scripts/calibrations/calib_run.py defines a CalibrationFactory
+that mirrors pixel's shape closely (get_calibration_to_perform_from_odb
+from /CosmicRun/Calibration/SciFi/CurrentCalibration, check_shared_
+equipment via the same common function, dispatch to ScanThr/ScanVbr
+built with THEIR OWN CONSTRUCTOR DEFAULTS - the file's own comment
+admits "Both ScanThr's and ScanVbr's real scan parameters are left at
+their constructor defaults here - reading them from ODB is a known
+gap"). Nothing in scifi_scripts calls CalibrationFactory.perform_
+calibration() - not thr_run.py, not vbr_run.py, not any other script
+found. It is not wired to a PySequencer entry point anywhere. Whether
+it is a first draft waiting for its own run_calibration.py-equivalent
+entry script, or a superseded approach left behind when thr_run.py/
+vbr_run.py were built directly against calib_base, is NOT decided here
+- flagged, not resolved.
+
+====================================================================
+C) SIDE BY SIDE
+====================================================================
+                          PIXEL                     SCIFI (real path)
+Entry pattern             Factory (Calibration-      Direct: script
+                           Factory.perform_           builds Detector +
+                           calibration)               Calibration itself
+Client                     `seq` passed directly      own MidasClient,
+                           (GAP 3, unverified)         always disconnected
+Shared-equip check         factory's own copy         common/services.py
+                           (duplicate of common's      directly (canonical)
+                           check - see below)
+What calibration to run    read from ODB               read from
+                           (/CosmicRun/Calibration/     PySequencer params
+                           VTX/CurrentCalibration)      (no ODB tree yet)
+Calibration parameters     hardcoded in __init__,       hardcoded via
+                           ODB TODO never done          seq.get_param(),
+                                                         no ODB tree
+Result saver                created automatically,      DOES NOT EXIST
+                           writes init line before       (deferred by
+                           prepare(); step-appended      design, calib_
+                           during execute(); NEVER       base.py's own
+                           finalised (GAP 4)             docstring says so)
+Failure reporting           print() + bare enum         seq.msg() + a
+                                                         plain .warnings
+                                                         list appended to
+                                                         by the calibration
+
+  DUPLICATE SHARED-EQUIPMENT CHECK, found while tracing this: pixel
+  has its OWN copies of the TDK+DCDCCrates loop in BOTH
+  ActionFactory.check_shared_equipment() (actionfactory.py:16-28) AND
+  CalibrationFactory.check_shared_equipment() (calibrationfactory.py:
+  20-32) - two bodies, byte-for-byte the same logic, that never call
+  common/services.py's own check_shared_equipment(), even though that
+  function exists specifically to be the "one canonical place" (its own
+  docstring says so) and SciFi already calls it directly. Pixel simply
+  never got updated to use it. Cheapest, lowest-risk item in this whole
+  investigation if/when code changes are wanted.
+
+====================================================================
+D) WHAT A COMMON "CALIBRATION STARTUP" WOULD NEED TO COVER
+====================================================================
+Same conclusion shape as pixel_bringup_sequence.txt: an engine piece in
+common_scripts, declarations/specifics per subsystem. The startup
+chain breaks into pieces of clearly different reusability:
+
+  COMMON, already mostly shared or trivially shareable:
+  - setup-flag plumbing (is_odb_available, can_send_commands_to_odb)
+  - check_shared_equipment() - already common, pixel just isn't
+    calling it (see DUPLICATE note above)
+  - the client-acquisition PATTERN (own MidasClient, try/finally
+    disconnect) - SciFi's convention is the safer one (GAP 3 makes
+    pixel's own convention actively suspect); worth pixel adopting it,
+    not the other way round
+  - the result-saver LIFECYCLE, if/when SciFi gets one: create at
+    calibration-construction time, initialise(), append per step,
+    and - the thing pixel is currently missing - ALWAYS call
+    save_final()/save_step_results() exactly once, on every exit path
+    (success, failed prepare, failed execute), the same "cleanup always
+    runs" discipline thr_run.py/vbr_run.py already apply to their own
+    hardware cleanup (restore_switching()/configure_alloff() "must run
+    regardless of execute()'s outcome")
+
+  NOT COMMON, genuinely per-subsystem:
+  - what "get calibration to run" means (ODB tree for pixel; not even
+    designed yet for SciFi - PySequencer params today)
+  - what a Calibration's parameters are and where they come from
+  - Detector construction (wildly different: chip/power-partition
+    graph for pixel, Feb/Asic/Channel + flat HV for SciFi)
+  - the actual prepare/execute/finalise bodies
+
+  OPEN QUESTION, not decided here: does ResultSaver become usable by
+  SciFi by fixing its core.detector/core.daq coupling (as already
+  flagged in the earlier action/saver/power_partition analysis this
+  session), and does GAP 4 (pixel calibrations never finalising their
+  saver) get fixed as PART of that same change, since both are the same
+  "who calls save_final(), and when" question?
+
+NOT DECIDED HERE (needs a conversation, not a default):
+  - fixing GAP 3 (client identity) or GAP 4 (missing save_final) now,
+    vs. tracking them open
+  - whether calib_run.py's CalibrationFactory (SciFi) is worth wiring
+    up to a real entry point, or should be retired as superseded by
+    thr_run.py/vbr_run.py's direct-construction approach
+  - pixel adopting common/services.check_shared_equipment() directly
+    instead of its two duplicate copies

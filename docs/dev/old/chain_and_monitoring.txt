@@ -1,0 +1,1024 @@
+SCIFI - POWER/READOUT CHAIN AND MONITORING SURFACE
+====================================================================
+
+Planning-only doc, created 2026-07-30. Companion to custom_page.txt,
+NOT a replacement: custom_page.txt still owns the page architecture
+(two-page split, mega-sections, the FEB/LV/HV tables, the granularity
+model). This doc owns two things custom_page.txt does not cover:
+
+  (1) the PRECONDITION CHAIN - what has to be true, in what order,
+      before SciFi can be powered and before data can flow, and
+  (2) the MONITORING SURFACE - the full set of ODB quantities that
+      describe the SciFi detector, most of which no doc mentioned
+      before today.
+
+Everything here is grounded in docs/odb_300726_112101.json (dump taken
+2026-07-30 11:21) unless stated otherwise. Where a claim is inference
+rather than readback, it says so.
+
+Origin: a working session on 2026-07-30. The user had discovered that
+LV/HV/FEB are not independently controllable - there is a dependency
+ladder above them - and asked for the whole monitorable/operable
+surface to be established before any of it goes into the page.
+
+
+0) WHY THIS EXISTS - the one-line version
+--------------------------------------------------------------------
+A shifter looking at today's page design would see "LV off" and have no
+way to learn that the LV is off because a DCDC crate is unpowered,
+because the crate's own supply channel is off, three levels further up.
+And they could have every power row green and still take no data,
+because readout_scifi is False on three readout boards.
+
+The page's job, per the user's framing: "capire al volo dov'e il collo
+di bottiglia e sistemarlo."
+
+
+1) THE CHAIN HAS TWO BRANCHES
+--------------------------------------------------------------------
+Established 2026-07-30. This supersedes the implicit assumption in
+custom_page.txt section 3.1 that FEB/LV/HV are three peer categories -
+they are peers, but they all sit at the BOTTOM of a ladder, and there
+is a second, independent ladder for readout. The two converge on "data
+is flowing".
+
+POWER BRANCH
+  0. TDK generator          TDKStaging/Settings/Output On[0,1]
+                            ("SciFi & Tile US" / "DS")
+                            STATE 2026-07-30: ON, CV mode, 20 V, 0.00 A
+
+  1. Interlock permissive   TDKStaging/Settings/Interlock Trigger[]
+                            + Fault Register[]
+                            STATE: OK on the SciFi channels
+
+  2. DCDC crate mains       PowerDistStaging, device "Slow Control":
+                            ch 96-99  US DCDC C1..C4
+                            ch 112-115 DS DCDC C5..C8
+                            STATE: Output On = 0 on all 8
+
+  3. SMB/LDO distribution   PowerDistStaging, device "SciFi & Tile":
+                            ch 0-5   SMB_US_0-1 .. SMB_US_10-11
+                            ch 16-21 SMB_DS_0-1 .. SMB_DS_10-11
+                            ch 15 US_LDO, ch 31 DS_LDO
+                            STATE: Output On = 0 on all
+
+  4. DCDC crate power       DCDCCrates/Settings/Enabled[0-7]
+                            then    /Settings/Crate On[0-7]
+                            STATE: Enabled all True (changed from all
+                            False between the 24/07 and 30/07 dumps),
+                            Crate On all False
+
+  5. Per-Feb LV             DCDCCrates channel SMB_<side>_<n>-<n+1>
+                            ALREADY IMPLEMENTED - detector/feb.py:86
+
+  6. FEB power              FEBCrates/Settings/FEBPower[]
+                            ALREADY IMPLEMENTED - detector/feb.py:245,
+                            including the CrateControllerConnected /
+                            CrateControllerEnabled guards
+
+READOUT BRANCH
+  R1. Readout board switch  ROSWBF, ROSWBC, ROSWBDS - all three have
+                            Settings/readout_scifi and mask_n_scifi
+                            STATE: readout_scifi = False on ALL THREE,
+                            mask_n_scifi = 0 on all three
+
+  R2. Run parameter         /Experiment/Run Parameters/SciFi readout
+                            STATE: False
+                            (logged at BOR - see /Logger/Runlog/JSON/
+                            "Links BOR"/"SciFi readout")
+
+  R3. Data actually moving  SwitchingFibre sorter/merger counters -
+                            see section 4 below
+
+The readout branch was found 2026-07-30 and appears in NO other doc.
+It is the "invisible bottleneck" case: the entire power branch can read
+green while nothing is being read out.
+
+
+2) THE INTERLOCK IS READ-ONLY - do not try to write it
+--------------------------------------------------------------------
+CONFIRMED 2026-07-30 against the dump plus a live screenshot of the
+TDKStaging custom page.
+
+The correlation is exact on the Pixel channels:
+    Interlock Trigger[i] == True
+      <=> Fault Register[i] == 0x0080
+      <=> Mode == "OFF" and Output On == False
+
+i.e. the interlock is a PERMISSIVE. When it drops it forces the channel
+off and raises the fault. What a client writes is TDKStaging/Settings/
+Output On[i] (plus Mode, Demand, Current limit); if the interlock is
+down the write does not stick.
+
+There is no ODB command path to raise the interlock. The separate
+/Equipment/Interlock tree (new since the 24/07 dump; frontend
+/home/mu3e/online/backend_pc/midas_fe/interlock_control/src/
+interlock_fe.cxx on mu3ebe, not present in the local online/ checkout)
+carries the human-readable REASON - PLC Connected, chillers, helium -
+and the per-subdetector permissives Sci/FEC/Pix TDK enable. Those
+scalars live under Variables/, which is frontend-owned; treat the whole
+tree as display-only.
+
+NOTE on Sci TDK enable: it reads False while the TDKStaging SciFi
+channels are on and untriggered. It refers to the FINAL TDK, not the
+staging one. Do not wire it as the gate for staging operation.
+
+
+3) DECISION REVERSAL: DCDCCrates crate-level control
+--------------------------------------------------------------------
+This section formally reopens custom_page.txt section 3.1's
+"DECLINED 2026-07-23" entry, which carried the instruction "noted here
+so it isn't proposed again without remembering it was already
+explicitly turned down". It is being proposed again, deliberately, for
+the reason below.
+
+THE FACTUAL PREMISE WAS WRONG. The declined entry states:
+
+  "a DCDCCrates crate-level on/off (DCDCCrates has no crate-level power
+   control at all in the real ODB tree, only per-channel - see 3.2's
+   Crate On/Reset/Clear Fault block, which is status+reset, not a power
+   switch)"
+
+DCDCCrates/Settings/Crate On is a list of 8, one entry per crate,
+indexed by Settings/Device Names = DCDC_C_1 .. DCDC_C_8. It is a
+crate-level switch. It was already present, with the same shape, in the
+24/07 dump - so this is not something that appeared afterwards.
+
+THE SAFETY PREMISE WAS RIGHT, and is now quantified. Not one of the 8
+crates is SciFi-only (from odb_300726_112101.json, 16 channels/crate):
+
+  crate      SciFi channels                     pixel  tile
+  DCDC_C_1   SMB_US_2-3, SMB_US_0-1, LDO_US       2     0
+  DCDC_C_2   SMB_US_4-5                           3     0
+  DCDC_C_3   SMB_US_8-9, SMB_US_6-7               2     0
+  DCDC_C_4   SMB_US_10-11                         3     0
+  DCDC_C_5   SMB_DS_2-3, SMB_DS_4-5               3     4
+  DCDC_C_6   SMB_DS_0-1, LDO_DS                   2     2
+  DCDC_C_7   SMB_DS_10-11                         3     4
+  DCDC_C_8   SMB_DS_6-7, SMB_DS_8-9               2     4
+
+Turning DCDC_C_7 off from a SciFi page to reclaim one SciFi channel
+would drop 3 pixel modules and 2 tile modules.
+
+THE RULE THAT REPLACES THE BLANKET REFUSAL (user's call, 2026-07-30):
+
+  per-channel, where the channel name is unambiguously SciFi's
+    => writable with no ceremony
+  per-crate, or any other shared unit
+    => writable ONLY behind a confirmation that names the non-SciFi
+       channels that will be affected
+
+This makes chain levels 2 and 3 (PowerDistStaging, per-channel, names
+SMB_*/[US|DS]_LDO/"US DCDC C*") ordinary writable actions, and level 4
+(Crate On, per-crate) an informed-consent action. The confirmation text
+is generated from the table above, which is why the table lives in this
+doc rather than in a chat log.
+
+The authoritative gate stays server-side in Python, per custom_page.txt
+section 3.1's existing rule - the page's dialog is UX on top of it, not
+the enforcement.
+
+
+4) THE MONITORING SURFACE
+--------------------------------------------------------------------
+Swept 2026-07-30 across all 24 top-level ODB trees and all 42 equipment
+entries. Everything below reads 0 today because nothing is powered -
+these are shapes and paths, not values to trust.
+
+Coverage check performed against custom_page.txt, page_io_reference.txt,
+code_design.txt and calibrations_plan.txt. Of the tags below only FCCR
+appears in any of them.
+
+4a) PER-FEB TELEMETRY - LinksFibre/Variables/SFFE
+    26 fields x 12 FEBs = 312. Names in Settings/"Names SFFE".
+      6 temperatures  Arria, MAX, SI1, SI2, ext Arria, DCDC
+      5 voltages      1.1, 1.8, 2.5, 3.3, 20
+      2 Fireflys x 7  Temperature, Voltage, RX1..RX4 Power, Alarms
+    custom_page.txt section 3.1 currently plans four fields for this
+    table (crate_voltage_20/3_3/5, feb_temperature). This is the real
+    shape. The Firefly RX powers and Alarms are optical-link health -
+    they degrade before a link drops.
+
+4b) PER-FEB LINK COUNTERS - LinksFibre/Variables/SFLE (24)
+    FEBn LOL Counter, FEBn Error Counter.
+
+4c) PER-CRATE TEMPERATURES - LinksFibre/Variables/SFTS (16)
+    Crate N Av FEB Temperature, Crate N Max FEB Temperature, 8 crates.
+    Same shape as LinksCentral's SCTS - see the alarm gap in section 5.
+
+4d) PER-FEB DATAPATH - LinksFibre/Variables/"FEB datapath status"
+    A SUBTREE, not an array: PLL locked, Buffer full, Frame desync,
+    DPA locked, RX ready - 12 entries each.
+
+4e) PER-ASIC READOUT - SciFiFibre/Variables, 16 entries each
+    FCCH  hits          FCCF  frame rate
+    FCCE  CRC errors    FCCP  PLL Diff
+    FCCP is the hook for whatever replaces pll_test.py.
+
+4f) PER-LVDS-LINK - SciFiFibre/Variables/FCLS (408)
+    F<n>L<m> Status / Disparity Errors / 8b-10b Errors / Num Hits LVDS.
+
+4g) PER-CHANNEL RATE - SciFiFibre/Variables/FCCR (512)
+    "Fibres rate channel N". The only one already known to the docs.
+
+4h) SORTER AND MERGER - SwitchingFibre. THE bottleneck instrumentation.
+    Variables/SFSO (408), per FEB and per sorter stage:
+      intime hits input 0/1, outoftime hits, overflow hits,
+      hits presorter in, hits postsorter in, HITS LOST IN,
+      output hits, credits, diag width, delay
+    Variables/SFCN (234), event builder / DMA / per FEB:
+      FEBn Merger Rate, Reset Phase, Sorter Input/Output,
+      LINK FIFO ALMOST FULL / FULL / SORTER LOW / SORTER HIGH,
+      EVENT_BUILD_TAG_FIFO_FULL, EVENT_BUILD_SKIP_EVENT_DMA,
+      DMA_HALFFUL, GLOBAL_TS_LOW/HIGH
+    Variables/"Merger Timeout All FEBs"
+    Settings/{Sorter Delay, Sorter Diagnose Offset, Pre Run Configuration}
+
+    "hits lost in" + "LINK FIFO FULL" + "Merger Rate" + "credits"
+    together answer AT WHICH STAGE data is being lost. That is the
+    single most direct answer to the user's stated goal.
+
+    SwitchingFibre/Commands also carries SciFi-usable commands, mixed in
+    with Mupix ones (the frontend is shared with pixel):
+      Set FEBs into running / Set FEBs into idle
+      Reset Counters
+      Set Bypass / Unset Bypass
+      Reset SC Main / Reset SC Secondary
+      Load Firmware (+ Firmware File, Firmware FEB ID,
+                     Firmware Is Emergency Image)
+      Run SC Speedtest
+
+4i) COOLING - not mentioned in any page doc before today
+    Liquid Cooling SiPM (frontend "Liquid cooling Frontend"):
+      Settings/"Names Input" (8): Primary Setpoint, Secondary Setpoint,
+        Pump Speed, Internal Temperature, Process Temperature,
+        Return Temperature, Fluid pressure, Delivered Power
+      Variables/Demand (3) and Variables/"Set State" (2:
+        "Temperature control", "Circulation only") are WRITABLE - this
+        is operable, not just monitorable
+      STATE: all zeros - not connected today
+    Chiller manifolds (Status color yellowLight - the only non-green
+    equipment in SciFi's set):
+      ch 12 SiPMs SciFi supply T (NoConn)   22.59
+      ch 13 SiPMs SciFi return T (NoConn)   22.24
+      ch 15 SiPMs SciFi return P          1727.08
+      ch 17 SiPMs SciFi supply P          3175.18
+      The two SciFi temperature sensors are flagged NoConn. The SciTile
+      equivalents do read, so the chain works - our sensors are missing.
+
+    WHY THIS MATTERS FOR SCIFI SPECIFICALLY: SiPM breakdown voltage is
+    temperature dependent. Running vbr_find/vbr_scan with the SiPM
+    chiller off or unstabilised produces a meaningless result and
+    leaves HV set for the wrong temperature. Same class of precondition
+    as the LV-before-HV pre-check already implemented (code_design.txt
+    section 5.4) - but not implemented anywhere.
+
+    STRUCTURAL NOTE: cooling is NOT a rung of the power ladder. It runs
+    in parallel and gates HV and calibrations, not LV power-on. Do not
+    force it into the linear chain.
+
+4j) ENVIRONMENT - /Equipment/Environment
+    64 MSCB sensors plus a computed Dew Point. Almost all named UNCON_*
+    and all reading NaN today, so low immediate value - but dew point
+    becomes real the day the SiPMs are actually cooled (condensation).
+    Worth a placeholder row, not a build.
+
+
+5) ALARM COVERAGE - and the gap
+--------------------------------------------------------------------
+/Alarms holds 45 definitions; "Alarm system active" is True. Equipment
+actually covered, counted from the conditions:
+
+  FEBCrates 9 · HePlantPiE5 7 · LinksCentral 4 · Environment 3
+  Magnet 3 · Liquid Cooling SiPM 2 · Liquid cooling FECs 2
+  DCDCCrates 1 · mu3ebe_msysmon 1
+
+  LinksFibre 0 · SciFiFibre 0 · HV 0 · TDK 0 · TDKStaging 0
+  PowerDist* 0
+
+SAFETY GAP, found 2026-07-30: THE SCIFI FEBs HAVE NO OVER-TEMPERATURE
+ALARM. The "Max FEB Temperature" and "Average FEB Temperature" alarms
+read /Equipment/LinksCentral/Variables/SCTS - LinksCentral is the
+central switching board. SciFi's FEBs are on LinksFibre, whose SFTS has
+the identical shape ("Crate N Av/Max FEB Temperature"). The alarm is
+reproducible by copying an existing definition and changing the path.
+
+  existing:  LinksCentral/Variables/SCTS[1,3,5,...] > 65   (Alarm)
+             LinksCentral/Variables/SCTS[1,3,5,...] > 60   (Warning)
+             LinksCentral/Variables/SCTS[0,2,4,...] > 60   (Alarm, avg)
+             LinksCentral/Variables/SCTS[0,2,4,...] > 55   (Warning, avg)
+  missing:   the same four against LinksFibre/Variables/SFTS
+
+Also uncovered: HV, TDK and TDKStaging have no alarms at all.
+
+SECOND GAP - a bug in someone else's alarm definitions: "FEB Crate 0
+Temperature" and "FEB Crate 1 Temperature" BOTH read
+FEBCrates/Variables/SCFC[4]. The rest step by 20 (24, 44, 64, 84, 104,
+124, 144). Crate 1 is therefore not monitored - the alarm watches
+crate 0's sensor twice. Not ours to fix; report it.
+
+FOUR ALARMS ARE DEFINED BUT INACTIVE, all relevant to us:
+  Min SiPM Chiller Temp.  Liquid Cooling SiPM/Variables/Input[3] < 15
+  Max SiPM Chiller Temp.  Liquid Cooling SiPM/Variables/Input[3] > 25.00
+  Dew Point               Environment/Variables/Dew Point > 8
+  TDiode                  DCDCCrates/Variables/Interlock[0-127] > 0.1
+Reactivating them is a shared-infrastructure change - ask, do not do.
+
+USABLE VERIFIED CONSTANT: the two SiPM chiller alarms establish a
+15-25 C operating window, in the live ODB. That is a real, in-service
+number - directly usable where the code currently carries an UNVERIFIED
+placeholder. Input[3] is "Internal Temperature".
+
+
+6) NAMING - the same channel has three names
+--------------------------------------------------------------------
+Found 2026-07-30. Any code or page that correlates power, distribution
+and history has to reconcile these:
+
+  DCDCCrates                 SMB_US_0-1        (feb.py:86 builds this)
+  PowerDistStaging           SMB_US_0-1        (same convention)
+  PowerDist (final config)   US SciFi5 .. US SciFi16, DS SciFi9..16
+  History/Display            SCI_US_SM_1, SCI_US_SM_1_0
+  HV/Settings/Names          "US Top SciFi CH3"
+  LinksFibre/Settings/FEBName "US SM 1"
+
+There is no single mapping table anywhere. Building one is a
+prerequisite for correlating a history plot with a page row.
+
+
+7) STAGING -> FINAL: parametrise from day one
+--------------------------------------------------------------------
+The page must target TDKStaging and PowerDistStaging today, and TDK and
+PowerDist after installation. The switch is NOT symmetric:
+
+  TDK <-> TDKStaging          Settings/Names are IDENTICAL
+                              ("SciFi & Tile US/DS", "FE Crates US/DS",
+                              "Pixel US/DS"). Only the equipment name
+                              changes.
+
+  PowerDist <-> PowerDistStaging   the CHANNEL NAMES change too:
+                              staging  SMB_US_0-1 .. SMB_DS_10-11
+                              final    US SciFi5 .. DS SciFi16
+                              so the matching PATTERN changes, and with
+                              it the channel-to-Feb mapping.
+
+If this is not parametrised from the first version, the page has to be
+rebuilt on installation day. Treat the equipment name AND the name
+pattern as configuration, not constants.
+
+
+8) IMPLEMENTATION PITFALLS
+--------------------------------------------------------------------
+Extends custom_page.txt section 3.1's existing "TWO IMPLEMENTATION
+PITFALLS" block.
+
+8a) LinksFibre/Variables/FEBFirmware mixes two indexing conventions
+    inside ONE subtree, both arrays length 156:
+      "Arria V Firmware Version"  indexed by link_feb (144-155)
+      "Max 10 Firmware Version"   indexed by link_feb (144-155)
+      "FEB Version"               indexed by LOCAL index (0-11)
+
+8b) LinksFibre/Settings/FEBType holds STRINGS ("0x00000003"), not
+    integers. A `== 3` comparison silently matches nothing.
+
+8c) Observation, not yet a diagnosis: the 12 SciFi FEBs report a
+    uniform Arria V version (0x15177d88) but FOUR different Max 10
+    versions, in groups of three:
+      US SM 1/0/2  0x4c265198      DS SM 0/1/2  0x15177d88
+      US SM 5/4/3  0x57978daa      DS SM 3/4/5  0x794b9648
+    Groups of three smell like per-crate flashing, and 0x15177d88
+    appearing as both an Arria V and a Max 10 value suggests a readback
+    quirk. Surfacing it as a page column is cheap; diagnosing it is not
+    this doc's job.
+
+
+9) HISTORY - better than first assumed
+--------------------------------------------------------------------
+Corrected 2026-07-30 (an earlier claim in this session that "SciFi
+history is nearly empty" was too broad).
+
+  ALREADY COMPLETE:
+    /History/Display/LinksFibre    12 FEBs x 3 panels (Temperatures 7
+                                   vars, Voltages 6, RX Power 4) = 36
+    /History/Display/SwitchingFibre HitRate/FrameRate/CRCCnt[0-15],
+                                   Merger Timeout All FEBs
+    /History/Display/"Liquid cooling"  6 panels incl. SiPM Temp,
+                                   SiPM Pump, DetCooling Pressures
+    /History/Display/TDK, /TDKStaging  SciFi & Tile US/DS V and I
+
+  THIN - the actual gap:
+    /History/Display/"SciFi Power"  DCDC Currents 2 vars (of 12 FEBs),
+                                   HV Currents 4 (of 24), HV Voltage 2
+
+So the SFFE telemetry in 4a is already being logged and plotted. Most
+of the history work is linking what exists, not creating it.
+
+
+10) SWEEP BOUNDARY - what was and was not checked
+--------------------------------------------------------------------
+Checked in full: all 24 top-level ODB trees; all 42 /Equipment entries;
+a token sweep (scifi|sci_|fibre|smb|sipm|mutrig) across everything not
+already covered by name.
+
+Deliberately not pursued, judged not SciFi-specific: other subsystems'
+equipment (Switching*, Pixels*, Tiles*, ROSWB* beyond the scifi keys,
+MinAna, Magnet, HePlant*, Quads, EPICS, msysmon) and MIDAS housekeeping
+(/Programs, /Logger, /Elog, /WebServer, /System, /Experiment beyond Run
+Parameters, /Lazy, /MSCB).
+
+HONEST LIMIT: the sweep is token-based. Anything relevant to SciFi that
+never names itself SciFi/fibre/SMB/SiPM would have been missed. The
+residual is the global services that affect every subdetector equally -
+magnet, helium, beam.
+
+
+11) STILL OPEN
+--------------------------------------------------------------------
+a) Whether PowerDistStaging and DCDCCrates are two stages in series on
+   the same physical SMBs. The names match on both sides, which is what
+   suggests it. CONFIRMED as the user's own reading 2026-07-30 ("hai
+   capito bene"), but not verified against hardware documentation.
+
+b) What the Interlock tree's Sci TDK enable actually gates, given it
+   reads False while staging runs. Assumed to be the final TDK.
+
+c) Whether the four Max 10 firmware versions (8c) matter.
+
+d) No SciFi equivalent of pixel's /Watchdog exists. Pixel has 14
+   automated conditions (Max LV current, Max HV current, VDD min/max,
+   temperature max/warn/min, Monitor_TDK, Monitor_TDK_Voltage,
+   Monitor_PwrDistCrates, Validate_Max_PP_On, Setup_DCDC_Output_voltage)
+   that act without a script being run. SciFi has none. Note that
+   Monitor_TDK and Monitor_PwrDistCrates are chain levels 0 and 2 -
+   pixel already watches them automatically. This is architecture, not
+   a page feature: take it to Marius before building anything.
+
+e) No SciFi equivalent of /CosmicRun (pre-canned operation modes:
+   Setup{Mode,Power,DAQ}, OperationMode{Enable_US,Enable_DS,
+   low_power_mode}, Calibration/CalibrationDefaults/Tuning). Same
+   treatment as (d).
+
+
+12) ACTION MODEL - decided while building the phase-3 mockup
+--------------------------------------------------------------------
+Added 2026-07-30. The mockup (docs/page/chain_mockup.html) carries both
+the read-only surface (phase 2) and non-functional action controls
+(phase 3) in one file.
+
+12a) NO BUTTON WRITES ANYTHING; EVERY BUTTON PRINTS ITS WRITES.
+     Each action panel has a log underneath it. Clicking an action
+     renders the exact ODB writes it would perform, e.g.
+       /Equipment/PowerDistStaging/Settings/Output On[96] <- 1
+     Two reasons this beats a dead button: the interaction can be
+     reviewed now, and the log IS the specification the phase-4 Python
+     has to implement. Keep this property when the page becomes real -
+     a dry-run mode that prints instead of writes is worth having
+     permanently, not just as mockup scaffolding.
+
+12b) THE SAFETY RULE IS STRUCTURAL, NOT A WARNING.
+     The Tile rows in the Distribution table carry no checkbox at all -
+     not a checkbox plus a warning the operator can click past. A
+     control that must never be used is a control that should not
+     exist. Applies to any future table mixing our channels with
+     someone else's in the same equipment tree.
+
+12c) SHARED UNITS GET A CONFIRMATION THAT NAMES THE VICTIMS.
+     Crate On and the ROSWB readout_scifi keys open a dialog built from
+     section 3's occupancy table: "N pixel and M tile channels will lose
+     power - to act on K SciFi channels", with the per-crate breakdown.
+     Generated, not written by hand, so it cannot drift from the ODB.
+     BOTH directions confirm - switching a shared crate ON energises
+     other people's hardware too, which is lower risk but not no risk.
+
+12d) THE PAGE DIALOG IS UX, NOT ENFORCEMENT.
+     Stated in the log output itself so it cannot be forgotten: the
+     authoritative gate lives in Python and must re-verify the shared-
+     channel impact server-side. Consistent with custom_page.txt 3.1's
+     existing rule. A page that is stale, bypassed or simply not open
+     must not be able to change what is allowed.
+
+12e) PRESET SELECTIONS FOR THE COMMON MOVES.
+     "select the 8 crate mains" and "select the 12 SMB pairs" alongside
+     select-all. Chain levels 2 and 3 are almost always operated as a
+     whole group, and hand-ticking twelve boxes in the right order is
+     where a shifter makes a mistake.
+
+12f) WHERE A THRESHOLD IS ALLOWED TO COME FROM.
+     If a control ever range-checks a value, the limit must be read
+     from something already live in the ODB - the way the 15-25 C SiPM
+     window is a pair of real alarm conditions (section 5), not a
+     number typed into JS. This is the same rule custom_page.txt 3.1
+     states for the UNVERIFIED expected_current/tolerance math, written
+     down here in its positive form because the next person adding a
+     control will need it.
+
+
+13) SCOPE CUTS - what was built and then removed
+--------------------------------------------------------------------
+2026-07-30, user's call after reviewing the phase-2/3 mockup. Recorded
+so these are not silently rebuilt later; the DECLINED-2026-07-23
+episode in custom_page.txt 3.1 is the cautionary precedent.
+
+REMOVED OUTRIGHT - three tabs, built then cut:
+  "Cooling"        the SiPM chiller controls (Demand setpoints, Set
+                   State modes). The chiller IS writable - section 4i
+                   still documents that - the page just does not drive
+                   it.
+  "Data flow"      the SwitchingFibre SFSO/SFCN presentation.
+  "Readout enable" the ROSWB* readout_scifi controls and the
+                   "SciFi readout" run parameter control.
+
+MOVED, NOT CUT - two tabs folded into custom_page_mockup_v2.html:
+  "FEB telemetry" and "Readout health" were both per-FEB views with
+  twelve rows keyed by FEB name - i.e. a second copy of a table that
+  already exists in the real mockup's Power section. The DATA was not
+  the redundancy; the row identity was. Both are now the expanded
+  detail of custom_page_mockup_v2.html's existing FEB table, in three
+  source-labelled blocks:
+    From crate   FEBCrates/Variables/SCFC - the five fields that were
+                 already there (crate 20V/3.3V/5V, CC temp, FEB temp)
+    From FEB     LinksFibre/Variables/SFFE - 6 temperatures, 5
+                 voltages, both Fireflys with RX1-4 powers and alarms
+    Datapath     FEB datapath status flags, SFLE LOL/error counters,
+                 the three firmware words
+
+  WHY BOTH SOURCES SURVIVE, rather than picking one: they have
+  different availability windows. SCFC is read by the crate controller
+  over MSCB and works with the FEB dead - which is exactly the
+  "why won't this come up" case. SFFE is the FEB's own slow control
+  over the optical link and exists only once the FEB is powered and
+  linked - which is the running-health case. Neither covers the other's
+  moment. An unpowered FEB shows a sentence saying so instead of a wall
+  of dashes, so the absence reads as diagnosis rather than missing data.
+
+  NAMING HAZARD, handled: both sources carry a "20 V" and a "3.3 V",
+  and both carry a FEB temperature - different rails, different sensors.
+  The blocks are labelled with their ODB path and the FEB-side fields
+  are prefixed "FEB ..." for exactly this reason. Do not let a future
+  edit flatten the three blocks into one list.
+
+  NOT MOVED: the per-ASIC counters (FCCE CRC errors, FCCP PLL diff,
+  FCCH hits). They are not per-FEB, so they do not belong in that
+  detail row; custom_page_mockup_v2.html is left untouched on this
+  point, and they simply no longer appear anywhere. FCCR already exists
+  there as a tooltip figure in the Readout grid. Section 4e still
+  records what they are.
+
+WHAT SURVIVED IN chain_mockup.html, deliberately:
+  - the two-branch chain ladder, the alarm block and the alarm-gap box
+  - the cooling SUMMARY CARD (monitoring only: Liquid Cooling SiPM
+    readbacks plus the four SciFi channels of Chiller manifolds)
+  - the READOUT BRANCH of the ladder, rungs R1/R2/R3 - status, in the
+    top-left zone, no control surface
+  - two tabs: DCDC crates and Distribution, i.e. the phase-3 action
+    model (selection, presets, informed confirmation, write log)
+
+The pattern in the cut is consistent: what went is every CONTROL over
+equipment SciFi does not own, plus one monitoring view. What stayed is
+the diagnosis. A shifter can still see that readout_scifi is False on
+three boards and that the chiller is not running - they just cannot fix
+either from this page, which matches where the ownership actually sits.
+
+THE FINDINGS ARE NOT WITHDRAWN. Sections 4h, 4i and the readout branch
+in section 1 stay in this doc unchanged. They record what the ODB
+contains and what it costs to reach; that is true regardless of whether
+this particular page chooses to show it. Anything reviving these needs
+a new decision, not a re-discovery.
+
+
+14) BRING-UP SEQUENCES - the three procedures
+--------------------------------------------------------------------
+Dictated by the user 2026-07-30 (HV and LV from their own operating
+knowledge; FEB proposed here and NOT yet confirmed). This is what turns
+sections 1-3 from a diagnostic ladder into an executable procedure.
+
+STEP KINDS - three, because not every step is "write a path":
+  verify-program   a MIDAS program must be running (/Programs/<name>)
+  verify-value     something must already be true; no write of ours
+  write-verify     write, then read back and confirm it stuck
+
+EVERY STEP CARRIES: name · scope (which indices/channels, DERIVED from
+the detector model, never a constant in the page) · precondition ·
+action · verification with a timeout · a shared-equipment flag.
+
+--- LV ---------------------------------------------------------------
+1 verify-value    TDKStaging/Settings/Output On[0,1]        = True
+                  TDKStaging/Settings/Interlock Trigger[0,1] = False
+                  TDKStaging/Settings/Fault Register[0,1]    = 0x0000
+                  ("SciFi & Tile US/DS")          STATE: satisfied
+
+2 write-verify    DCDCCrates/Settings/Enabled[0-7]      <- 1
+                                                   STATE: already all True
+
+3 write-verify    DCDCCrates/Settings/"Crate On"[0-7]   <- 1
+                  SHARED - every crate carries pixel and tile channels,
+                  see section 3's table. Informed confirmation required.
+                                                   STATE: all False
+
+4 write-verify    PowerDistStaging/Settings/Output On[ch] <- 1
+                  ch = 0-5, 16-21   (SMB_US_0-1 .. SMB_DS_10-11)
+                       15, 31       (US_LDO, DS_LDO)
+                                                   STATE: all off
+
+5 write-verify    DCDCCrates/Settings/"Channel On"[ch]  <- 1
+                  ch by NAME lookup, not position - the 12 SMB channels
+                  are scattered across the crates:
+                    SMB_US_2-3   6     SMB_DS_2-3    71
+                    SMB_US_0-1  10     SMB_DS_4-5    76
+                    SMB_US_4-5  19     SMB_DS_0-1    85
+                    SMB_US_8-9  38     SMB_DS_10-11 100
+                    SMB_US_6-7  42     SMB_DS_6-7   117
+                    SMB_US_10-11 59    SMB_DS_8-9   121
+                  This is detector/feb.py:86's existing derivation.
+                                                   STATE: all False
+
+  EXCLUDED ON PURPOSE, user's call 2026-07-30: PowerDistStaging
+  "Slow Control" channels 96-99 and 112-115 (US DCDC C1..C4 /
+  DS DCDC C5..C8), all currently off. Their role is unresolved - the
+  names suggest crate mains, which would have to precede step 3, but
+  the user's procedure does not include them. Left out of the sequence
+  entirely rather than guessed at. If a real bring-up stalls at step 3,
+  this is the first thing to look at.
+
+--- HV ---------------------------------------------------------------
+1 write-verify    PowerDistStaging/Settings/Output On[102,103,118,119]
+                  US/DS HV TOP + BOTTOM       STATE: on, 0.78-1.09 A
+
+2 write-verify    PowerDistStaging/Settings/Output On[100,101,116,117]
+                  US/DS WEATHER TOP + BOTTOM  STATE: on, 0.02-0.04 A
+
+3 verify-program  /Programs/"HV Frontend"     STATE: in the Required
+                  Programs list already, custom_page.txt 3.2
+
+4 write-verify    HV/Settings/Output On[] for every "SciFi CH" match
+                  -> detector/hv.py's ScifiHv.turn_on(), already built
+
+--- FEB --- PROPOSED, NOT CONFIRMED -----------------------------------
+Steps 3-4 are what detector/feb.py:245-270 already does. Steps 1-2 are
+inferred from the dump: that whole chain is live and drawing current,
+so somebody brings it up in this order. Confirm before relying on it.
+
+1 verify-value    TDKStaging/Settings/Output On[2,3]  ("FE Crates US/DS")
+                                                   STATE: on, 0.44 / 4.78 A
+2 verify-value    PowerDistStaging/Settings/Output On[32-35, 48-51]
+                  US FEC1..4, DS FEC5..8           STATE: all on
+3 verify-value    FEBCrates/Variables/CrateControllerConnected[crate]
+                  FEBCrates/Settings/CrateControllerEnabled[crate]
+                                                   STATE: true on 6 of 8
+4 write-verify    FEBCrates/Settings/FEBPower[power_index] <- 1
+
+--- what falls out of writing them as data --------------------------
+  ONE DECLARATION FEEDS THREE CONSUMERS: the page ladder ("where am I
+  blocked" = the first step whose verification fails), the bring-up
+  button ("run until a step fails, stop there"), and the pre-check
+  inside a calibration ("can I start" = does the sequence complete).
+  Three implementations today, one source of truth instead.
+
+  POWER-DOWN IS THE SAME LIST REVERSED. The emergency-off path stops
+  being three hand-written calls.
+
+  STEPS MUST BE IDEMPOTENT. A step already satisfied is a no-op, so
+  "bring up LV" works from any partial state - which is the only state
+  a shifter ever actually finds the detector in.
+
+  DRY-RUN IS NOT EXTRA WORK. It is the phase-3 write log
+  (section 12a) pointed at a sequence instead of a button.
+
+  WHERE IT LIVES: the engine is subsystem-agnostic and belongs in
+  common_scripts - pixel has the same problem, and their /Watchdog
+  Conditions are this idea hardcoded. The three declarations are ours
+  and belong in scifi_scripts.
+
+  This ABSORBS what earlier notes called the "chain class": same
+  object, executable rather than merely diagnostic.
+
+--- how this landed in the page, 2026-07-30 -------------------------
+  User's call, and it replaced an earlier proposal of mine for a
+  cross-cutting "bring-up strip" with its own Run buttons. That strip
+  would have put the same controls in two places; duplicated controls
+  are how two copies drift apart. Adopted instead:
+
+    ACTIONS LIVE IN THE TAB THAT OWNS THE EQUIPMENT.
+    THE LADDER STAYS THE ORDER-KEEPER and routes to the tab that fixes
+    the broken rung.
+
+  What that cost: there is no one-click "bring up LV". Three deliberate
+  actions across three tabs, each with its own confirmation. On shared
+  infrastructure that is a feature, not a regression.
+
+  Checked against the three sequences, most tabs needed nothing:
+    HV tab   nothing - its steps 1-2 are PowerDistStaging channels, so
+             they belong to Supply; step 3 is a program check, which
+             belongs to the safety panel; step 4 already exists
+    FEB tab  nothing - steps 1-3 are verifications, the only write
+             (FEBPower) is already there
+    LV tab   the crate table gained Enabled + "crate on" + an "also
+             carries" column, power actions behind confirmation, and a
+             CORRECTED occupancy map (its DS half was wrong - it
+             assumed DS mirrored the US pattern)
+    NEW      a "Supply" tab, because TDKStaging and PowerDistStaging
+             had no home at all. One tab with two blocks rather than
+             two thin tabs - different equipment trees, same layer.
+
+  CRATE POWER CONTROL REMOVED AGAIN, user's call 2026-07-30, later the
+  same day: the "crate on / crate off / enable" block, the generated
+  confirmation dialog and the "also carries" column were all built and
+  then taken out. The crate table is back to status plus Reset and
+  Clear fault - i.e. exactly what custom_page.txt 3.1's DECLINED entry
+  described. Section 3 above still stands as written: its FACTUAL
+  premise really was wrong ("Crate On" is a real crate-level switch),
+  but the outcome is now the same as the original decision, reached
+  deliberately rather than from a false premise. Do not read section 3
+  as authorising the control - it authorised reopening the question,
+  and the question was then answered no.
+  What that leaves: the occupancy table in section 3 is still the
+  reference for who shares a crate, and the mockup still carries the
+  corrected map - it just does not offer a button.
+
+  SUPPLY SHOWS SCIFI ROWS ONLY (user's call, same day, revising the
+  first build). The two Pixel channels of TDKStaging and the seven Tile
+  channels of PowerDistStaging's "SciFi & Tile" device were initially
+  rendered greyed-and-uncheckable for context; they are now simply
+  absent. A SciFi page shows SciFi.
+  WHAT THAT COSTS, so it is a known trade and not an oversight: the
+  page no longer displays that these units are shared. The Pixel rows
+  in particular were a live demonstration of an interlock doing its job
+  (Mode forced OFF, Fault Register 0x0080). Both table notes now carry
+  that fact as one sentence of text instead - cheaper than rows, and it
+  keeps section 2's "the interlock is read-only" visible to whoever
+  reads the page rather than this doc.
+  The "ours" flag and the locked-row rendering are KEPT in the mockup
+  even though no row currently sets them - they are the mechanism that
+  enforces section 12b, and the next shared row that appears will need
+  them.
+
+  CONSISTENCY PASS over the three original tabs, same day: FEB, LV and
+  HV were brought to the structure the Supply tab established, since
+  having one tab shaped differently from the rest is how a page starts
+  looking accidental.
+    - every table block carries its ODB path next to the heading, in
+      mono - the same habit that keeps SCFC and SFFE apart (section 13)
+    - every toolbar has a selection counter on the right
+    The per-panel intro paragraphs written for this pass were REMOVED
+    the same day, along with every explanatory note under a table -
+    user's call: a control page is not a place to read essays. The
+    headings' ODB paths stay, because those are labels, not prose. The
+    reasoning they carried lives in this doc, which is where a reader
+    who wants it will look.
+  The counters are read-only OBSERVERS, not a second selection wiring:
+  FEB/LV/HV keep their existing machinery (wireSelectAll,
+  cascadeCheckboxes, the per-group header checkboxes), and the counter
+  just reports what is ticked, so it stays right however the selection
+  was made. Re-wiring them would have been the easy way to break a
+  behaviour Marius already signed off.
+  NOT added to the old tabs: selection presets. Their tables are
+  already grouped US/DS with working group-header checkboxes, so a
+  preset would duplicate a control that exists. Supply has presets
+  because its table is flat.
+
+  Deliberately still missing: the routing links from ladder rung to
+  tab. The ladder lives in chain_mockup.html and the tabs now live in
+  custom_page_mockup_v2.html, so wiring them means moving the ladder
+  into v2 first. Not done, not decided.
+
+--- two things noticed while writing the paths ----------------------
+  a) LDO_US (idx 15) and LDO_DS (idx 95) report Present = False in
+     DCDCCrates, while all 12 SMB channels report True. Either no
+     hardware is fitted on those two channels or they are not wired
+     the way the name suggests. Worth knowing before a bring-up stalls
+     on them.
+  b) common_scripts/common/power_supply.py writes
+     "/Settings/Channel on[" (lower-case o); the real ODB key is
+     "Channel On". MIDAS key lookup is case-insensitive so this works
+     today - noted for consistency, not as a bug.
+
+
+15) HV CHANNEL -> MODULE MAP - topology.txt 4c is CLOSED
+--------------------------------------------------------------------
+Given by the user 2026-07-30. topology.txt section 4c had the count
+confirmed (24 channels, 1:1 with 24 SMBs) but never the ORDER, and
+custom_page.txt 3.1 had therefore specified the HV table's "FEB" column
+as a deliberate placeholder to be filled in later. This fills it.
+
+Boards 30-37, four channels each, CH1..CH4 then CH5..CH8 per side:
+
+  US Top     board 30  CH1-4   -  -  2  3      board 31  CH5-8  4 5 6 7
+  US Bottom  board 32  CH1-4   -  -  8  9      board 33  CH5-8  10 11 0 1
+  DS Top     board 34  CH1-4   -  -  2  3      board 35  CH5-8  4 5 6 7
+  DS Bottom  board 36  CH1-4  10 11  0  1      board 37  CH5-8  -  -  8 9
+
+  "-" = spare channel, no module behind it.
+
+ODB indices (HV/Settings/Names, "SciFi CH" matches):
+  US Top 20-27 · US Bottom 72-79 · DS Top 132-139 · DS Bottom 188-195
+so board = namesBase + (0..3) for the first board, + (4..7) for the
+second. These namesBase/boardBase values were already in the mockup;
+only the module column was unknown.
+
+CHECKED: each side's eight non-spare channels cover modules 0-11 exactly
+once, 24 modules over 32 channels with 8 spares. That is the 1:1 the
+docs asserted, now with the ordering attached.
+
+DS is NOT a mirror of US: boards 36/37 carry what 32/33 carry on the US
+side, in the opposite order. Anyone deriving DS from US by symmetry gets
+it wrong - which is exactly the mistake that was already sitting in the
+crate "hosts" column (section 13).
+
+A module is an SMB; its Feb is module >> 1. So the HV table now shows
+"US SM 2  M5" instead of an em dash, and the placeholder column
+custom_page.txt 3.1 asked for is populated rather than redesigned.
+
+
+16) FILE LAYOUT AFTER 2026-07-30
+--------------------------------------------------------------------
+custom_page_mockup_v2.html   the pre-2026-07-30 baseline, UNTOUCHED.
+                             The user restored it at 15:32 after the
+                             day's edits had been applied to it in
+                             place. Treat it as the reference version
+                             Marius signed off, and do not edit it.
+
+custom_page_mockup_v3.html   everything decided on 2026-07-30, built
+                             on top of that restored baseline:
+     - FEB detail row in three source-labelled blocks (SCFC / SFFE /
+       datapath+SFLE+FEBFirmware), section 13
+     - corrected DCDC crate occupancy in the "hosts" column, section 3
+     - HV channel -> module -> Feb column filled, section 15
+     - new "Supply" tab: TDKStaging + PowerDistStaging, SciFi rows only
+     - selection counters and ODB-path labels on every block
+     - alarm block and SiPM cooling block in the safety zone
+
+     REVISED later the same day, user's call:
+     - the two chain-ladder cards (power branch, readout branch) and
+       the history-links card were REMOVED from v3, and with them the
+       rung -> tab routing. The ladder's content did not vanish: the
+       Service status card now carries the same 13 facts as one-line
+       states, which is where a shifter looks first anyway.
+     - the red alarm banner was removed; its content became the
+       "Alarms - FEB temp." row in Service status.
+     - crate power came BACK, without the confirmation dialog: LV's
+       crate table has "Crate on / Crate off / Enable selected"
+       alongside Reset and Clear fault, plus an "enabled" column.
+       Section 3's occupancy table is still the reference for who
+       shares a crate; the page no longer asks before acting.
+     - power distribution is grouped US / DS like every other table on
+       the page, and gained a "crate mains" preset next to the SMB and
+       HV+weather ones.
+     - WATCHDOG, built first as a tab and then MOVED to a card in the
+       safety zone next to Alarms, on the user's call - which is where
+       pixel keeps its own "Watchdog Status" (custom_page.txt 3.2's
+       survey of pixel's top-left zone lists it there). It is a
+       PROPOSAL: no /Watchdog tree exists for SciFi, pixel's holds 14
+       VTX_* conditions, and these ten are the same idea pointed at
+       SciFi equipment. Every row's state column says so.
+       Moving it from a table to a card meant dropping the arm/disarm
+       controls and folding "what it watches / limit / on trip" into
+       the row tooltip - a card in that zone is a status list, and the
+       zone's rule is that it only ever writes to turn things OFF.
+       Three rows carry real findings rather than placeholders: the
+       SiPM chiller window (15-25 C, a real pair of alarm conditions)
+       and the two FEB over-temperature rows, which read "no alarm
+       either" because neither a watchdog nor an alarm covers them.
+       That is now the only place on the page where that gap shows.
+
+     SERVICE STATUS was first expanded to 13 lines, then TRIMMED on the
+     user's call to exactly three subjects - TDK, DCDC crates and power
+     distribution - giving six rows, each with its ODB path in the
+     tooltip:
+       TDK - output            TDKStaging Output On[0,1]
+       TDK - interlock         Interlock Trigger, Fault Register
+       DCDC crates             Enabled vs "Crate On"
+       PowerDist - crate mains ch 96-99, 112-115
+       PowerDist - SMB/LDO     ch 0-5, 15, 16-21, 31
+       PowerDist - HV          ch 102, 103, 118, 119
+     That scoping is not arbitrary: it is one group per SERVICE CLASS.
+     common/services.py already has TDKService and DCDCCratesService;
+     the third group has no class behind it yet. A PowerDistService,
+     shaped like the other two, is the backend work this row group
+     implies - and until it exists the page is reading those channels
+     directly, which is the duplication the service classes were
+     created to avoid.
+
+     WHAT NO LONGER APPEARS ANYWHERE ON THE PAGE after the two trims:
+     the readout gates. readout_scifi = False on all three ROSWB boards
+     and "SciFi readout" = False in the run parameters were shown by the
+     readout-branch card, then by a Service status row, and both are
+     gone. Section 1's "invisible bottleneck" case - every power row
+     green and still no data - is therefore invisible on the page again.
+     The finding is not lost (section 1 and 4), but nothing surfaces it
+     to a shifter. Flagged, not fixed: it needs a decision on where it
+     belongs, since Service status is now deliberately about power only.
+     By contrast the other displaced findings DID keep a home: the FEB
+     over-temperature gap lives in the Watchdog tab's two
+     "NO ALARM EITHER" rows, the inactive alarms in the Alarms card,
+     and SiPM cooling in the cooling card.
+
+     Deliberately NOT in v3, all decided during the day:
+     - crate power buttons and their confirmation dialog (section 13)
+     - cooling controls, data-flow tab, readout-enable tab (section 13)
+     - explanatory prose under tables and per-panel intros (section 13)
+
+chain_mockup.html            RETIRED 2026-07-30 (user's call) and
+                             deleted - not moved to docs/old/, genuinely
+                             gone (checked here and ~/.Trash, no copy
+                             found). Its ladder, alarm and cooling
+                             blocks and its Distribution table all
+                             exist in v3; its one unique piece, the
+                             phase-3 write-log treatment of crate/
+                             distribution actions, was NOT carried
+                             forward - v3's crate/Supply buttons write a
+                             plain status string instead. Re-derive that
+                             pattern from this doc's section 12 if it is
+                             wanted again.
+
+NOTE ON THE LADDER IN v3: it is derived from the page's own tables
+(crates, tdkChannels, pdChannels) rather than from a second copy of the
+ODB values, so the ladder and the tabs cannot disagree. Adding a rung
+means adding a derivation, not another dataset.
+
+
+17) THE WEATHER STATIONS - what they are and what they gate
+--------------------------------------------------------------------
+Added 2026-07-30 after the four "WEATHER" channels turned up in
+PowerDistStaging's "Slow Control" device and nobody could say what they
+were for.
+
+STRUCTURE, from the dump. /Equipment/Environment is four stations of 16
+channels each - US_TOP1, US_TOP2, DS_TOP1, US_BOTTOM1. Every station is
+8 direct temperature inputs (T0..T7) plus two expansion ports, each
+port carrying T0, T1, RH and O2. So a station measures TEMPERATURE,
+RELATIVE HUMIDITY and OXYGEN.
+
+INFERENCE, not proven: the four PowerDistStaging channels named
+US/DS WEATHER TOP/BOTTOM (ch 100, 101, 116, 117 - on, 0.02-0.04 A) are
+what powers these boards. It rests on the count matching and on the
+US/DS + top/bottom naming axis. Note it is NOT clean: Environment has
+no DS_BOTTOM station, while a "DS WEATHER BOTTOM" power channel exists.
+
+WHAT THEY ARE FOR, in the order that matters to SciFi:
+
+  1. DECIDING WHETHER IT IS SAFE TO COOL. If a cooled surface drops
+     below the dew point of the air around it, water condenses on it.
+     Condensation on an HV-biased SiPM board, or on FEB electronics,
+     means leakage current and damage. The SiPM chiller window is
+     15-25 C (section 5) - but whether that window is SAFE is decided
+     by the humidity in the cage, which only these boards know.
+     So the real precondition chain is
+        weather station -> RH / dew point in limits -> chiller -> HV, VBR
+     The weather station does not gate HV. It gates the COOLING, and
+     the cooling gates HV and VBR. One rung further up the parallel
+     branch of section 4i.
+     Wired in the ODB as: alarms "Env RH Top US" and "Env RH Top DS"
+     (> 70%), plus a computed Dew Point with an alarm above 8 C.
+
+  2. AN INDEPENDENT MEASUREMENT ON THE COOLING LOOPS. The 8 channels
+     that carry a real name are not ambient air, they are attached to
+     things: US_TOP1_T1_HE_INLET_VTX, US_TOP1_T4_HE_INLET_OUTER,
+     US_TOP1_T5_TL_US_OUT, US_TOP2_T4_TL_US_IN, DS_TOP1_T1_DCDC_C_6,
+     DS_TOP1_T4_DS_TL_OUT, US_BOTTOM1_T0_US_SC_OUT,
+     US_BOTTOM1_T1_US_SC_IN. The chiller reports its own internal
+     temperature; these report the temperature of what the detector
+     actually sits on. If the two disagree, something is wrong between
+     the chiller and the load.
+
+  3. PERSONNEL SAFETY - OXYGEN. Mu3e uses helium and helium displaces
+     air. Every station port has an O2 channel, 8 in total. NO ALARM
+     READS ANY OF THEM. The only O2 alarm in the system is
+     "Helium piE5 O2" on HePlantPiE5/Variables/MSCB[16], and it is
+     inactive.
+
+DO THEY MATTER FOR LV AND HV? For turning either ON, no - no step of
+either sequence (section 14) reads Environment, and LV has its own
+seven per-channel hardware flags plus TDiode. The distinction is
+between POWERING and OPERATING:
+  LV  effectively never. The single link is DS_TOP1_T1_DCDC_C_6, a
+      temperature on one DCDC crate - redundancy on the crate, not a
+      precondition.
+  HV  not to switch on, but to run safely: HV lives on cooled SiPMs,
+      and cooling is what creates the condensation risk these boards
+      guard. VBR's own dependence is on TEMPERATURE (the chiller), not
+      on humidity - the weather station's job there is only to say the
+      chiller may be run.
+
+STATE TODAY: all 64 channels read NaN and 56 of 64 are named UNCON_ /
+UCON_, i.e. not connected. The two RH alarms are formally active and
+are watching a NaN. The read-out hardware is powered - the WEATHER
+channels draw current - but the sensors do not arrive. Nothing here is
+protecting anything yet.
+
+TWO CONFIGURATION ERRORS, to report to whoever owns Environment:
+  a) Settings/"T for DewP" and Settings/"RH for DewP" are BOTH set to
+     US_TOP1_T1_HE_INLET_VTX. A dew point needs a temperature and a
+     humidity; the humidity source points at a temperature channel. The
+     computed Dew Point is NaN regardless.
+  b) "Env RH Top US" reads MSCB[46] = UNCON_DS_TOP1_Port3_RH and
+     "Env RH Top DS" reads MSCB[42] = UNCON_DS_TOP1_Port2_RH. Both are
+     DS_TOP1 - the "US" alarm watches a DS sensor, and the two watch
+     two ports of the same station. Everything involved is unconnected
+     and NaN, so this is probably provisional rather than a live bug,
+     but as written it is wrong.
+
+WHEN THE SENSORS ARRIVE, the checklist is: sensors connected and
+reading -> the two RH alarms pointed at the right stations -> dew point
+computed from a real T and a real RH -> the Dew Point alarm activated
+-> only then run the SiPM chiller cold. An alarm on NaN never fires, so
+none of the current alarm coverage means anything until step one.

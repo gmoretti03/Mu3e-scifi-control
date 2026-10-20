@@ -1,0 +1,160 @@
+SCIFI_SCRIPTS ALIGNMENT PLAN - after today's common_scripts refactor
+====================================================================
+Written 2026-08-20, planning-only (not yet implemented - user asked to
+save this for later rather than execute now).
+
+CONTEXT
+--------------------------------------------------------------------
+Today's session heavily refactored common_scripts (naming consistency,
+dedup, "extract generic bases even without a second real consumer yet"
+philosophy - see common_migration_plan.txt's PHASE 2 GOAL section).
+scifi_scripts was deliberately left untouched throughout except for one
+already-applied typo fix (intialise_commands in detector/hv.py). A
+fresh grep sweep of scifi_scripts for every symbol renamed today
+(OperationResult, StatusMessage, add_lvds_link_stats, daq.base,
+globals.*, etc.) found ZERO other stale references - the refactor is
+otherwise fully compatible.
+
+There are exactly two known, real misalignments left, both already
+flagged and deliberately deferred earlier today ("lo faremo poi" / "lo
+sistemeremo poi"):
+
+1) BREAKING: common_scripts/power/feb_crate.py's
+   build_feb_bringup_sequence() was merged from an explicit-args
+   signature (feb_id, client, link_feb, equipment_name, feb_index, ...)
+   into a single duck-typed-object signature (feb, ...) expecting
+   feb.get_id() / feb.client / feb.get_link_feb() / feb.get_station() /
+   feb.get_number(). scifi_scripts/actions/bringup_declaration.py's
+   build_feb_crate_sequences() still calls the old 5-arg form, confirmed
+   broken via the scifi test suite (Docs/devolpment/code/tests/
+   test_bringup.py): AttributeError: 'str' object has no attribute
+   'client'.
+
+2) NON-BREAKING DUPLICATION: scifi_scripts/detector/feb.py's
+   LV_EQUIPMENT_NAME = "DCDCCrates" duplicates a literal that already
+   exists as equipment_names.EquipmentName.DCDC_CRATES in
+   common_scripts/equipment/names.py - the shared enum built
+   specifically to eliminate this.
+
+Governing principle set by the user this session: "SciFi's own classes
+will be changed to conform to Pixel's shape, not the reverse." So the
+fix is to extend scifi's real Feb class to satisfy the same duck-type
+contract PixelFeb already satisfies - not to write a local
+wrapper/adapter around it.
+
+VERIFIED SEMANTICS (read PixelFeb/build_feb_bringup_sequence directly,
+not guessed)
+--------------------------------------------------------------------
+  # common_scripts/power/feb_crate.py
+  def build_feb_bringup_sequence(feb, ...):
+      feb_power = FebCratePower(feb.client, feb.get_link_feb())
+      equipment_name = "Links" + feb.get_station()   # fn prepends "Links"
+      return bringup.BringUpSequence(feb.get_id(), [  # display name only
+          ...
+          lambda: check_link_status(feb.client, equipment_name, feb.get_number())[0],
+      ])
+
+Mapped onto scifi's old broken call f"Feb{feb_index}", det.client,
+feb_instance.get_link_feb(), "LinksFibre", feb_index:
+  - get_id()      -> must reproduce f"Feb{feb_index}" (display label,
+                     unrelated to the physical SM name in get_name())
+  - get_station() -> must return the bare string "Fibre" (not
+                     "LinksFibre" - the function itself prepends "Links")
+  - get_number()  -> must return exactly what get_feb_index() returns
+                     today
+
+CALLER INVENTORY (confirms the rename below is safe)
+--------------------------------------------------------------------
+  - get_name() (returns e.g. "US SM 1") - used in detector/scifi.py,
+    calibrations/pll_scan.py, calibrations/thr_scan.py as a
+    physical-location label. Semantically unrelated to get_id() - NOT
+    renamed, left untouched.
+  - get_feb_index() - used in calibrations/pll_scan.py (4 call sites)
+    and calibrations/thr_scan.py (1 call site), always as the plain int
+    index. Exactly get_number()'s meaning - safe to rename everywhere.
+  - Docs/devolpment/code/tests/test_scan_thr.py monkeypatches
+    feb_module.Feb.check_lv_over_current and calls
+    self.get_feb_index() == 1 inside it - must be updated alongside the
+    rename (easy to miss, it's outside all 3 repos).
+  - No test file defines a mock/fake Feb class - no second
+    implementation of the interface to keep in sync.
+
+CHANGES
+--------------------------------------------------------------------
+1) scifi_scripts/detector/feb.py
+   - Rename get_feb_index() -> get_number() (body unchanged: return
+     self.__feb_index). The private attribute self.__feb_index and its
+     internal uses (e.g. check_link_status()'s self.__feb_index) stay
+     as-is.
+   - Add:
+       STATION = "Fibre"
+
+       def get_id(self) -> str:
+           return f"Feb{self.__feb_index}"
+
+       def get_station(self) -> str:
+           return Feb.STATION
+   - Change LV_EQUIPMENT_NAME = "DCDCCrates" ->
+     LV_EQUIPMENT_NAME = equipment_names.EquipmentName.DCDC_CRATES
+     (import already present at the top of the file). Verified
+     identical runtime behaviour: PowerSupply.__init__ does
+     self.equipment_name = str(equipment_name), and
+     EquipmentName.__str__ returns .value, so
+     str(EquipmentName.DCDC_CRATES) == "DCDCCrates" exactly.
+   - Same-file polish (now that STATION exists as one source of truth):
+     replace the three remaining hardcoded "LinksFibre" literals
+     (LINKS_SETTINGS_PATH, LINKS_VARIABLES_PATH - both class-level -
+     and the literal inside check_link_status(), line ~219) with
+     f"/Equipment/Links{STATION}/..." / f"Links{Feb.STATION}" forms.
+
+2) scifi_scripts/actions/bringup_declaration.py -
+   build_feb_crate_sequences():
+     def build_feb_crate_sequences(det):
+         return {
+             feb_index: feb_crate.build_feb_bringup_sequence(feb_instance)
+             for feb_index, feb_instance in det.febs.items()
+         }
+
+3) scifi_scripts/calibrations/pll_scan.py - rename .get_feb_index() ->
+   .get_number() at all 4 call sites (JSON dict key strings like
+   "feb_index" are untouched, only the method call changes).
+
+4) scifi_scripts/calibrations/thr_scan.py - same rename, 1 call site.
+
+5) /Users/gmoretti/Work/Mu3e/Docs/devolpment/code/tests/test_scan_thr.py
+   - update the check_lv_over_current monkeypatch from
+   self.get_feb_index() == 1 to self.get_number() == 1.
+
+VERIFICATION
+--------------------------------------------------------------------
+  cd /Users/gmoretti/Work/Mu3e/Docs/devolpment/code/tests
+  export PYTHONPATH=/Users/gmoretti/Work/Mu3e/sequencer_scripts/common_scripts:/Users/gmoretti/Work/Mu3e/sequencer_scripts/scifi_scripts:.
+  for f in test_*.py; do python3 "$f" || echo "FAIL: $f"; done
+
+Expect all 14 to pass (previously 12/14 - test_bringup.py fixed by this
+plan, test_pll_scan.py remains a known, unrelated mock-data threshold
+issue).
+
+Then:
+  grep -rn "get_feb_index" /Users/gmoretti/Work/Mu3e/sequencer_scripts/scifi_scripts /Users/gmoretti/Work/Mu3e/Docs/devolpment/code/tests
+  grep -rn "LV_EQUIPMENT_NAME" /Users/gmoretti/Work/Mu3e/sequencer_scripts/scifi_scripts
+
+to confirm zero remaining references to the old name, and that
+LV_EQUIPMENT_NAME is enum-backed everywhere.
+
+Also re-run pixel's test1.py-test6.py and common_scripts/tests/run_all.py
+as a sanity check that nothing outside scifi_scripts was touched.
+
+Per the standing rule this session, any implementation of this plan
+should be committed LOCALLY ONLY, no push - and only if/when the user
+asks (they've been committing themselves since "smettila di
+committare, lo faccio io dopo").
+
+STATUS: DONE (2026-08-21). All 5 changes implemented as written. 13/14
+scifi tests pass (test_bringup.py fixed as predicted; test_pll_scan.py
+still fails on the known, unrelated mock-data threshold issue). Zero
+remaining "get_feb_index" references; LV_EQUIPMENT_NAME confirmed
+enum-backed everywhere. pixel_scripts test1-6 (5/6, test4's known
+pre-existing bug unrelated) and common_scripts/tests/run_all.py
+(11/11) both still pass - nothing outside scifi_scripts affected.
+Uncommitted, left in the working tree for the user to commit.

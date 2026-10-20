@@ -1,0 +1,188 @@
+Istruzioni per gli schemi di ereditarieta'/composizione delle classi
+(common_scripts / pixel_scripts / scifi_scripts)
+====================================================================
+Riferimento: screenshot "Operations" del 2026-08-25 (OperationBase ->
+ActionBase/CalibrationBase -> PixelActionBase/PixelCalibrationBase +
+PixelOperationBase). Stato del codice: DOPO il rework del 2026-08-24
+che ha spostato tutte le classi PixelX/SciFiX fuori da common_scripts
+e ha differenziato i nomi tra pixel_scripts e scifi_scripts (vedi
+pr_task_scifi_pp.txt, sezione "DIFFERENZIAZIONE CLASSI PIXEL/SCIFI").
+
+
+====================================================================
+1. CORREZIONI ALLO SCHEMA "OPERATIONS" GIA' FATTO
+====================================================================
+- Il path scritto in ogni box e' sbagliato/obsoleto:
+    "common_scritp/operations/lifecycle.py"  (typo + cartella plurale)
+  Quello giusto per le classi GENERICHE (OperationBase/ActionBase/
+  CalibrationBase) e':
+    common_scripts/operation/operation_base.py
+  (rinominato da lifecycle.py il 2026-08-24, cartella singolare
+  "operation/").
+
+- PixelOperationBase, PixelActionBase, PixelCalibrationBase NON stanno
+  (piu') in common_scripts. Sono state spostate dentro pixel_scripts:
+    PixelOperationBase   -> pixel_scripts/core/operation_base.py
+    PixelActionBase       -> pixel_scripts/actions/actionbase.py
+    PixelCalibrationBase  -> pixel_scripts/calibrations/calibrationbase.py
+  (PixelActionBase/PixelCalibrationBase in questi due file sono anche
+  fuse con quella che prima era una classe locale separata - vedi nota
+  generale 4 sotto).
+
+- Manca il ramo SciFi. Va aggiunto in parallelo a quello Pixel:
+    SciFiActionBase       -> scifi_scripts/actions/actionbase.py
+    SciFiCalibrationBase  -> scifi_scripts/calibrations/calibrationbase.py
+  IMPORTANTE: SciFiActionBase/SciFiCalibrationBase ereditano SOLO da
+  ActionBase/CalibrationBase - non esiste un "SciFiOperationBase"
+  equivalente al mixin PixelOperationBase (che aggiunge le statistiche
+  LVDS per-chip, un concetto solo Pixel). Nello schema questo va reso
+  visibile come asimmetria reale (freccia doppia solo sul lato Pixel,
+  freccia singola sul lato SciFi), non nascosto o "pareggiato" per
+  estetica.
+
+
+====================================================================
+2. REGOLE GENERALI PER RENDERE OGNI SCHEMA "UNIVERSALE"
+====================================================================
+Da applicare identiche a qualunque area (Operations, Power Partitions,
+DAQ, ...), cosi' che tutti gli schemi seguano la stessa logica:
+
+1. Ogni box: nome classe (o funzione, vedi punto 5) + path file ESATTO
+   e completo a partire dal nome del repo (es.
+   "pixel_scripts/core/daq.py", non solo "core/daq.py" e non un path
+   accorciato/con typo). Il path va verificato leggendo il file vero,
+   non a memoria.
+
+2. Tre repo possibili per ogni box: common_scripts, pixel_scripts,
+   scifi_scripts. Consiglio: un colore/etichetta diverso per repo (es.
+   grigio=common, blu=pixel, arancio=scifi) cosi' lo schema si legge
+   a colpo d'occhio senza dover leggere ogni singolo path.
+
+3. Schema "a pettine": classe generica in common_scripts in alto,
+   sotto le sue due sottoclassi/implementazioni Pixel e SciFi affiancate
+   (Pixel a sinistra, SciFi a destra, per coerenza tra tutti gli
+   schemi). Se la classe comune non esiste (alcune aree sono
+   completamente indipendenti tra i due sottosistemi, vedi elenco
+   sotto), lo schema parte direttamente dalle due colonne Pixel/SciFi
+   senza radice comune.
+
+4. Se in pixel_scripts o scifi_scripts la sottoclasse e' il risultato
+   di una fusione (una classe locale che prima wrappava quella di
+   common, poi fusa in una sola durante il rework del 2026-08-24), non
+   serve indicarlo nello schema - conta solo lo stato attuale (una
+   classe sola, un file solo).
+
+5. Se un nome ricorre come FUNZIONE condivisa (non classe) rilevante
+   per l'area (es. build_power_group_bringup_sequence(),
+   perform_feb_power_action(), check_shared_equipment()), disegnala
+   con una forma diversa dal box delle classi (es. ovale) per non
+   confonderla con un'altra classe - stesso trattamento path
+   obbligatorio.
+
+6. Frecce: ereditarieta' piena (sottoclasse) = freccia piena. Se una
+   relazione e' invece "usa/compone" (es. una Factory che costruisce
+   un Detector, non ne eredita) usa una freccia tratteggiata - non
+   sono la stessa cosa e mischiarle rende lo schema fuorviante (vedi
+   area 9 sotto, e' il caso piu' comune dove capita).
+
+7. Se per un'area la simmetria Pixel/SciFi non esiste (una classe ha
+   l'equivalente solo su un lato), disegna comunque il lato mancante
+   come box vuoto/tratteggiato con una nota tipo "non esiste ancora" -
+   serve a vedere a colpo d'occhio dove il porting non e' completo,
+   non va omesso.
+
+
+====================================================================
+3. ELENCO AREE DA SCHEMATIZZARE (oltre a Operations/Power Partitions)
+====================================================================
+Per ciascuna: cosa contiene, dove sta la radice comune (se esiste), e
+dove stanno le due implementazioni. Il resto (box esatti, frecce) lo
+completi tu seguendo le regole della sezione 2.
+
+- POWER PARTITIONS (gia' prevista, vuota nello screenshot)
+  Radice: PowerPartitionBuilder, PowerGroup - common_scripts/power/
+  partition.py e common_scripts/power/group.py.
+  Pixel: PixelPowerPartitionBuilder + PixelPowerPartition -
+  pixel_scripts/core/power_partition.py.
+  SciFi: SciFiPowerPartitionBuilder - scifi_scripts/core/
+  power_partition.py (SciFi non ha una sottoclasse di PowerGroup
+  propria, usa PowerGroup generica direttamente - asimmetria reale,
+  vedi regola 7).
+
+- DAQ
+  Radice: DAQBase/DAQSCReads/DAQSCReadsArray - common_scripts/daq/
+  control.py.
+  Pixel: PixelDAQCommands/PixelDAQSCReadsArray/PixelDAQLVDSErrorStats/
+  PixelDAQMupixSCReadBack/PixelDAQControl - pixel_scripts/core/daq.py.
+  SciFi: SciFiDAQControl - scifi_scripts/core/daq.py (molto piu'
+  piccola lato SciFi, niente equivalenti di LVDSErrorStats/
+  MupixSCReadBack - concetti solo Pixel).
+
+- CONFIG/SETUP
+  Radice: Setup - common_scripts/config/setup.py.
+  Pixel: PixelSetup - pixel_scripts/globals/setup.py.
+  SciFi: SciFiSetup - scifi_scripts/globals/setup.py.
+
+- FOLDERS
+  Radice: Folders - common_scripts/config/folders.py.
+  Pixel: PixelFolders - pixel_scripts/globals/folders.py.
+  SciFi: SciFiFolders - scifi_scripts/globals/folders.py.
+
+- OPERATION PARAMETERS
+  Radice: OperationParameters - common_scripts/operation/
+  operation_parameters.py.
+  Pixel: PixelOperationParameters - pixel_scripts/globals/
+  operation_parameters.py.
+  SciFi: NON esiste (nessun concetto equivalente a target_hv/
+  target_VDD in scifi_scripts) - box vuoto per regola 7.
+
+- FEB / CRATE
+  Nessuna radice comune per il FEB stesso (solo FebCratePower e'
+  comune - common_scripts/power/feb_crate.py, gestisce
+  l'accensione/spegnimento del crate, non l'oggetto FEB).
+  Pixel: PixelFeb - pixel_scripts/core/feb.py.
+  SciFi: SciFiFeb - scifi_scripts/core/feb.py.
+  Le due classi Feb sono indipendenti tra loro (nessuna le lega),
+  entrambe pero' usano FebCratePower (freccia "usa", tratteggiata).
+
+- POWER SUPPLY
+  Tutto in common_scripts/power/supply.py: PowerSupply -> LVPowerSupply/
+  HVPowerSupply -> DCDCPowerSupply/MPDCPowerSupply/HVBoxNPowerSupply,
+  + PowerSupplyFactory. Nessuna sottoclasse Pixel/SciFi - area
+  completamente condivisa, schema senza colonne separate.
+
+- RESULTS / SAVING
+  Tutto in common_scripts/results/saver.py: ResultSaver ->
+  ResultSaverLocal/ResultSaverODB/ResultSaverROOT/ResultSaverPlot/
+  ResultSaverCDB, + ResultSaverMultiple (contenitore). Nessuna
+  sottoclasse Pixel/SciFi - area completamente condivisa.
+
+- EQUIPMENT SERVICES
+  Tutto in common_scripts/equipment/services.py: TDKService/
+  PowerDistService/DCDCCratesService/ProgramService/AlarmsService.
+  Nessuna sottoclasse Pixel/SciFi, ma SciFi ha una funzione wrapper a
+  parte (non classe) - scifi_check_shared_equipment() in
+  scifi_scripts/calibrations/calibrationfactory.py, disegnala come
+  ovale (regola 5) collegata con freccia "usa".
+
+- ACTION/CALIBRATION FACTORY + EXECUTE ENUM
+  Radice: OperationFactoryBase - common_scripts/operation/
+  operation_factory.py (relazione con le factory sotto e' "usa/
+  compone", NON ereditarieta' - freccia tratteggiata, regola 6).
+  Pixel: PixelActionFactory + PixelActionExecute -
+  pixel_scripts/actions/actionfactory.py; PixelCalibrationFactory +
+  PixelCalibrationExecute - pixel_scripts/calibrations/
+  calibrationfactory.py.
+  SciFi: SciFiActionFactory + SciFiActionExecute -
+  scifi_scripts/actions/actionfactory.py; SciFiCalibrationFactory +
+  SciFiCalibrationExecute - scifi_scripts/calibrations/
+  calibrationfactory.py.
+
+- DETECTOR
+  Nessuna radice comune (nessun "Detector" in common_scripts).
+  Pixel: PixelDetector - pixel_scripts/core/detector.py.
+  SciFi: SciFiDetector - scifi_scripts/core/detector.py.
+  Le due classi sono indipendenti, ma usano (freccia tratteggiata)
+  quasi tutte le altre aree sopra (Power Partitions, DAQ, Setup,
+  Folders) - puo' essere lo schema "di sintesi" da fare per ultimo,
+  una volta pronti gli altri.

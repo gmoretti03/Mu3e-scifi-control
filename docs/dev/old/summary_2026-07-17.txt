@@ -1,0 +1,306 @@
+SESSION SUMMARY - sequencer_scripts, 2026-07-17
+====================================================================
+Follows on from summury_hackaton.txt (2026-07-16). Precise change log +
+rationale, not a tutorial - written so work can be picked up without
+re-deriving context. Nothing described below has been committed or
+pushed anywhere; everything is local working-tree state unless
+explicitly noted otherwise.
+
+
+0. CONTEXT
+----------
+Today's stated general task: port scifi-userfiles' scripts into
+scifi_scripts, eventually. Decision reconfirmed early in the session:
+scifi-userfiles stays untouched (it's the fast, working tool for real
+scifi tests/operations) - scifi_scripts is the parallel architectural
+experiment, developed locally, ported to mu3ebe only if it works out.
+No scifi_scripts implementation work was actually done today - the
+session instead focused on (1) properly setting up the sequencer_scripts
+repo structure, (2) auditing/fixing common_scripts/common/, and (3)
+cross-checking today's findings against a hackathon presentation PDF.
+
+
+1. REPO STRUCTURE: sequencer_scripts IS NOW A REAL LOCAL REPO
+---------------------------------------------------------------------
+Previously (per summury_hackaton.txt section 1), the local
+sequencer_scripts/ folder was NOT a git repo - just a plain directory
+containing common_scripts/ and pixel_scripts/ as independently-cloned
+sibling repos. On mu3ebe, sequencer_scripts/ WAS already a real repo
+(origin git@bitbucket.org:mu3e/sequencer_scripts.git), tracking
+common_scripts and pixel_scripts as gitlinks (git index mode 160000)
+but with NO .gitmodules file - a broken/incomplete submodule setup.
+
+Fixed locally today:
+  - Cloned the sequencer_scripts superproject fresh into scratch, then
+    merged its .git/, .gitignore, README.md into the existing local
+    sequencer_scripts/ folder WITHOUT touching the already-cloned
+    common_scripts/pixel_scripts content (verified: common_scripts HEAD
+    matched the superproject's tracked SHA exactly; pixel_scripts HEAD
+    was ahead but the tracked SHA was a confirmed ancestor - no
+    conflict).
+  - Added a LOCAL-ONLY .gitmodules (not committed/pushed) mapping
+    common_scripts and pixel_scripts to their real Bitbucket URLs, so
+    `git submodule status` etc. work normally now.
+  - scifi_scripts had been moved to the Trash by the user before this
+    session (confirmed via `~/.Trash/scifi_scripts`, matching timestamp
+    of its last edit - NOT deleted by this session). Per user
+    instruction, left in Trash, not restored. A fresh, genuinely empty
+    scifi_scripts/ (git init, branch main, no commits, no files - not
+    even the old 7-folder skeleton, per explicit user request "non ho
+    pensato alla struttura") was created in its place and added to
+    .gitmodules (URL git@bitbucket.org:mu3e/scifi_scripts.git - this
+    Bitbucket repo does NOT exist yet, confirmed via git ls-remote
+    failure, so it won't resolve via `git submodule update` until
+    someone creates it for real).
+
+Net effect: /Users/gmoretti/Work/Mu3e/sequencer_scripts/ now behaves
+like scifi-userfiles - a single top-level repo you can work in - while
+still containing the same three working trees as before.
+
+
+2. common_scripts/common/ AUDIT AND FIXES
+---------------------------------------------------------------------
+Triggered by: "is common/ really common, or is something hardcoded?"
+Verified byte-for-byte against the real scifi-userfiles/scripts/
+lv_power.py and hv_power.py, and against live ODB on mu3ebe (read-only
+checks via a python midas.client.MidasClient - see section 5 for a
+problem this caused).
+
+2.1) Confirmed clean: no pixel-specific hardcoded equipment names/paths
+   DCDCPowerSupply and HVBoxNPowerSupply's ODB paths match scifi's own
+   scripts exactly (Channel on/On[ch] - confirmed case-INsensitive in
+   live ODB, so the casing difference is cosmetic not a bug; Output
+   On[ch]; Variables/Demand[ch]; Variables/Voltage[ch]; etc).
+
+2.2) One real bug fixed: "Ouput On" typo (pre-existing, not from today)
+   HVBoxNPowerSupply.turn_on wrote to ".../Settings/Ouput On[ch]"
+   (missing "t") while turn_off/is_on correctly used "Output On[ch]" -
+   turn_on() was writing to a key nothing ever read back from. Fixed to
+   "Output On[ch]".
+
+2.3) TODO resolved: common/power_supply.py's missing DCDCPowerSupply
+   temperature readable
+   Added "read_temperature" -> Variables/Temperature[ch]. Verified this
+   key actually exists in live ODB before adding it (also found related
+   real keys not yet used: "Diode Temperature", "Over Temperature",
+   "Threshold Temp" - not added, out of scope of the TODO as written).
+
+2.4) TODO resolved: odb.py's "enum for success/failure?" question
+   Decision: no enum. Real ODB failures already raise from the MIDAS
+   client; a manufactured success/failure enum would only ever reach
+   one branch. Changed ODBCommand.execute()'s write-only default return
+   from a fake `True` to an honest `None` (nothing was read). Verified
+   first that no caller in pixel_scripts checks the truthiness of a
+   write command's return value (all status checks go through is_on()
+   reads instead, matching the staged power-on flow in
+   actions/poweractions.py) - confirmed later in the "operation scripts"
+   presentation too (slide 40 asks the exact same open question).
+
+2.5) A SEPARATE, REAL BUG found and fixed while reviewing comments
+   (section 4): three malformed string literals inside
+   DCDCPowerSupply.intialise_commands's dict literal
+   (""""Setters""", """"Read simple""", """"Read and check""",
+   intended as decorative section-header "comments") were being
+   silently concatenated by Python onto the NEXT dict key via adjacent
+   string-literal concatenation - e.g. "turn_on" became the key
+   '"Settersturn_on'. Reproduced and confirmed in an isolated python3
+   repl. Practical effect: DCDCPowerSupply.turn_on() / read_current() /
+   alert() did not exist as callable methods (map_commands_to_self()
+   would create a method under the mangled name, not "turn_on") -
+   AttributeError if ever actually called through the convenience
+   method. Confirmed via `git log -p` that this bug predates today
+   entirely (introduced in pixel_scripts commit 47375a1, "updated with
+   actual ODB, added handling of control variables on power supplies" -
+   just carried over verbatim into common/ during yesterday's
+   promotion). Fixed by replacing the three malformed strings with real
+   `#` comments. Verified fix locally (offline, stub client): commands
+   dict now has the correct keys ("turn_on" etc), and calling
+   dcdc.turn_on() / read_current() no longer raises.
+
+2.6) Two genuinely unresolved open questions (NOT guessed at, left as-is)
+   - HVBoxNPowerSupply.minimum_voltage_variation = 0.01: no ODB
+     resolution/step field found for HV (checked live), so this value
+     is left unverified against hardware spec. Comment updated from a
+     bare "# True?" to state explicitly that it's unverified, instead
+     of silently dropping the uncertainty.
+   - Two "#is it read or set?" comments on DCDCPowerSupply's
+     set_voltage/read_voltage removed - the method's own docstring two
+     lines above already resolves the question (both are the Adjust/
+     setpoint value, not the real voltage - that's read_sense).
+
+2.7) General comment/docstring cleanup pass (user request: "non devono
+   essere dei racconti, devono essere utili a chi legge")
+   - odb.py: execute()'s docstring said "return the result as a string"
+     - false, fixed to describe the real return type.
+   - odb.py: a "return None # ...something better?" mid-thought comment
+     replaced with "# Timed out" (states what actually happened).
+   - odb.py: ODBCommand's class docstring ("...allows for easy
+     extension in the future if needed" - generic filler) replaced with
+     a one-line factual description.
+   - power_supply.py: PowerSupply.__init__'s Args docstring documented
+     a "supply_id" parameter that does not exist in the signature -
+     removed.
+   - power_supply.py: removed 3 redundant class docstrings that just
+     restated the class name ("Class for X. Inherits from Y and
+     implements specific command mappings for X supplies.").
+     Explicitly NOT done in pixel_scripts/ - out of scope, nothing was
+     changed there today, so no review requested/performed there
+     either.
+
+
+3. NEW FILE: common_scripts/common/services.py (not yet wired to any caller)
+---------------------------------------------------------------------
+Implements the "Services" idea raised in this session, which turned
+out to already be an explicit, unassigned ToDo in the 2026-07-16
+"Operation Scripts" hackathon presentation (slide 19 - see section 6):
+read-only pre-operation health checks for equipment shared across
+power partitions (TDK power generators, DCDCCrates) - explicitly never
+a turn-on/off surface, since a single TDK unit or DCDC crate feeds
+multiple, unrelated power partitions.
+
+  TDKService.check_status() -> (bool, str)
+    OK if Fault Register == 0 and Interlock Trigger == 0 on every
+    Enabled TDK channel (0/False = OK, same convention as
+    DCDCPowerSupply's existing 'alert' readable). Verified live: all 6
+    TDK channels currently OK (Fault Register / Interlock Trigger all
+    zero). The 6 TDK channels are themselves confirmed genuinely shared
+    across subdetectors (Names = 'SciFi & Tile US/DS', 'FE Crates
+    US/DS', 'Pixel US/DS').
+
+  DCDCCratesService.check_status() -> (bool, str)
+    OK if every crate that is Enabled (configured/in use) is also
+    Crate On (actually powered) - an enabled-but-unpowered crate would
+    fail any calibration touching its channels. Verified live against
+    real data: found ONE real, currently-true finding - crate
+    "DCDC_C_3" (crate index 2) is Enabled but NOT Crate On. Not
+    diagnosed further (could be intentionally off, e.g. detector not
+    powered right now) - just confirms the check produces meaningful
+    output, not a claim that this is a fault.
+
+Standalone module, not yet imported/called from calibrationfactory.py
+or anywhere else - left that way per explicit user instruction ("lascia
+stare" / leave it standalone for now).
+
+
+4. SCIFI_DAQ.txt UPDATED (in scifi-userfiles/docs/, cross-reference only)
+---------------------------------------------------------------------
+Added section 2.5, capturing live-dictated meeting notes on the pixel
+team's custom-page design (2026-07-17): Turn on helium, sequencer+run
+status bar, watchdog status box, required programs box, service status
+box (all power info), geometric power-partition view with per-partition
+mask, power sense split LV/HV/T, everything MIDAS-populated, ASIC
+masking reachable from the same page, a Monitoring box placed after
+Slow Control, overall flow mirroring the expert manual's step order
+(power -> config -> calibration -> tuning -> slow control). Cross-links
+to section 3 (SciFi's own proposed Page 2) as independently-arrived-at
+prior art on the same problem - not scifi work itself, kept only as a
+reference note.
+
+
+5. scifi_scripts/STRUCTURE_NOTES.txt (new file - running design notes)
+---------------------------------------------------------------------
+First file ever created in scifi_scripts/. Two sections so far:
+
+5.1) common/'s channel-lookup helper assumes pixel's model, not scifi's
+   find_channel_number_from_power_partition_name() (common/odb.py) does
+   an EXACT match (vector.index(partition_name)) - one partition_name
+   -> one channel. scifi's real lv_power.py/hv_power.py instead scan
+   Names[] for a PATTERN (prefix/substring) and act on every matching
+   channel at once, since scifi has no per-channel selection concept
+   yet. Not urgent, flagged for whenever scifi's core/ gets designed
+   for real.
+
+5.2) Findings from Luigi Vigani's "Operation Scripts" hackathon
+   presentation (43-slide PDF, dated 2026-07-16, deposited by the user
+   directly into scifi_scripts/ this session) - read in full and
+   cross-checked against common/ and scifi-userfiles:
+   - Confirmed the presentation is the original design rationale behind
+     pixel_scripts/core/ and everything later promoted into common/
+     yesterday (core/ folder layout, PowerSupply inheritance tree,
+     ODBCommand family, Actions perform/post_perform, Calibrations
+     prepare/execute/finalise, single shared MidasClient - all match
+     1:1).
+   - Slide 19 ("TDK/DCDC crates ...  Task for somebody to do!") is
+     confirmed to be the direct origin of today's Services idea (see
+     section 3) - not a new idea, an existing unassigned ToDo, and it
+     scopes the work as strictly read-only.
+   - Slide 18 ("Sci* wants to do the same [Power Partition model]?")
+     is an open question in the presentation that the later 2026-07-16
+     hackathon brainstorm (HACKATHON.txt 5.2) appears to have answered
+     differently in practice - scifi's core/ is meant to use its own
+     Feb/Asic/Channel classes matching scifi's real topology, not
+     literally reuse pixel's PowerPartition class. Recorded as context
+     for why core/ will diverge, in case that decision is ever
+     revisited.
+   - Slide 21: an explicit named gap - "HVBoxP for Sci*... ToDo!" -
+     scifi's real HV box hardware is apparently a different model
+     (HVBoxP) than pixel's HVBoxN, with no class for it anywhere yet.
+     Flagged for whoever designs scifi_scripts' power-supply handling
+     to check before assuming HVBoxNPowerSupply can just be reused.
+   - Slide 40's ToDo list independently confirms two things already
+     acted on today: the exceptions-vs-enum question (section 2.4) and
+     "review power supplies readables and checks" (section 2.3,
+     read_temperature).
+
+
+6. INCIDENT: stray MidasClient connections flooded mu3ebe's alarm log
+---------------------------------------------------------------------
+All live-ODB verification today (sections 2, 3) was done read-only via
+SSH using ad-hoc `midas.client.MidasClient('gm_check')` connections,
+several of which were not cleanly `.disconnect()`-ed at script exit.
+This left a malformed `/Programs/gm_check` ODB record (wrong struct
+size - a version/field mismatch between what the python client writes
+and what the C++ alarm-checking code on mu3ebe expects), which MIDAS's
+periodic alarm check (al_check) then repeatedly tried and failed to
+repair, flooding the message log with struct-size-mismatch errors.
+
+User fixed it directly on mu3ebe via `odbedit -c "deldir
+/Programs/gm_check"`. User instruction: never do this again. Saved as
+a standing feedback memory (feedback_midas_client_disconnect) - ad-hoc
+MidasClient connections for quick reads must always disconnect cleanly
+(try/finally or equivalent), not just exit after the last odb_get.
+
+
+7. VERIFICATION METHODOLOGY
+---------------------------------------------------------------------
+- All common/ ODB path claims (DCDCCrates/HV/TDK key names, the
+  Output/Ouput On typo, Temperature existing, TDK/DCDCCrates fault
+  fields) were checked against LIVE ODB on mu3ebe via read-only
+  midas.client calls, not assumed from reading code (see section 6 for
+  the cost of doing this carelessly).
+- The DCDCPowerSupply dict-key corruption bug (section 2.5) was
+  reproduced in an isolated local python3 snippet first (proving the
+  string-concatenation mechanism), then the fix was verified by
+  actually instantiating DCDCPowerSupply/HVBoxNPowerSupply locally
+  (stub client, is_odb_available=False) and confirming turn_on()/
+  read_current() are callable and produce the expected dry-run output.
+- Attempted to run pixel_scripts' own test3.py/test4.py end-to-end
+  locally (stub zmq/midas packages, matching yesterday's method) to
+  get a fuller regression check - this failed, but at
+  core/detector.py's create_febs_from_odb (expects real ODB-shaped
+  Mapping data a simple stub can't provide), well before reaching any
+  power_supply code - a PRE-EXISTING gap unrelated to anything changed
+  today, not investigated further.
+
+
+8. OPEN ITEMS
+---------------------------------------------------------------------
+  - scifi_scripts/scifi_scripts Bitbucket repo does not exist yet -
+    .gitmodules points at a URL that will 404 until someone creates it.
+  - HVBoxNPowerSupply.minimum_voltage_variation = 0.01 still unverified
+    against real hardware spec (section 2.6).
+  - common/services.py exists but is not called from anywhere yet
+    (calibrationfactory.py or otherwise) - deliberately left standalone.
+  - DCDC_C_3 (crate index 2) showed Enabled=True, Crate On=False in
+    live ODB when DCDCCratesService was tested - not diagnosed, may be
+    entirely normal (e.g. detector currently unpowered).
+  - common/odb.py's `__main__` self-test block at the bottom of the
+    file calls ODBCommand(ODBCommandType.WRITE, "turn_on", 1) - the OLD
+    constructor signature, missing the now-required leading `client`
+    argument. Would raise TypeError if actually run. Noticed during
+    today's review, NOT fixed (flagged to the user, not actioned).
+  - scifi_scripts itself: still empty (git init only, no files besides
+    STRUCTURE_NOTES.txt and the hackathon PDF) - no core/ design work
+    started, per explicit user instruction to keep it on hold.
+  - Nothing in this session has been committed or pushed - all of the
+    above is local working-tree state only.

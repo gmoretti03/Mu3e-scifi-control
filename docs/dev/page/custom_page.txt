@@ -1,0 +1,1776 @@
+SCIFI DAQ / CONTROL SOFTWARE - STATUS AND PROPOSAL FOR MARIUS
+================================================================
+
+Working notes for a conversation with Marius Köppel when he's back from
+vacation. Personal, not polished prose - a scrupulous save of everything
+gathered so far so nothing gets lost before that conversation happens.
+Draws on scifi-userfiles/docs/HOW_IT_WORKS.txt (the Python-side
+implementation detail) and the auto-memory project files
+(project_marius_proposal.md especially) for the full detail behind each
+point below. Moved here from scifi-userfiles/docs/SCIFI_DAQ.txt on
+2026-07-17 to sit alongside the other sequencer_scripts docs
+(hackathon.txt / scifi_code_design.txt / implementation.txt) - content
+otherwise unchanged except section 2.5, which was a straight duplicate
+of hackathon.txt section 11 and has been replaced with a pointer there.
+
+
+0) Why this matters now - the real deadline
+------------------------------------------------------------------
+The whole Mu3e detector is being assembled right now. October 2026 is
+when the whole experiment starts - the first real, proper physics run.
+This is not a "clean up when there's time" project. The control
+software (PySequencer scripts + whatever control page ends up driving
+them) needs to be trustworthy by then.
+
+Framing for the conversation with Marius: this is NOT "fixing bad code."
+Scifi-monitor.js was written when SciFi had 2 LV channels and 4 HV
+channels in a small test setup - hardcoding indices at that scale was
+proportionate, not a mistake. The stale-index bug found this session
+(12 real LV channels vs 2 hardcoded, 32 real HV vs 4 hardcoded) is the
+detector having grown past the scale the code was written for. The
+pixel/VTX group had to build real abstraction (ConfigManager, declarative
+UI descriptors) from day one because pixel has 8 layers - a bigger
+topology forced better architecture early. SciFi is now going through
+the same growth pixel already went through. Open with this framing, not
+a critique of existing code.
+
+
+1) What's already built (Python / PySequencer side)
+------------------------------------------------------------------
+Repo: scifi-userfiles (scripts/ - see this repo's own README.md for the
+authoritative, current layout/rules). Summary as of 2026-07-10:
+
+  - common/scifi_topology.py, common/asic_control.py: shared topology
+    reading and ASIC-config primitives. equipment_prefix-aware
+    (SciFiLabor vs SciFiFibre), auto-detected via
+    detect_equipment_prefix() (seq.odb_exists() - the two trees are
+    mutually exclusive per machine, no human choice needed).
+  - scan_thr/: full threshold-scan task (scan_thr.py, rate_scan.py,
+    threshold_finding.py, root_writer.py, plot_manager.py,
+    apply_thr.py). Optional 0.5/1.5/2.5pe auto-calibration. Auto-detects
+    site. apply_thr.py warns (doesn't skip) on low-confidence
+    calibration rows (chosen_score < 0.55).
+  - scan_vbr/: IV scan + VBR (breakdown voltage) finding
+    (scan_vbr.py, iv_scan.py, vbr_finding.py, root_writer.py,
+    plot_manager.py, apply_vbr.py - DRAFT, not reviewed with Marius).
+    VBR extraction: peak of d(log10 I)/dV, Gaussian-refined, with a
+    confidence check (min_peak_prominence) to reject noise-driven false
+    positives. apply_vbr.py mirrors apply_thr.py's warn-don't-skip
+    pattern.
+  - feb_power.py / lv_power.py / hv_power.py: pure on/off executors for
+    FEB power, SciFi LV (DCDCCrates), SciFi HV. All discover their real
+    channels dynamically (by ODB Names[] pattern), not hardcoded
+    indices - this is what caught the stale-index bug. No per-channel
+    selection - that's explicitly deferred to a future masking editor
+    (see section 3).
+  - DCDCCrates/HV only exist on mu3ebe (no Labor/test copy) - those two
+    scripts (and scan_vbr's HV sweep) can only be tested for real there,
+    coordinated via the beamtime channel.
+
+  Not yet built (from the original ~19-script list agreed with Marius):
+  configure_pll, configure_0pe5/1pe5/2pe5/long/prbs, mask_all_ch/
+  unmask_all_ch, reset_datapath/reset_asics, optimizeRates, sorter_tuning,
+  sorter_scan, create_shift_report/end_of_shift_report. See section 5 for
+  which of these might already be adequately covered by existing manual
+  tools and not need PySequencer automation at all.
+
+
+2) What already exists as manual control pages (found via SSH,
+   mu3ebe live deployment - all read-only investigation)
+------------------------------------------------------------------
+The live /Custom ODB menu (mhttpd) is flatter than assumed - Mu3eDisplay
+is just the event display (a single page), not a category. Real
+top-level categories: Services, DAQ, Pixel, SciFi, Tile, DQM, Farm.
+
+/Custom/SciFi has THREE registered pages:
+  - SciFi-Monitor -> Scifi-monitor.html (the file this whole migration
+    replaces)
+  - SciFi-Control -> scifi.html (a ring-view prototype, partially
+    working)
+  - SciFi-ASICs -> MutrigConfiguration.html (a mature, shared MuTRiG
+    ASIC settings tool - NEW finding, see 2.3)
+
+2.1) Scifi-monitor.js (1021 lines, 32 functions) - deep-read 2026-07-10
+  - Its OWN mask editor (renderGrid()/toggleChannelMask()) is a real,
+    working, correctly-targeted (SciFiLabor) per-channel grid, color-
+    coded by live rate, click-to-edit via MIDAS's own modbvalue elements.
+    Different from and more mature than scifi.html's ring-view mask
+    editor (see 2.2) - don't conflate the two when discussing this with
+    Marius.
+  - create_shift_report()/end_of_shift_report(): a real, working
+    checklist (FEBsOn, SWBOn, LV0/1, HV0/1, IVScan0/1, PllTestDone,
+    RateScan, RateTuning, SorterTuning) + browser-side .txt export.
+    create_shift_report() is the actual origin of the
+    IVStart=50/IVEnd=58/IVIdx0=22/IVIdx1=23 defaults found in
+    SciFiFibre's ShiftReport at the start of this investigation.
+  - optimizeRates(): a COMPLETE, working iterative auto-tuning
+    algorithm - 10 steps, per-channel rate-based tthresh/offset/mask
+    adjustment. The reference implementation for the still-unbuilt
+    optimizeRates script - port this logic, don't redesign from
+    scratch.
+  - sorter_tuning()/sorter_scan()/get_sorter_value(): real per-channel
+    A/B masking test (keep masked only if it's strictly better on
+    sorter efficiency + in-time-fraction) and a real 2D parameter sweep
+    (sorter_delay x lapse_delay, 200 combinations) - same
+    sweep/measure/store shape as our scan_thr/scan_vbr pattern, a good
+    concrete precedent. CAVEAT: sorter_tuning()'s outer loop only runs
+    for sorter=1 (range(1,2) - sorter=0's branch never executes) -
+    looks like a possible incomplete/WIP implementation, only covers
+    half the channel range. ASK Marius whether this is a known gap
+    before treating it as a correct reference.
+  - Both create_shift_report and end_of_shift_report/optimizeRates/
+    sorter_scan write results into ShiftReport-based ODB arrays or
+    generate browser-only downloads - no server-side, shared archive of
+    results the way our .root-file convention gives us.
+
+2.2) scifi.html / scifi.js (647 lines) - "SciFi-Control"
+  - A real, partially-working ring-view prototype: canvas-based US/DS
+    ring drawing with real mouse interaction (hover-highlight,
+    click-select), and a real (if narrow) edit-and-apply flow for
+    tthresh (delta +/- buttons, "set" writes to ODB after a confirm()).
+  - Its masking click handler reads linkmask[FEBID][ASICID] correctly
+    but only does console.log() - not wired to a real ODB write.
+  - Targets /Equipment/ScifiCentral/ and /Equipment/LinksCentral/ - a
+    THIRD equipment-naming variant, different from both SciFiLabor and
+    SciFiFibre. ScifiCentral does NOT exist on mu3ebe (checked directly).
+    LinksCentral DOES exist (see 2.3) - don't assume every *Central name
+    is automatically stale, check each one.
+  - Topology constants (nfebs=24, maxlinks=8, numchannels=32) already
+    assumed close to full-detector scale (24 = 12 modules/ring x 2
+    rings) even though this is apparently ~2-year-old, cosmic-test-beam-
+    era code (per the user's own read, and scifi.css/scifi.html's older
+    mtimes support this for the page wrapper, though scifi.js itself
+    carries a more recent bulk-redeploy timestamp - the JS logic may
+    have been touched more recently than the page around it, without
+    anyone fixing the ScifiCentral staleness).
+  - Reusable if/when a real ring-view page gets built: the ring-drawing
+    geometry code and the edit-delta-then-confirm-then-write flow.
+    NOT reusable: the masking write path (never built), the equipment
+    naming (needs correcting to SciFiLabor/SciFiFibre auto-detection).
+
+2.3) MutrigConfiguration.html (1365 lines) - "SciFi-ASICs" - NEW,
+   not analyzed before this document. Opened 37h before this was
+   written (actively used). A mature, hand-operated MuTRiG ASIC tool:
+  - [DISCARDED 2026-07-20, user decision - not worth tracking] Only
+    ever targets SciFiFibre in its ?page=... switch statement, no
+    SciFiLabor case exists.
+  - Its asicsettings_channel_int/bool arrays are a real, hardware-team-
+    authored (HTML author meta: Niklaus Berger, Simon Corrodi, Konrad
+    Briggl) list of which ASIC fields are considered operator-facing:
+    tthresh, tthresh_sc, tthresh_offset, ethresh, ebias, sipm, sipm_sc,
+    inputbias, pole, ampcom, cml, cml_sc, amonctrl, comp_spi (int) plus
+    mask, tdctest_n, sswitch, delay, pole_en_n, energy_r_en,
+    energy_c_en, cm_sensing_high_r, amon_en_n, edge, edge_cml, recv_all
+    (bool) - worth cross-checking against anything new we build.
+  - Already implements manual equivalents of several planned scripts:
+    mask()/unmask (mask(false)) buttons, reset_datapath/reset_asics/
+    reset_lvds/reset_counters buttons, configure(), readback().
+    ASK MARIUS which of the still-unbuilt 19 scripts are actually still
+    needed as PySequencer automation vs. already adequately served by
+    this manual tool.
+  - Stage-then-commit UX pattern worth copying: mask()/copy()/copyTDC()/
+    dmon_set() only mutate a browser localStorage cache; nothing touches
+    ODB until an explicit "Set ODB" (storeODB()) click. Better than our
+    scripts' immediate-write-or-dry-run-only-preview approach - a real
+    "compose changes, review, then commit" model worth proposing for
+    a future masking editor.
+  - readback() calls a real hardware-level RPC (client "Mu3e DAQ", cmd
+    "read") that reads actual ASIC register values back over SPI - a
+    genuine hardware verification our Python pipeline doesn't do
+    anywhere (we only confirm the frontend ACKed MutrigConfig, not that
+    specific register values are correct on the chip).
+  - **THE REAL QUESTION #1** - MuTRiG2 vs MuTRiG3 variant awareness
+    (is_mutrig_3 flag, mt2store/mt3store field toggling) - our Python
+    side has no equivalent concept at all. ASK Marius whether SciFi
+    ASICs are uniformly one generation or whether this matters here
+    too. Full research context: section 4.3/topology.txt section
+    3 - working theory is is_mutrig_3 tracks SMB2-vs-SMB3 board
+    version (a per-deployment flag), not per-FEB/per-ASIC mixing, but
+    unconfirmed.
+  - [RECLASSIFIED 2026-07-20, user decision: not a Marius question -
+    something WE can improve ourselves in our own future tooling, same
+    bucket as the item below] A real safety gate (disable Configure/
+    Readback while a run is active) EXISTS in the code but is commented
+    out / disabled right now.
+  - [RECLASSIFIED 2026-07-20, user decision: same as above - our own
+    future improvement, not a question for Marius] storeODB() writes
+    ONE CHANNEL AT A TIME (a separate RPC call per channel, thousands
+    of round trips at full scale) - our common/asic_control.
+    set_array() bulk-array-write approach is already more efficient;
+    worth carrying that pattern into whatever masking/config editor we
+    build, rather than copying this page's one-at-a-time behaviour.
+  - **THE REAL QUESTION #2** - queries topology via
+    /Equipment/LinksCentral/Settings (not LinksFibre) - confirmed via
+    direct SSH that LinksCentral DOES exist on mu3ebe (real FEBType/
+    ASICsPerModule/LinkMask/LinkFEB arrays), so this is NOT the same
+    kind of stale reference as ScifiCentral. There are at least two
+    real equipment-tree naming families in play (per-subdetector-
+    instance: SciFiFibre/LinksFibre/SwitchingFibre; and a separate
+    *Central family: LinksCentral/PixelsCentral/SwitchingCentral). ASK
+    MARIUS what the actual relationship is between the *Fibre and
+    *Central trees (does Central aggregate across subdetectors?) -
+    don't guess. Full research context: section 4.3/topology.txt
+    section 2.1 - confirmed live that neither SciFiCentral nor
+    ScifiCentral exists in any spelling, only LinksCentral does, with
+    no SciFi-specific ASIC subtree under it.
+
+2.4) Pixel's VTX_Generic.html ("Pixel Control", ~30 companion JS files)
+  - IMPORTANT: this is under ACTIVE, CURRENT development, not 2024
+    legacy - confirmed via live file mtimes (VTX_Generic.html itself
+    modified 2026-07-06, VTX_GenericWatchdog.js 2026-07-07, i.e. days
+    before this document was written). Only pixel_on_off.html/.js are
+    genuinely frozen since 2024-05-21. Don't describe this page as
+    "old cosmic-run tooling" to Marius - it's being worked on right now.
+    (Oddity worth asking about: ODB shows this page hasn't been
+    *opened* via the menu in >99 days despite the recent edits - maybe
+    edited but not yet used for real, or opened via some other path.)
+  - Genuinely good patterns worth proposing for a SciFi frontend:
+    - ConfigManager JS singleton: centralizes ODB paths + topology +
+      ~100 get_*_path() methods - the frontend analogue of
+      common/scifi_topology.py. Most (not all) other files funnel
+      through it.
+    - Declarative descriptor arrays (e.g. power_indicators) + ONE
+      generic renderer (create_div_from_userdict) instead of hand-
+      writing each UI element. Reused for Power (table row + detail
+      dialog) and LVDS links (Indicator + Dialog classes).
+    - A small, generic, ARIA-correct tabbed-UI shell (VTX_GenericTabs.js)
+      - zero domain knowledge, portable as-is.
+    - A real validate-before-launch safety gate
+      (check_watchdog_validate()) gating destructive sequencer launches
+      on a live watchdog condition.
+  - Real cruft too - don't oversell this as a finished reference:
+    - VTX_GenericTuning_old.js: dead file, not included in the page's
+      <script> list anymore, but defines the SAME global function names
+      as the current Tuning.js file - would silently clobber it if ever
+      re-included.
+    - ~285 lines explicitly marked "OLD AND DEPRACATED" [sic] left
+      inside VTX_GenericPowerTable.js, never called.
+    - Hardcoded topology/index constants OUTSIDE ConfigManager in
+      several places - including the page's own emergency "turn off
+      all power" button, which iterates raw hardcoded HV channel index
+      ranges instead of using the centralized topology. The exact same
+      smell the SciFi migration is fixing, present in the single most
+      safety-critical code path on the page.
+    - ~17 FIXME/TOFIX/DEPRECATED markers scattered around.
+  - The pixel frontend has ZERO connection to PySequencer or the mu3e
+    Python package - it only launches the OLD native MIDAS .msl
+    Sequencer (execute_sequencer_script_core(), writing /Sequencer/
+    State/Path+Filename+Command/Start script). Meanwhile
+    pixels/legacy_2025/pysequencer/*.py files DO `from mu3e.mapping
+    import Mapping`, `from mu3e.chip_handler import ChipHandler` etc -
+    a real installed Python package with a more mature class-based
+    architecture than our common/ folder, but that package is NEVER
+    called from the UI. Several .py files sit right next to their .msl
+    twin with matching names - evidence of an in-progress,
+    not-yet-cut-over migration on the pixel side too.
+  - TAKEAWAY FOR MARIUS: don't propose "copy pixel's architecture
+    because it's finished and proven" - propose "pixel has
+    independently solved DIFFERENT pieces of our same problem (mature
+    Python package on their side, cleaner frontend decomposition on
+    their side) - worth comparing notes and aligning effort instead of
+    both groups reinventing separately." A collaboration pitch, not a
+    copy-this pitch.
+
+2.5) Pixel custom page design notes - MOVED to hackathon.txt section 11
+   (2026-07-17 pixel-team meeting brainstorm). Kept as a cross-reference
+   there, not duplicated here anymore - see docs/old/hackathon.txt (one
+   level up from this file, then old/). Still relevant to section 3
+   below: it's effectively
+   pixel's independent take on the same "Page 2 - technical/control
+   page" problem SciFi is proposing.
+
+
+3) Proposed control-page architecture (still just an idea, not started)
+------------------------------------------------------------------
+STATUS UPDATE 2026-07-24: no longer "just an idea" - both Page 1
+(Geometry) and Page 2 (Power/Readout/Calibration) now exist as full,
+detailed mockups (docs/page/custom_page_mockup_v2.html,
+docs/page/geometry_view_mockup.html), reviewed and signed off by
+Marius (2026-07-23 call, see LOGBOOK.md), with a matching per-field
+INPUT/OUTPUT reference for each (docs/page/page_io_reference.txt,
+docs/page/geometry_page_io_reference.txt - the latter filled in
+2026-07-24).
+What's still genuinely "not started": the REAL implementation (a real
+MIDAS custom page wired to live ODB/PySequencer) - everything built so
+far is static HTML/JS with synthetic demo data, exactly like the rest
+of this section describes as the plan. See the production-architecture
+clarification just below (two views, ONE single JS/HTML file, not two
+separate mhttpd pages) and the "MOCKUP STATUS" notes further down for
+what's current as of today.
+Core split: backend ("engine") = the PySequencer scripts (mostly built
+already, see section 1) vs frontend ("dashboard") = a page that
+assembles/calls them. Two separate problems, two separate timelines.
+
+De-risking note: PySequencer already ships a generic web UI (file
+browser + auto-generated param form + Start button - what this repo's
+own README's "Quick start" section describes). Shifters can already run
+every script that exists today through that, clunky but functional. The
+custom dashboard is a UX layer on top of something already working, not
+a blocker for October - can be prioritized separately/later if needed.
+
+Proposed TWO-PAGE split (deliberately diverging from pixel's ONE page
+with fixed geometry + tabs for everything):
+
+  CLARIFIED 2026-07-24 (user decision, closes an ambiguity the mockup
+  work exposed): "two-page" here means two conceptual VIEWS/sections,
+  not two separate mhttpd custom-page files/URLs a shifter navigates
+  between - production will be ONE single JS/HTML implementation
+  containing BOTH visualizations together. The mockups built this
+  session as two independent files (docs/page/custom_page_mockup_v2.html
+  for Page 2, docs/page/geometry_view_mockup.html for Page 1), stitched
+  together only via a two-iframe layout (docs/page/merged_view.html)
+  for convenient side-by-side review, are NOT the production
+  architecture - that iframe split was explicitly a mockup-only
+  shortcut, chosen after a real attempt at a true DOM/CSS/JS merge this
+  session found genuine naming collisions between the two files (16
+  colliding CSS class names, several with conflicting meanings - e.g.
+  `.page`/`.detail-row` meant different things in each file; a blanket
+  rename attempt corrupted unrelated tokens like a `for (var k in ...)`
+  loop variable and SVG-path variables). Whoever builds the real single-
+  page implementation will have to do that merge properly (rename/
+  namespace the colliding classes and JS state on purpose, not
+  mechanically) - this session's failed attempt is a useful preview of
+  exactly which names collide.
+
+  Page 1 - geometry page:
+    REVISED 2026-07-22 (user's own call, after the Power/Readout/
+    Calibration mega-section split below was decided): Page 1 is now
+    PURE DIAGNOSTIC, read-only - NOT an editor. Editing masks/parameters
+    happens in the Readout and Calibration mega-sections on Page 2
+    instead (see 3.5's REVISED note); Page 1 only visualizes their
+    current state. The spatial ring/module map (real SciFi topology,
+    US/DS x 12 modules), every possible subdivision shown with
+    color-coded status for all submodules/channels. Click an element to
+    see a detail panel with THAT element's info, aggregated from the
+    OTHER sections rather than editable here: power state (same info
+    already in the Power mega-section), masks/selection/readout info
+    (from the new Readout mega-section), and calibration parameters
+    currently set (from the Calibration mega-section). A scifi.js
+    ring-view draft already exists (see 2.2) as a partial starting point
+    (reusable: ring-drawing geometry; NOT reusable anymore: the
+    edit-confirm-write flow and masking write path, since those concepts
+    moved to Readout - see 3.5).
+    Note the granularity mismatch to design around: a "module" maps to
+    1 LV channel SHARED with its pair-partner, up to 2 HV channels
+    (Top/Bottom), and its own slice of ASIC/channels on a FEB - the
+    panel needs to make shared resources explicit, not pretend each
+    module is fully independent.
+    The real DAB/FEB/module/ASIC/channel modularity this page's
+    granularity depends on is now mapped precisely (2026-07-20, cross-
+    checked against Mu3eSpecBook.pdf and live ODB) - see
+    topology.txt in docs/ (one level up from this file) for the full reference
+    (counts, ODB field names, the physical vs ODB indexing distinction).
+    This was the direct blocker noted in todo.txt section 3; it's
+    resolved now, Page 1's design can proceed on that basis.
+
+    BUILT 2026-07-24 (docs/page/geometry_view_mockup.html, from
+    scratch - the scifi.js ring-view draft mentioned above was NOT
+    reused in the end, this was built fresh against Mu3e Spec Book
+    Figure 6.1/6.2 directly): US and DS rings stacked, each a full
+    360-degree layout of that side's 12 modules, 6 super-modules (2
+    consecutive modules each), 4 ASIC dots per module, matching the
+    Spec Book's numbering exactly - including that US/DS are mirror
+    images with opposite rotational sense (derived and verified
+    programmatically this session). Three-level color encoding: module
+    dot fill = LinkStatus, module dot stroke = HV enabled/on state, ASIC
+    dot fill = ASICMask enabled/disabled, ASIC dot stroke = channel
+    activity (all/some/none unmasked), SM health dot = aggregated
+    FEB/LV health. Click hierarchy confirmed by the user and built
+    exactly as specified: clicking a super-module dot shows only
+    SM-level Power info (FEB/LV/DCDC crate); clicking a specific module
+    ADDS module-level info (HV, Readout module summary + per-ASIC rows,
+    Calibration eligibility) on top of the SM info, cumulative not
+    replacing; clicking an ASIC dot adds that ASIC's 32-channel grid,
+    expanded inline under its own row (independent per-ASIC open/close
+    state, not mutually exclusive) - re-clicking an open ASIC collapses
+    it. "Module detail" header is itself clickable (added 2026-07-24) to
+    close the whole panel back to its empty placeholder state. A full
+    completeness audit against page_io_reference.txt (user's own
+    request: "guarda se manca qualcosa") added several previously-
+    missing fields (FEB power monitoring, LV present/adjust/sense/temp/
+    fault-flags, HV channel name/index/voltage, DCDC crate Enabled/
+    Hosts, Readout's module-level summary row before the per-ASIC rows,
+    ASIC number in channel tooltips) and confirmed several deliberate
+    exclusions (no Safety Panel - user declined when asked, keeping
+    Page 1's scope narrow; no redundant text duplicating what a dot's
+    color already shows). Matching per-field reference:
+    geometry_page_io_reference.txt (filled in 2026-07-24, cross-
+    references page_io_reference.txt throughout rather than
+    re-deriving the same ODB sources).
+    BUG FOUND AND FIXED 2026-07-24, same root cause in BOTH this file
+    and custom_page_mockup_v2.html: ASIC/channel data was cascade-
+    masked/disabled only when a module's LinkStatus was Disabled -
+    Fault and Unknown were incorrectly treated as fully enabled/
+    reachable. Fixed to gate on LinkStatus === "OK" specifically,
+    matching the GATE HIERARCHY note in page_io_reference.txt (acting
+    on a module with ANY non-OK link status is meaningless, not just
+    Disabled).
+
+    FRESH ODB DUMP CHECK, 2026-07-24 (docs/odb_240726_162931.json,
+    user: "in docs c'è il nuovo odb se vuoi aggiornare") - two concrete
+    findings, both acted on:
+    1. feb_index vs link_feb, previously "NOT YET VERIFIED" wherever it
+       came up in page_io_reference.txt/geometry_page_io_reference.txt,
+       is now CONFIRMED: LinksFibre/Variables/LinkStatus has array
+       length 12 (same as every other array in that equipment tree),
+       which rules out link_feb indexing (global IDs run 144-155,
+       would need length >=156) - it's feb_index. Different equipment
+       tree from FEBCrate[]/FEBSlot[] (topology.txt section 4b, already
+       proven link_feb-indexed back on 2026-07-20) - two separate
+       questions, both now closed, not a contradiction.
+    2. The real commissioned FEBs today are "US SM 0" (7/8 ASICs, one
+       disabled) and "US SM 1" (8/8 ASICs) - NOT "US SM 2", which both
+       mockups had used as their illustrative wired/demo module.
+       custom_page_mockup_v2.html's febs table updated: US SM 0/US SM 1
+       now on+OK (with real crate/slot from FEBCrate[]/FEBSlot[], 0/11
+       and 0/12), DS SM 2 shows Fault (matches real LinkStatus=3 there,
+       the only non-Disabled entry in the whole live dump), everything
+       else Disabled. vbrByModule moved to "US SM 1 · Mod 0".
+       geometry_view_mockup.html's isCustomDemo (modNum===2) needed NO
+       change - see the ring-label bug fix just below for why it was
+       already effectively on the right SM.
+
+    BUG FOUND AND FIXED 2026-07-24, geometry_view_mockup.html only
+    (found while cross-checking the SM0/SM1 update above): the ring's
+    SM label was computed from RING POSITION (Math.floor(p/2)), not
+    from the real module number (Math.floor(modNum/2)) - systematically
+    off by one on the US side, differently-but-also-wrong on DS,
+    because the US ring starts at module 2 (not 0) to match the Spec
+    Book figure. Verified by direct computation (Python) before fixing:
+    100% mismatch across all 12 US positions. Effect: the wrong SM
+    number/arc/FEB info was shown, and clicking a super-module health
+    dot loaded the wrong FEB from the Power side's data. Fixed in two
+    places (buildModules()'s own smIndex, and renderRing()'s SM-arc
+    loop, renamed to pairIndex there to keep "which arc to draw" and
+    "what SM number labels it" conceptually separate). Fortunate
+    consequence: isCustomDemo's modNum===2 check, which pre-fix
+    resolved to the wrong label "US SM 0", now correctly resolves to
+    "US SM 1" - one of the two real commissioned FEBs from finding 2
+    above - without needing to move the flag at all.
+
+    RELATED BUG FOUND AND FIXED 2026-07-24, same file (user: "fissa
+    anche il bug per-FEB/per-modulo... visto che l'override diventerebbe
+    per SM non per modulo"): the per-module LinkStatus overrides
+    (if modNum===4, ===9, etc.) could assign DIFFERENT LinkStatus to
+    the two modules of the SAME SM/FEB - a real internal-consistency
+    bug, since LinkStatus is per-FEB (topology.txt), not per-module.
+    Fixed by gating the overrides on smIndex instead of modNum, so both
+    modules of an SM always share one value - verified by direct
+    computation that every SM pair now matches on both sides. Explicitly
+    NOT reconciled with custom_page_mockup_v2.html's own (very
+    different) per-SM LinkStatus scheme - user's own call: "fa niente
+    se sono disallineati per quanto riguarda i SM", the two mockups are
+    allowed to disagree on WHICH SMs are Fault/Disabled/Unknown, only
+    the per-FEB internal-consistency bug needed fixing.
+
+  Page 2 - technical/control page:
+    NOT geometric - modeled on pixel's tab + ConfigManager + declarative
+    descriptor pattern, but explicitly WITHOUT the geometry widget (page
+    1's job entirely). Every button must programmatically drive
+    PySequencer (write State/Path+Filename+params, trigger Start) -
+    NOT require the shifter to navigate PySequencer's generic file
+    browser per script. Meant to keep growing as Marius adds more
+    scripts over time without cramming more tabs onto an
+    already-geometry-heavy page.
+    RESOLVED 2026-07-22 (read midas/python/midas/sequencer.py locally,
+    ~2129 lines, SequenceRunner class): YES, PySequencer exposes exactly
+    this ODB-driven interface. A JS page can drive a script end-to-end
+    with three writes, no navigation of the generic file browser:
+      1. /PySequencer/State/Path + /PySequencer/State/Filename - which
+         script to run.
+      2. /PySequencer/Param/Value/<name> - one write per parameter,
+         BEFORE starting.
+      3. /PySequencer/Command/Start script = true - triggers it.
+    Key mechanism (sequencer.py run() line 2083-2086 + the ParamInfo
+    handling in update_state_in_odb() line 1729-1744): triggering "Start
+    script" makes run_sequence(load_from_odb=True) reload the script
+    fresh and re-run its define_params(), but register_param() checks
+    whether the param already has a value under /Param/Value in ODB and
+    KEEPS it instead of overwriting with the script's own default - so
+    values the page wrote in step 2 survive the reload. No need to go
+    through "Load new file" separately first.
+    Confirmed (grep, zero hits) VTX_Generic.html/*.js never reference
+    "PySequencer" at all - consistent with 2.4's finding that pixel's
+    page only drives the old native Sequencer, not this interface.
+    DECISION: option (a) - Page 2's buttons drive the existing
+    PySequencer scripts (feb_power.py/lv_power.py/hv_power.py/
+    thr_run.py) via this ODB interface, reusing detector/'s safety logic
+    as-is. Option (b) (writing ODB directly from JS, duplicating safety
+    logic in JavaScript) is dropped.
+
+    ADDED 2026-07-21, sharpens why this question matters beyond UX: now
+    that scifi_scripts/core/'s power methods actually exist for real
+    (Feb.turn_on_feb_power()/turn_on_lv(), ScifiHv.turn_on() - see
+    scripts/feb_power.py, lv_power.py, hv_power.py, all just thin
+    PySequencer bridges over core/), there's a real architectural choice
+    for how Page 2's buttons actually act:
+      (a) trigger those existing PySequencer scripts (if the open
+          question above resolves "yes") - reuses core/'s safety logic
+          (e.g. Feb's CrateControllerConnected check) as-is, no
+          duplication.
+      (b) write ODB directly from JS instead, the way pixel's
+          VTX_Generic.html does today (confirmed - see section 2.4) -
+          would mean re-implementing that same safety logic a second
+          time in JavaScript, with the duplication-drift risk that
+          implies (Python and JS silently diverging over time).
+    Not decided - deliberately deferred until Page 2 design actually
+    starts (todo.txt section 5's custom-page item is still on hold,
+    comes after core/'s Feb/Asic/Channel work, which is now well
+    underway). Noting the tradeoff here now so it isn't rediscovered
+    from scratch later.
+
+    USER'S OWN VISION, added 2026-07-21 (during the calibrations/
+    scan_thr work - not yet a decision, just the intent to carry
+    forward): Page 2 should have a "Calibration" section where the user
+    sets parameters either per-channel or auto-applied uniformly across
+    entire sections/groups, ending in a "Start Calibration" button that
+    launches the script, which then reads ALL its parameters from ODB -
+    not from PySequencer's own register_param()/get_param() form. I.e.
+    the page becomes the one true place parameters get decided; the
+    PySequencer param form scripts/thr_scan.py exposes today
+    (rate_scan_start, offset_end, noisy_rate_threshold, ...) would become
+    a manual/expert fallback interface, not the primary one.
+    Direct consequence for core/'s design, already true today and worth
+    keeping true going forward: SciFiDetector.write_channel_field_bulk()
+    already supports different values at different channel indices in
+    ONE write (built more general than asic_control.py's uniform
+    set_array() specifically for this reason - see docs/todo.txt section
+    B). What's NOT yet able to support real per-channel-varying SCAN
+    RANGES (not just per-channel target values) is calibrations/
+    scan_thr.py's ScanThr.execute() loop itself - it assumes one shared
+    offset x threshold grid applied identically to every channel each
+    step. Per-channel-different ranges would need a real loop redesign
+    (e.g. per-channel state instead of one global grid), not a parameter
+    tweak - flagged here for whenever Page 2's "per-channel calibration
+    parameters" idea actually gets built.
+    NOT changing anything today: scripts/thr_scan.py stays as a direct
+    PySequencer-param-based port for now (user's own call - "per ora
+    possiamo lasciarli così, semplicemente porting da quelli vecchi").
+
+
+3.1) Page 2 - POWER SECTION: concrete design (2026-07-22)
+------------------------------------------------------------------
+Scope: today's slice is a spec only, no code (that's handed off to
+whoever implements the frontend) - covers the three power scripts that
+exist today (scripts/{feb_power,lv_power,hv_power}.py). Calibration
+section (thr_run.py) is separate, later work (todo.txt section 5 item 3).
+Not geometric - page 2's job per the two-page split above.
+
+Layout: one "Power" tab inside page 2's tab shell (reuse
+VTX_GenericTabs.js as-is, per 2.4 - zero domain knowledge, portable).
+EXTENDED 2026-07-30: a fourth tab, "Supply", holds the two equipment
+trees upstream of all three - TDKStaging and PowerDistStaging - which
+had no home in this design at all. SciFi rows only; the Pixel channels
+of the TDK and the Tile channels of the distribution are not shown.
+Power distribution is grouped US/DS like every other table here, with
+presets for the crate mains, the 12 SMB pairs, and HV+weather.
+See chain_and_monitoring.txt sections 1, 14 and 16.
+Three stacked tables, one per category (FEB / LV / HV), each mirroring
+pixel's PowerCategory -> PowerTable -> PowerRow decomposition (2.4): one
+row per Feb (FEB/LV tables) or per active HV channel (HV table).
+IMPORTANT: row counts are NOT fixed constants to hardcode in the page -
+FEB/LV rows come from LinksFibre's FEBType==3 entries (currently 12, but
+driven by ODB, not a page-side constant) and HV rows come from a live
+Names[] scan for the "SciFi CH" substring (currently up to 24) - mirror
+detector/scifi.py's __build_febs_from_odb() / detector/hv.py's
+__build_channels() logic on the frontend (read the same arrays), don't
+just assume the current counts stay fixed.
+
+Row status columns (READ-ONLY monitoring, refreshed on a poll/odb_watch,
+independent from any button - these are plain ODB reads, not something
+that requires running a script):
+  FEB power table: FEBName, feb_index, link_feb, crate/slot (from
+    FEBCrates/Settings/FEBCrate[link_feb]+FEBSlot[link_feb], or
+    "unmapped" if either equals 255), FEBPower[] on/off,
+    CrateControllerConnected[crate], active channel count (len of
+    Feb.get_active_channels(), already exists - added 2026-07-22, mirrors
+    pixel's "Input ch. on" column so a shifter can see at a glance which
+    Febs are only partially enabled), plus get_power_monitoring()'s
+    fields (crate_voltage_20/3_3/5, crate_cc_temperature,
+    feb_temperature) shown as plain numbers, NOT color-coded pass/fail -
+    no reference "normal" value exists for these anywhere (detector/
+    feb.py's own docstring is explicit about this), don't invent a
+    threshold in JS.
+    SUPERSEDED 2026-07-30, and by a lot: those five fields are the CRATE
+    side only (FEBCrates/Variables/SCFC). The FEB itself exposes 26 more
+    over its optical link - LinksFibre/Variables/SFFE: 6 temperatures, 5
+    voltages, both Fireflys with RX1-4 optical powers and alarm words -
+    plus five datapath flags, LOL/error counters and three firmware
+    words. v3's FEB row expands into THREE source-labelled blocks
+    instead of one flat list, because the crate side reads with the FEB
+    dead and the FEB side only reads once it is powered and linked.
+    Both carry a "20 V" and a "3.3 V" and both carry a FEB temperature -
+    different rails, different sensors, hence the labels. The
+    no-invented-thresholds rule above still holds and extends to all of
+    them; only the datapath booleans are colour-coded, being real
+    hardware flags. Detail: chain_and_monitoring.txt sections 4a-4d, 13.
+  LV table (mirrors the FEB row list - a Feb can have "no LV supply
+    assigned" if its FEBName doesn't parse as "<side> SM <n>", show that
+    as a distinct row state, not a blank/error): LV channel name
+    (SMB_<side>_<n>-<n+1>), on/off, active channel count (same field as
+    the FEB table above - a Feb's LV rail powers exactly its own
+    channels, so the count is identical, just useful to see next to LV
+    state too), Current/Adjust/Sense/Temperature as raw numbers, plus the
+    7 real boolean fault flags DCDCPowerSupply checks (Alert, Power Good,
+    Over Temperature, Vin Under-voltage, Over Current, Vout Over-voltage,
+    Interlock) - THESE are real hardware flags, safe to color-code
+    red/green directly, unlike the current/voltage numbers next to them.
+    NOTE 2026-07-22 (renamed from "Voltage"): what this column shows is
+    literally the readback of the adjustable setpoint - DCDCPowerSupply's
+    "voltage" readable reads Variables/"Voltage Adjust"[ch], the hardware
+    echo of Settings/Adjust[ch] (common_scripts/common/power_supply.py) -
+    the same field pixel's own table calls "Adjust" (its values like
+    "-3.00 %" are this same setpoint, not a separately-measured line
+    voltage). Renamed here to avoid implying it's an independent
+    measurement distinct from the setpoint - it isn't. See the new
+    "Adjust LV voltage" action below for the write side of this same
+    field.
+  HV table, EXPANDED 2026-07-22 (user's own proposal - raw channels now,
+    rename once the ordered mapping is known): channel name AS-IS from
+    HV/Settings/Names (e.g. "US Top SciFi CH3" - raw hardware label, not
+    reformatted), index, "FEB (once mapped)" - an empty/placeholder
+    column from day one, populated later once the ordered HV-channel-to-
+    SMB list is ever confirmed (topology.txt section 4c - still open with
+    Marius, only the total count (24) is confirmed 1:1, not the order) -
+    adding the column now means the table doesn't need a redesign later,
+    just a value fill-in.
+    FILLED IN 2026-07-30: the user supplied the ordered map, topology.txt
+    4c is now RESOLVED and the column carries a real value ("US SM 2 M5")
+    in custom_page_mockup_v3.html. The bet above paid off exactly as
+    intended - a value fill-in, no redesign. Map and its consequences:
+    docs/old/chain_and_monitoring.txt section 15. Then Output On, Enabled, Demand, Current,
+    Voltage - same rule as LV: Output On/Enabled are real flags
+    (color-code freely), Demand/Current/Voltage are raw numbers only. No
+    active-channel-count column here - HV channels aren't grouped by Feb
+    (detector/hv.py's ScifiHv is deliberately Feb-independent, see 3's HV
+    discussion), so there's no smaller unit to count within a channel.
+    NO "Sel." checkbox column TODAY - unlike FEB/LV, ScifiHv has no
+    per-channel turn_on_channel()/turn_off_channel() yet (see the GAP
+    status below), so a per-row selection would have nothing to attach
+    to; the table stays read-only at row level, actions remain "HV ON
+    all"/"HV OFF all" only, until that detector/ code exists. Sort rows
+    by ODB index ascending (not by name) - keeps row order stable across
+    the eventual FEB-mapping rename, so a shifter's mental map of "which
+    row is which" doesn't shift the day the mapping arrives.
+    USER REQUEST, 2026-07-22: per-channel selection for HV is WANTED,
+    same as FEB and LV - not just a hypothetical extension, an explicit
+    goal. Once detector/hv.py gets turn_on_channel()/turn_off_channel(),
+    HV should get the same "Sel." + batch-action pattern as FEB/LV (3.1's
+    granularity model above), not stay bulk-only permanently. Elevates
+    the existing "HV power: STILL BLOCKED" GAP status entry below from an
+    incidental architectural gap to a stated requirement - the detector/
+    hv.py work is a precondition for something the user actually wants
+    built, not just a nice-to-have someone might pick up eventually.
+    DECLINED 2026-07-23 (user's own call, while building the mockup's
+    functional Power buttons): a page control for HV's Settings/
+    Enabled[] flag (a real, distinct gate from Output On/Demand, but with
+    no write path built anywhere in this codebase today) and for a
+    DCDCCrates crate-level on/off (DCDCCrates has no crate-level power
+    control at all in the real ODB tree, only per-channel - see 3.2's
+    Crate On/Reset/Clear Fault block, which is status+reset, not a power
+    switch) were both considered and rejected, not just left unbuilt -
+    reason given was the real safety exposure of writing to shared,
+    cross-subdetector infrastructure from a SciFi-specific page. Not
+    reflected as a code TODO anywhere; noted here so it isn't proposed
+    again without remembering it was already explicitly turned down.
+    PARTIALLY REOPENED 2026-07-30 - full reasoning in
+    docs/old/chain_and_monitoring.txt section 3, read that before
+    acting on this paragraph. Short version: the DCDCCrates half of this
+    entry rested on a factual error. DCDCCrates/Settings/"Crate On" IS a
+    crate-level switch (a list of 8, one per Device Names entry
+    DCDC_C_1..DCDC_C_8), and it was already present in the 24/07 dump -
+    so "no crate-level power control at all in the real ODB tree" is
+    wrong. The SAFETY half stands and is now quantified: not one of the
+    8 crates is SciFi-only (worst case DCDC_C_7 - one SciFi channel
+    against 3 pixel modules and 2 tile). Replaced 2026-07-30 by a rule
+    rather than a blanket refusal: per-channel with unambiguously SciFi
+    names => freely writable; per-crate or any shared unit => writable
+    only behind a confirmation naming the non-SciFi channels affected.
+    The HV Settings/Enabled[] half of this entry is NOT reopened.
+  Rule of thumb driving the above: do NOT reimplement the UNVERIFIED
+  expected_current/tolerance pass-fail math (feb_power.py's
+  check_lv_status(), hv_power.py's check_status()) a second time in JS -
+  those constants are explicitly flagged UNVERIFIED against real hardware
+  in three separate places in the Python source already; duplicating them
+  in JS risks a silent drift between the two copies. The real verdict for
+  a given action is whatever the script's own run reported (see next
+  paragraph) - the row's raw numbers are for context, not judgement.
+
+Actions per category, each driving its script via the ODB interface
+confirmed in section 3 above (State/Path+Filename -> Param/Value/* ->
+Command/"Start script" = true):
+  GRANULARITY MODEL, DECIDED 2026-07-22 (answers "what if we want extreme
+  per-row control?"): a "Sel." checkbox column on FEB and LV tables (one
+  checkbox per row, mirrors pixel's own "Sel." column exactly - see the
+  first reference screenshot) plus one shared action button per operation
+  ("Power ON selected FEBs" instead of "Power ON all FEBs", etc.) applied
+  only to the checked rows - NOT an independent immediate button inside
+  every single row. Two reasons this is the recommended model over a
+  true per-row live toggle: (1) /PySequencer is a single shared sequencer
+  instance (concurrency note below) - N independent immediate per-row
+  actions would mean N sequential script launches, not parallel, and a
+  page that fires them on every click needs its own launch queue; a
+  selection + one batch launch avoids that entirely. (2) it matches how
+  Marius described control-page write access - "limited to a handful of
+  channels" (section 4.5) reads as a deliberate, bounded selection, not
+  an unrestricted per-item free-for-all.
+  EXTENDED 2026-07-22 (user request): every "Sel." column gets a
+  select-all / deselect-all control (header checkbox or a small link -
+  implementer's choice of exact widget) - FEB, LV, HV (once it gets one,
+  see below), AND the DCDC crate block (3.2 below, re-added same day
+  after being tried and reverted once already - see that section).
+  Pure UI, no Python change needed.
+  Backend readiness differs by category, and the page can't build ahead
+  of the Python side: FEB power and LV power are READY today - Feb.
+  turn_on_feb_power()/turn_off_feb_power()/turn_on_lv()/turn_off_lv() are
+  already per-Feb methods in detector/feb.py, so a script only needs a
+  new param carrying the list of selected feb_index values to loop over
+  (instead of always looping over every Feb) - a script change, not a
+  detector/ change. HV power is NOT ready - detector/hv.py's ScifiHv only
+  exposes the bulk turn_on()/turn_off() loop, no turn_on_channel(index,
+  voltage)/turn_off_channel(index) - real new Python code needed there
+  before HV can support row selection at all (tracked as a todo.txt code
+  TODO, not built this session).
+  FEB power: "Power ON selected FEBs" / "Power OFF selected FEBs"
+    buttons (falls back to every Feb if nothing is checked - TBD UX
+    choice, or require at least one selection - implementer's call).
+    Params written: power_on (True/False per button), target_febs (list
+    of selected feb_index - NEW param, not in today's script), is_odb_
+    available and can_send_commands_to_odb ALWAYS True (see note below).
+  LV power: "LV ON selected" / "LV OFF selected" buttons + an editable
+    param row (settle_seconds, expected_current_a, current_tolerance_a -
+    pre-filled with the script's own defaults 5s / 6.5A / 3.0A,
+    UNVERIFIED, editable by whoever is running it). Same new target_febs
+    param as FEB power.
+    REVERSED AGAIN 2026-07-22 (same day - dropped, then brought back):
+    "Adjust selected" IS an action after all - user's explicit call,
+    built 1:1 the same way as HV's per-row-demand-plus-bulk-set pattern
+    (3.3 below): the LV table's "Adjust" column becomes an editable
+    input per row (not read-only telemetry anymore), PLUS a shared
+    bulk control (one value field + "Adjust selected" button) next to
+    "LV off selected", writing that one value to every selected row's
+    Adjust field at once. Both coexist - per-row for when rows need
+    different values, bulk for setting the same value across a
+    selection quickly.
+    EXPLICITLY ACCEPTED, NOT AN OVERSIGHT: unlike HV's Demand (which has
+    a real hardware-level bounds check in mdev_hv4.cxx, see 3.3), LV's
+    Adjust has NO equivalent validation anywhere (mdev_pdcc.cxx's watch
+    callback passes the value straight to MSCB, no clamp) - flagged
+    explicitly to the user before this decision, who chose to proceed
+    without any validation regardless ("non importa se non ho un
+    controllo"). No client-side clamp is added either (the earlier
+    -9..+21/step 1.5 bounds from DCDCPowerSupply's class attributes are
+    NOT enforced by the page's input field this time - a deliberate
+    choice, not the same as the earlier "client clamp is UX-only, real
+    safety is server-side" convention used everywhere else on this page,
+    because here there IS no server-side safety net either). Mechanism:
+    same 3-write ODB path as everything else (State/Path+Filename ->
+    Param/Value/* -> Command/"Start script"), or - following HV's own
+    resolution above - potentially a direct per-row ODB write, since
+    both share the "no script validation needed" property now (for
+    Adjust specifically because none was ever built, not because a
+    frontend-level check exists like HV's).
+    The DCDCPowerSupply.set_voltage() path bug found earlier today
+    (writes to the wrong, 40-element Settings/Adjust[ch] instead of the
+    real 128-element Variables/"Voltage Adjust"[ch]) is ACTIVE AGAIN as
+    a blocker, now that the action exists again - see KNOWN BUGS/GAP
+    STATUS below, un-reverting yesterday's "kept for the record only"
+    downgrade.
+  ADDED 2026-07-22: DCDC crate status block (LV tab, below the per-Feb
+    table - a separate, smaller list, NOT another column on the per-Feb
+    rows): while checking the full DCDCCrates ODB tree for anything else
+    reusable (triggered by "have we maxed out LV"), found Crate On,
+    Reset and Clear Fault are all CRATE-level, not per-channel - real ODB
+    array length 8 (confirmed both from the live dump and from mdev_
+    pdcc.cxx's own m_settings[...].resize(m_length) calls), matching
+    Device Names ("DCDC_C_1".."DCDC_C_8"), NOT the 128-long per-channel
+    arrays. A Feb's crate = its LV channel index // 16 ("Channels per
+    device" in ODB, confirmed 16) - e.g. SMB_US_2-3 (channel 6) -> crate
+    0 = DCDC_C_1; SMB_DS_8-9 (channel 121) -> crate 7 = DCDC_C_8. No
+    Feb->crate field exists in detector/feb.py today, but it's a cheap
+    derived value, not a new ODB read.
+    8-row table: crate name (DCDC_C_1..8), Crate On (real flag,
+    color-codable). CONCRETE STAKES: this is the exact field behind the
+    DCDC_C_3 anomaly flagged back on 2026-07-17 (Enabled=True, Crate On=
+    False, implementation.txt section 4) - DCDC_C_3 is crate index 2,
+    which (per the derivation above) hosts SMB_US_8-9 and SMB_US_6-7,
+    two real SciFi FEBs' LV channels. That old, seemingly pixel-side
+    finding directly affects SciFi hardware - previously invisible on
+    this page, now it won't be.
+    Actions: BOTH per-row INLINE "Reset"/"Clear Fault" buttons AND a
+    "Sel." column + select-all + bulk "Reset selected"/"Clear Fault
+    selected" buttons. RE-ADDED 2026-07-22, same day, user's own explicit
+    call, reversing the REVERTED note directly below (kept for the
+    reasoning trail, not deleted): built 1:1 the same shape as LV's own
+    Adjust and HV's Demand (per-row control PLUS a bulk equivalent,
+    coexisting) - here "per-row" is the existing inline button (Reset/
+    Clear Fault aren't editable values, so there's no per-row input field
+    the way Adjust/Demand have, just the existing inline trigger), and
+    the bulk equivalent is the new Sel.+batch pair. The earlier objection
+    (crate-controller-level operations, "reset all crates" isn't a real
+    workflow) was raised and heard, but the user chose to build it
+    anyway - not re-litigated further.
+    ALSO GROUPED 2026-07-22: the 8 crates split into 2 groups, US (DCDC_
+    C_1..4) and DS (DCDC_C_5..8) - matches the real US/DS split (each
+    crate's "hosts" list is entirely one side or the other, confirmed
+    from the crate->SMB hosting already documented above), same
+    collapsible-group pattern as 3.4's FEB/LV/HV grouping, including its
+    own group-level select-all.
+    PREVIOUSLY REVERTED 2026-07-22 (superseded by the above, kept for the
+    reasoning trail): a Sel.+batch addition was tried, then undone after
+    actually looking at what Reset/Clear Fault DO - both are crate-
+    CONTROLLER-level operations (confirmed reading mdev_pdcc.cxx's watch
+    callbacks - Reset/"Clear Fault" pass straight through to the MSCB
+    crate controller's own "Reset"/"ClrFlt" registers, nothing to do with
+    channel power). The objection was that "reset every crate after a
+    full power cycle" doesn't hold up as a real workflow, since a real
+    power cycle already resets the controller electronics at the
+    hardware level - still true as an observation, just not what decided
+    the outcome this time.
+    NOT wired into any script today - Reset/Clear Fault aren't even in
+    DCDCPowerSupply's command dict yet (only turn_on/turn_off/set_voltage
+    /is_on/the 4 read_*/the 7 fault-flag checks exist there - confirmed
+    by reading the class directly). NEW CODE TODO: add "reset" and
+    "clear_fault" entries to DCDCPowerSupply.intialise_commands()
+    (Settings/Reset[crate_index], Settings/"Clear Fault"[crate_index] -
+    both real, confirmed-editable per mdev_pdcc.cxx), plus a small new
+    script/action wiring them up. Not built this session.
+    OPEN DESIGN QUESTION, 2026-07-22 (not just a wiring gap - a real
+    architectural decision to make before that code TODO can be written
+    cleanly): every existing DCDCPowerSupply instance is indexed by
+    _channel_number (0-127, one instance per LV channel - see Feb.
+    __build_lv_supply()). Reset/Clear Fault/Crate On are indexed by
+    CRATE number (0-7) instead - a different, smaller index space the
+    class has no representation for today. Options, not decided:
+      (a) a new, separate small class/object for "one DCDC crate"
+          (its own crate_index, wrapping just Crate On/Reset/Clear
+          Fault) - cleanest separation, but a 2nd class alongside
+          DCDCPowerSupply for the same equipment tree.
+      (b) add crate-level commands to the EXISTING DCDCPowerSupply
+          class/instance, accepting that a per-channel object would
+          also expose crate-level actions (a channel's own reset()
+          would need to internally compute and use its crate index,
+          _channel_number // 16, instead of _channel_number itself for
+          just those 3 commands) - keeps one class, but mixes two index
+          spaces inside it.
+      (c) a crate-level list built once by SciFiDetector/Feb-adjacent
+          code (mirrors how FEBCrates' crate-level state already gets
+          read directly in Feb.py, not through a PowerSupply-style
+          class at all) - skips DCDCPowerSupply entirely for this,
+          consistent with how FEBCrates' own crate/slot handling already
+          works elsewhere in this codebase.
+      Not resolved here - flagging so whoever picks up the Reset/Clear
+      Fault code TODO doesn't have to rediscover this from scratch.
+  HV power: "HV ON all" (needs a demand_voltage input, default 56.0V;
+    client-side should warn/clamp at 60V for UX, but the real refusal is
+    still enforced server-side by ScifiHv.MAX_DEMAND_VOLTAGE - don't rely
+    on the JS clamp as the actual safety gate) / "HV OFF all" buttons +
+    an editable param row (settle_seconds, expected_current_ua,
+    current_tolerance_ua - defaults 10s / 1.5uA / 1.0uA). STAYS bulk-only
+    (no "Sel." column on the HV table) until ScifiHv gets per-channel
+    methods - see the granularity model note above.
+    PER-ROW DEMAND, RESOLVED 2026-07-22 (user asked whether a per-row
+    value could just be written to ODB directly and read back by the
+    script, instead of passed as a script parameter): checked the real
+    HV frontend source (online/backend_pc/midas_fe/hv_control/src/
+    mdev_hv4.cxx, lines 179-193) - writes to Variables/Demand[ch] are
+    ALREADY validated by the frontend itself, independent of who writes
+    them:
+      if (m_voltage_limit[i] > 0 && f > m_voltage_limit[i]) {
+          cm_msg(MERROR, ...); f = m_voltage_limit[i];  // clamps anyway
+      }
+    This is a genuine hardware-level safety net, not something SciFi
+    needs to duplicate. CONCLUSION: once per-channel HV selection exists
+    (5.6 below), per-row demand values do NOT need a script param or a
+    JSON-encoded map at all - the page can write Variables/Demand[ch]
+    directly, per selected channel, before/independent of triggering
+    "HV ON selected" (which then only needs to flip Output On and verify
+    the readback, using whatever Demand values are already sitting in
+    ODB). Contrast with LV: DCDCCrates' own frontend (mdev_pdcc.cxx) has
+    NO equivalent bounds check on Voltage Adjust writes - unlike HV, this
+    stayed relevant, since Adjust as an action came back (3.2 above,
+    reversed same day) - the asymmetry is real and matters again.
+    BULK CONTROL, ADDED 2026-07-22 (user request, same shape for both
+    HV and LV): besides the per-row demand input, add ONE shared value
+    field + a "Set demand for selected" button next to "HV OFF selected"
+    - writes that single value into Variables/Demand[i] for every
+    currently selected row at once (overwriting whatever was in each
+    row's own per-row field). Per-row and bulk coexist: per-row for
+    when channels need different targets, bulk for setting the same
+    value across a selection quickly. Exactly mirrors LV's own "Adjust
+    selected" bulk control (3.2 above) - both tabs now share one
+    identical interaction pattern (per-row input + bulk set-for-
+    selection), the only difference being HV's real safety net at the
+    frontend level and LV's total absence of one.
+  is_odb_available / can_send_commands_to_odb: NOT exposed as page
+  controls anywhere - this is the production control page, not a
+  dry-run/test tool, so both are always written True. Flagging explicitly
+  so whoever builds this doesn't add a checkbox that could let a shifter
+  silently no-op their own action.
+
+Feedback loop: after writing Command/"Start script", poll/watch
+/PySequencer/State/{Running,Finished,Message,Error} - this is exactly the
+seq.msg() text the scripts already produce (done/skipped Feb or channel
+lists, get_power_monitoring() dict, offenders list from check_lv_status/
+check_status). Don't re-derive pass/fail in JS from the raw ODB values;
+show the script's own reported text.
+
+Concurrency note: /PySequencer is a single shared sequencer instance (or
+a named one via the "-c" flag, e.g. /PySequencerTest) - while
+State/Running is true, the page's buttons should disable themselves (or
+queue/warn), since writing Command/"Start script" again mid-run would
+stomp on whatever's already executing. Not SciFi-specific, same risk for
+any consumer of PySequencer.
+
+DECIDED 2026-07-22: Power actions are gated on Service Status (3.2).
+Triggered by re-examining pixel's Watchdog Conditions list (3.2) for
+anything reusable: found that pixel's CalibrationFactory/ActionFactory
+already call a check_shared_equipment() pre-check (TDK + DCDCCrates
+health, common/services.py) before running ANY calibration/action, and
+scifi_scripts' calib_run.py already mirrors this for calibrations - but
+NONE of the three plain power scripts (feb_power.py/lv_power.py/
+hv_power.py, pixel's or SciFi's) have this gate today, even though it's
+exactly the kind of thing Pixel Watchdog's own "TDK: turn off PP if TDK
+supply off while running" condition is meant to catch.
+The authoritative gate MUST live server-side, in Python, inside each
+script's sequence() - calling check_shared_equipment() (or equivalent)
+before doing anything else and returning early via seq.msg(is_error=True)
+if unhealthy - NOT as a JS-side pre-flight guess reading possibly-stale
+ODB, for the exact same duplication-drift reason section 3's option (a)
+vs (b) decision already established (the real safety logic belongs in
+Python once, not reimplemented in JS).
+
+BUILT 2026-07-22, same day (was "NOT YET BUILT" when the paragraph above
+was first written): all 5 scripts (feb_power.py/lv_power.py/hv_power.py/
+thr_run.py/vbr_run.py) now call check_shared_equipment(), factored into
+one free function in common/services.py (CalibrationFactory's own copy
+delegates to it too, no duplication). REFINED same day, caught during a
+self-review ("siamo in linea con l'obiettivo? manca qualcosa?"): the gate
+as first built blocked power_on=False (turning OFF) just as much as
+power_on=True - backwards for a safety gate, since turning off is the
+de-escalation action that should stay available precisely when shared
+equipment is unhealthy. Fixed: feb_power.py/lv_power.py/hv_power.py now
+only gate power_on=True; power_on=False always proceeds. This matters
+directly for THIS page: "Turn Off All SciFi Power" (2.1) and the 3
+per-category "Turn off FEB/LV/HV" buttons must keep working even when
+Service Status (3.2) is red - had the original unconditional gate shipped
+unnoticed, the emergency-stop path would have been silently defeated
+exactly when it was needed most. thr_run.py/vbr_run.py keep the
+unconditional gate (correct there - no on/off duality, pure "start a
+scan" actions).
+The page's own role is purely UX on top of that: the Service Status
+panel (3.2) already shows TDK/DCDCCrates health live, so the page should
+proactively disable/warn on the power-ON buttons specifically when
+Service Status is red, giving the shifter an early signal - the power-OFF
+buttons (including Emergency stop) must never be disabled by Service
+Status, UX or otherwise. Even if the page's display is stale or bypassed,
+the script's own server-side check is what actually refuses to run.
+
+GAP STATUS, updated 2026-07-22 (superseded by the granularity model
+decided above - kept here as a single place tracking exactly what's still
+missing on the Python side, not a duplicate design discussion):
+  FEB power / LV power: PARTIALLY CLOSED - Feb.turn_on_feb_power()/
+    turn_off_feb_power()/turn_on_lv()/turn_off_lv() already exist
+    per-Feb, so per-row selection only needs a script-level target_febs
+    param (scripts/feb_power.py, lv_power.py) - a small, well-understood
+    change, not detector/ work. NOT YET BUILT this session (code TODO).
+  LV Adjust: BACK, BLOCKED ON THE SAME BUG (dropped, then reinstated
+    2026-07-22, same day) - DCDCPowerSupply.set_voltage() still writes
+    to the wrong path (Settings/Adjust[ch], 40 elements, out of bounds
+    for every SciFi channel) instead of Variables/"Voltage Adjust"[ch]
+    (128 elements, the real hardware-connected one). Fix needed before
+    per-row or bulk "Adjust selected" can work at all, for either
+    detector. Explicitly built WITHOUT range validation once the bug is
+    fixed - user's own call, see 3.2 above.
+  LV crate actions (Reset/Clear Fault) + Crate On status: NOT STARTED -
+    genuinely new surface, not in DCDCPowerSupply's command dict at all
+    today. Crate-level (8 crates), not per-channel - see the new block
+    above for the index derivation (channel // 16) and why it uses
+    per-row inline buttons instead of the Sel.+batch pattern.
+  HV power: STILL BLOCKED, and WANTED (user request, 2026-07-22 - not
+    just an architectural nice-to-have) - detector/hv.py's ScifiHv has no
+    per-channel turn_on_channel()/turn_off_channel(), only the bulk loop
+    - real new detector/ code needed before HV can support the same
+    "Sel." pattern FEB/LV will get. Until then HV stays bulk-only on the
+    page (see Actions per category above).
+  None of the above is built this session (docs-only) - all tracked as
+  code TODOs in todo.txt, to close before/alongside whoever implements
+  the frontend from this spec.
+
+ODB paths a "ConfigManager"-equivalent JS module should centralize
+(mirrors common/scifi_topology.py + detector/{feb,hv,scifi}.py's own
+path-building, all listed here so the implementer doesn't need to read
+Python source to find them):
+  /Equipment/LinksFibre/Settings/{FEBType,LinkFEB,NumASICsMax,ASICMask,FEBName}
+  /Equipment/FEBCrates/Settings/{FEBCrate,FEBSlot,CrateControllerEnabled,CrateControllerMSCB}
+  /Equipment/FEBCrates/Variables/{CrateControllerConnected,SCFC}
+  /Equipment/DCDCCrates/... (DCDCPowerSupply's own command dict, common/power_supply.py - same shape pixel's own LV tables already read)
+  /Equipment/HV/Settings/Names
+  /Equipment/HV/Variables/{Demand,Current,Voltage} + Settings/Enabled, Settings/"Output On"
+  /PySequencer/State/{Path,Filename,Running,Finished,Message,Error}
+  /PySequencer/Param/Value/<name>
+  /PySequencer/Command/"Start script"
+Deployed script path (the exact value to write into /PySequencer/
+State/Path+Filename for each of the three scripts) is still a
+placeholder/TBD - scifi_scripts hasn't been pushed+pulled onto mu3ebe yet
+(todo.txt section 3's open infrastructure item).
+
+GEOMETRIC GROUPING, ADDED 2026-07-22 (user request, for finer control
+over selection): a layer of collapsible group headers ABOVE the
+individual rows on FEB, LV, HV, AND the DCDC crate block (extended to
+the latter same day, once it got a "Sel." column back - see 3.2 below).
+Collapsed by default, click a group header to expand/collapse its rows
+at today's row-level granularity.
+NOT the same number of groups on every tab - checked topology.txt
+before assuming uniformity, and the real physical structure differs:
+  FEB / LV: 2 groups, US and DS (6 rows each) - confirmed (LV's 12
+    channels split exactly 6/6, one per FEB). No confirmed Top/Bottom
+    split at the FEB/SMB level exists - not invented here.
+  HV: 4 groups, US Top / US Bottom / DS Top / DS Bottom - confirmed
+    REAL physical HV crates (Mu3eSpecBook.pdf section 3.5.2, Tables
+    3.12-3.15 - "Top"/"Bottom" in the ODB Names[] strings is a genuine
+    crate location, topology.txt's own words, not just a naming
+    convention).
+  CAVEAT surfaced while checking this: HV's raw ODB array is 32
+  channels (8 per crate group), but only 24 are real - the other 8 are
+  provisioned spare boards (confirmed via Marius/spec book, topology.txt)
+  with no confirmed list of which 8. So HV group summaries must NOT
+  show a fixed denominator ("6/8" etc.) - only live counts from real
+  flags ("5 enabled, 3 on") - a never-wired spare channel likely already
+  reads Enabled=False on its own, sidestepping the need to know which
+  index is a spare.
+  DCDC crate block: 2 groups, US (DCDC_C_1..4) and DS (DCDC_C_5..8) -
+  each crate's own "hosts" list (which LV channels it contains) is
+  entirely one side or the other, confirmed from the crate/channel
+  mapping already documented above - a clean split, not invented.
+Per-group summary (computed only from fields already shown per row,
+nothing new): FEB - "N/rows on, N/rows crate connected"; LV - "N/rows
+on, N flagged" (flagged = rows whose fault-flag pill already shows
+"fault"); HV - "N enabled, N on" (no denominator, per the caveat above);
+DCDC crate - "N/rows crate on".
+ADDED 2026-07-22 to LV/HV: total current, summed over "on" rows' own
+Current field (already shown per row - genuinely useful load figure,
+zero new data) - "N/rows on, N flagged, X.XA total" (LV) / "N enabled,
+N on, X.XuA total" (HV). Not added to FEB (no comparable per-row
+current figure) or DCDC crate (only Crate On exists per row there).
+Selection becomes 3 levels: table-wide select-all (existing) -> one
+select-all checkbox per group header (NEW, checks every row in just
+that section) -> per-row select (existing). All three feed the exact
+same action buttons already defined above - no new actions, just more
+ways to build a selection.
+
+TWO IMPLEMENTATION PITFALLS, found while building the mockup - worth
+flagging explicitly so whoever implements the real page doesn't hit the
+same two:
+  (1) The table-wide select-all must ALSO set every group's own
+      select-all checkbox to match (not just the individual row
+      checkboxes) - otherwise clicking "select all" leaves every group
+      header's own checkbox visually unchecked despite every row inside
+      being checked, an inconsistent state. Fix is mechanical (the
+      table-wide handler needs to touch group checkboxes too), but easy
+      to miss if group selection is wired independently from table-wide
+      selection.
+  (2) A group's expand/collapse must NOT touch each row's own detail-
+      panel state (FEB's crate/FEB temperatures, LV's sense/temperature/
+      fault-flag panel, both from 3.1). If the expand/collapse toggle is
+      implemented by adding one shared "visible" class to every element
+      tagged as belonging to that group, and a row's OWN detail panel
+      shares that same tag (it's still "part of the group" structurally),
+      expanding the group will incorrectly force every row's detail open
+      too, with no way to look at just the summary rows. The two
+      concerns need separate visibility state: "is this row's group
+      open" (controls the summary rows only) vs "did the user click THIS
+      row to see its own detail" (independent, only ever set by that
+      row's own click) - collapsing a group should still force-close any
+      detail left open inside it, but expanding a group must never
+      force one open.
+
+  DECLINED 2026-07-22: a dedicated Adjust/Demand input directly in each
+  group's own header row (on top of the per-row input and the
+  table-wide bulk control that already exist) - rejected as redundant,
+  not just unbuilt. Selecting a group's own checkbox (above) and then
+  using the existing bulk toolbar field already reaches every row in
+  that group in two steps; a third, separate input would raise a real
+  ambiguity (whole group regardless of row selection, or only selected
+  rows within it?) without unlocking any capability the existing two
+  levels don't already cover.
+
+3.5) OVERALL PAGE STRUCTURE (added 2026-07-22, after the mockup existed)
+--------------------------------------------------------------------
+Two-column layout, exactly 50/50 width - LEFT: everything else in this
+section (safety panel, Power, Readout, Calibration). RIGHT: an empty
+"Geometry view" placeholder card, sticky (stays in view while the left
+column scrolls) - reserves Page 1's space and says it exists, without
+attempting to build it. No content, no interactivity, just a labeled
+empty panel.
+
+Inside the LEFT column, content is now organised as collapsible "mega-
+sections", one level above the FEB/LV/HV tabs - same click-header-to-
+expand/collapse pattern as the geometric groups above:
+  "Power" - today's tab bar (FEB/LV/HV) and everything already
+    documented in this section, unchanged. Expanded by default - it's
+    the real, working content, shouldn't cost an extra click to reach.
+  "Readout" - MOCKUP BUILT 2026-07-23 (user's own idea from 2026-07-22;
+    built ahead of the Zoom call - see todo.txt's "PAUSED 2026-07-22"
+    note for the frozen scope this jumped ahead of). SIGNED OFF
+    2026-07-23, same day, later: Marius CONFIRMED the whole page
+    structure on the call (Power/Readout/Calibration/Geometry, safety
+    panel, the 3-level selection model, the separate Emergency buttons -
+    all shown live). He also answered several of the new open questions
+    the mockup surfaced (see marius_zoom_2026-07-23.txt, now archived to
+    docs/old/, for the exact wording): ASIC enable/disable from the page
+    makes sense (question c) - YES; ASICMask writes must pass through
+    the same check_shared_equipment() gate as power-on (question d) -
+    YES, NEW CODE TODO, not built yet; which HV channels are the real
+    spares (question b) and the exact HV<->SMB/FEB channel order (section
+    4) - NOT IMPORTANT, don't chase either; the IV over-current limit
+    value and every other UNVERIFIED default in the mockup - fine to
+    leave as-is, no real numbers given. Question (a) - whether the ODB's
+    flat Asic/Channel index matches the spec book's physical numbering -
+    was NOT asked this call, still open (topology.txt 132-135). A THIRD
+    mega-section, same level as Power and
+    Calibration, NOT a sub-tab of either, expanded by default (real
+    content now, same rule as Power). Purpose: general, non-calibration-
+    specific data-taking configuration - activating/deactivating
+    specific ASICs and specific channels (masking), as granular as
+    sensibly possible (down to ASIC/channel level, not capped at FEB
+    level like the Power tables). Distinct from Calibration's own
+    masking/selection (which is scan-specific and decided separately per
+    calibration, see below) - Readout's masking is the BASELINE state
+    for ordinary running, calibration selection layers on top of it, not
+    instead of it.
+    MASK-PERSISTENCE QUESTION, CLOSED 2026-07-23 (user's own call, no
+    code change needed): earlier this was flagged as a required fix -
+    ScanThr.execute()'s self.__set_array_all("mask", 0) unconditional
+    reset at scan start would wipe any Readout-set baseline. Reviewed
+    2026-07-23 and DECLINED - the reset-to-0 behavior is correct/
+    intended as-is, not a bug to fix. Retracts the "REAL CODE
+    IMPLICATION" note that used to be here.
+    STRUCTURE FINALIZED 2026-07-23, grounded in Mu3e Spec Book section
+    6.4.2 (Figures 6.1/6.2, pages 212-213), not just inference: rows are
+    MODULES, not FEBs directly - a "module" here is exactly
+    Asic.get_module()'s own concept in detector/asic.py (NASICS_PER_
+    MODULE=4, module 0 = ASIC 0-3, module 1 = ASIC 4-7) - i.e. an SMB (4
+    ASICs x 32 channels = 128 channels each). Confirmed against the spec
+    book: 24 SMBs total (12 US + 12 DS, numbered 0-11 per side around a
+    physical ring - Fig 6.1's blue numbering), FEB = super-module (6 US +
+    6 DS, Fig 6.1's red numbering, each owning 2 SMBs) - so 12 FEBs x 2
+    modules = 24 modules total (same count as HV's 24 channels -
+    reinforces, doesn't resolve, the still-open HV-channel-to-module/FEB
+    order question, topology.txt 4c).
+    GRID, not a 3rd drill-down level (REVISED from the original module ->
+    ASIC -> channel expand-expand plan): Fig 6.2 shows an SMB's 4 ASICs
+    laid out along a single physical linear strip, each ASIC's 32
+    channels in a line along that same strip - i.e. no natural 2D
+    structure INSIDE one ASIC, but the whole module (4 ASICs x 32
+    channels) IS naturally a 4-row x 32-column grid. Expanding a module
+    row goes straight to this grid - ASIC is a grid ROW, not a separate
+    expand step. Selection is 3 ways to build the same set: click a row
+    header to select a whole ASIC, a column header to select the same
+    channel position across all 4 ASICs of the module (a real physical
+    cross-section, not arbitrary), or a single cell. A "Mask
+    selected"/"Unmask selected" pair acts on the current selection;
+    mask-state is shown as cell color (green/red), selection as a
+    separate border indicator - the two are independent dimensions on
+    the same cell, must not be conflated into one visual state.
+    NOT CONFIRMED: whether the ODB's own flat Asic/Channel index order
+    (module*4 + asic_in_module, then position_in_asic) matches this
+    physical layout 1:1 - already flagged as open in topology.txt 132-
+    135 before this session, still open. The grid renders using the ODB-
+    native indices either way (mask/select act on the right channel via
+    get_global_index() regardless), but cells are labelled by ODB index,
+    not asserted to be true physical position, until confirmed.
+    DS mirroring - DECIDED 2026-07-23: none, in Readout. The grid renders
+    identically for US and DS (same ODB-index left-to-right order),
+    despite Fig 6.1/6.2 showing DS numbered in the opposite rotational
+    sense from US. Physical-position mirroring, if ever needed, belongs
+    to Page 1/Geometry, not this grid.
+    FIELDS DECIDED 2026-07-23 (grounded in real ODB fields, checked
+    against docs/odb_*.json and topology.txt 2.2, not invented):
+      Module row: aggregate "<N>/4 ASIC active", aggregate "<N>/128
+        channels unmasked" (both computed only from row-level data
+        already shown, same principle as the LV/HV group summaries in
+        3.4), and VBR - see below.
+      VBR sourcing: found per HV channel by calibrations/vbr_scan.py's
+        ScanVbr, which is MODULE granularity (1 HV channel = 1 module),
+        NOT per individual MuTrig channel - every channel in a module
+        shares the same VBR value. Shown once per module row, not
+        repeated per channel/ASIC.
+      ASIC row (grid row header): enabled (ASICMask bit, Asic.
+        is_enabled()), "<N>/32 unmasked", avg FCCR rate over its 32
+        channels.
+      Channel cell (hover): tthresh, tthresh_offset, FCCR (Variables/
+        FCCR, live per-channel rate) - the field click/color-codes.
+      EXCLUDED, with reasons checked against the real ODB tree (not
+        assumed): ASICs/Global/* (pll_lol_dbg, tx_mode, etc.) - verified
+        these are SCALAR, one value for the whole equipment, despite the
+        "per-ASIC-shaped" path name; not usable as a per-row field.
+        ASICs/TDCs/* (vnpfc, latchbias, etc.) - genuinely per-ASIC
+        arrays, but analog bias/DAC configuration registers, not
+        status/health indicators an operator reads - expert-only, out of
+        scope here. sipm - identity/mapping to the physical SiPM, not a
+        status. cml - a real per-channel field, but its functional
+        meaning isn't documented anywhere found (code or docs) -
+        excluded rather than guessed at. The rest of the channel config
+        array (pole, ampcom, ebias, ethresh, inputbias, amonctrl,
+        comp_spi, coin_mat, tdctest_n, sswitch, delay, energy_c_en,
+        energy_r_en, cm_sensing_high_r, amon_en_n, edge, edge_cml,
+        tthresh_sc, pole_sc, ampcom_sc, recv_all) - same category as
+        ASICs/TDCs/*, expert config, not shown.
+    ASICMask WRITE PATH - BUILT 2026-07-23 (was a real code gap: Asic.
+      is_enabled() was read-only, no way to actually flip the bit this
+      section is meant to control): Feb.set_asic_mask_bit(position_in_
+      feb, enabled) in detector/feb.py - read-modify-write of ASICMask
+      [feb_index] (ONE bitmask integer per Feb, not a per-Asic-indexed
+      array like Channel's own mask[], so a single WRITE the way
+      Channel.set_mask works isn't possible; the other 7 bits must be
+      preserved), write-then-readback verified same as __set_feb_power(),
+      skips the write entirely if the bit is already correct. Updates
+      the local Asic.set_enabled() state on success. tests/
+      test_asic_mask.py (4 cases: disable+readback, re-enable+readback,
+      no-op skip-write, out-of-range rejection) - full 12-file test
+      suite still green.
+    MOCKUP STATUS, UPDATED 2026-07-24 (SUPERSEDED - was "only 1 of 24
+    modules wired" when this paragraph was first written): the file
+    itself was renamed again since - custom_page_mockup_colored.html is
+    now docs/page/custom_page_mockup_v2.html, the only live mockup for
+    Page 2 (custom_page_mockup_colored.html/custom_page_mockup.html/
+    custom_page_spec.txt all sit in docs/old/ now). All 24 modules are
+    wired to their own real interactive grid (Readout AND Threshold
+    calibration both, generated client-side per-module the same way
+    Geometry's per-module data is - previously only "US SM 2 · Mod 0"
+    was, the other 23 were static placeholder rows). The "wired" pill/
+    summary text is gone from the UI now that it's no longer a
+    meaningful distinction. Same LinkStatus Fault/Unknown cascade-mask
+    fix noted in Page 1's entry above applies here too (both files
+    shared the identical bug). "First todo after Marius's sign-off: wire
+    the rest" is DONE for the mockup's own synthetic data - "connect to
+    live data" (a real ODB backend) is still the actual remaining work,
+    see section 3's STATUS UPDATE above.
+  "Calibration" - BUILT 2026-07-23 (was "EMPTY placeholder" when this
+    section was first written - superseded). Real tab bar, 2 tabs ("IV
+    scan"/"Threshold scan"), each with the script's own real parameter
+    form (IV: iv_start/iv_end/iv_step/settle_seconds/fit_window_v/
+    min_peak_prominence/run_vbr_finding; Thr: threshold_start/
+    threshold_stop/offset_start/offset_end/noisy_rate_threshold/
+    settle_seconds/run_autofinding - label reads "run_thr_finding", the
+    internal key stays run_autofinding to match the real script param
+    name) and a per-module target table. Both tabs' target tables read
+    module/ASIC/channel mask+enable state from the SAME shared object
+    Readout's own grid owns (sharedDemoAsics in the mockup - a single
+    source of truth, not an independent copy), confirming Readout's
+    masking is the baseline both scans build on top of, per the design
+    decided above. Thr's grid is read-only for mask/enable (that's
+    Readout's job, marked with a small xref-dot back to Readout) -
+    selection there only decides which channels the Set-to-selected
+    action writes the 7 scan parameters to.
+    STRUCTURE FINALIZED 2026-07-23 (this section's own follow-up to the
+    2026-07-22 user vision recorded earlier in section 3): buttons split
+    into a PAGE tier (Set to selected - stages the form's parameters onto
+    the current selection, page-only, no ODB write) and a HARDWARE tier
+    (Apply selected / Read selected - placeholders today, no JS behind
+    them, purely indicating the future write/readback-to-ODB step; Start
+    scan selected - REAL, gated exactly like the shared-equipment check
+    below; Stop scan - placeholder). See the new "PAGE vs HARDWARE button
+    tiers" note below (end of 3.5) for why this split exists and where
+    else it's used.
+    START GATE: Start scan selected is blocked unconditionally (not just
+    for power-on, unlike FEB/LV/HV - mirrors thr_run.py/vbr_run.py's own
+    unconditional check_shared_equipment() gate, see section 3's
+    "BUILT 2026-07-22" paragraph) whenever the mocked shared-equipment
+    health flag is unhealthy, with a table-note explaining why - same
+    principle as Power's gates, just wired to a hardcoded demo flag
+    instead of live ODB since this is still a mockup.
+    Masking has ZERO effect on IV scan specifically (found while building
+    this) - IV/VBR and Readout's channel masking are independent hardware
+    paths, worth remembering if a shifter asks "why does IV scan still
+    read a masked channel".
+    Its own masking/selection system (the grid's own click-select-cells
+    interaction on Thr's tab) is separate from Readout's baseline masking
+    (above) by design - Calibration selection is per-scan and doesn't
+    itself mask/unmask anything; only Readout's own Mask ch/Unmask ch
+    buttons do that.
+
+PAGE vs HARDWARE button tiers, ADDED 2026-07-23 (user's own design,
+generalizes across Readout/Calibration/Power once articulated): every
+mega-section's editable state now separates into an explicit PAGE tier
+(edits that only ever touch the page's own local/staged state - Readout's
+Mask ch/Unmask ch/Enable/Disable selected ASICs, Calibration's Set to
+selected, Power's Set adjust/demand to selected) and a HARDWARE tier
+(actions that actually touch the ODB/hardware). Readout is 2-level (Page:
+mask/enable edits; Hardware: Apply selected/Read selected). Calibration
+and Power (LV/HV) are 3-level, since they also have a genuine third
+action beyond stage-then-apply: Calibration's Start/Stop scan, Power's
+Turn on/off selected. FEB (only ever Power on/off, no adjustable value to
+stage) and the DCDC crate block (Reset/Clear fault, already hardware-
+direct) stay single-level - there's no page-only value to stage for
+either, so the split doesn't apply.
+Built in the mockup as a purely VISUAL/structural placeholder for now,
+per explicit instruction ("questi bottoni non fanno nulla a parte quelli
+che dialogano con la pagina... sono da indicazione futura") - only the
+pre-existing Page-tier buttons keep their real local-state JS behavior;
+every new Hardware-tier Apply/Read/Stop button is unwired (no click
+handler), enabled/selectable rather than HTML-disabled (2026-07-23
+follow-up - initially shipped `disabled`+greyed, user asked for them
+"selezionabili" instead), with a `title` tooltip stating its future
+intent. Each tier is labeled with a plain uppercase "PAGE"/"HARDWARE"
+tag, identical wording in all three mega-sections (via CSS
+text-transform, not literal caps in the HTML) and a visually distinct
+bordered/dashed block for the Hardware tier - Start scan selected and
+Turn on/off selected sit inside the Hardware tier despite already being
+real (they're genuine hardware actions, just ones that happen to be
+built already), so "Hardware tier" means "acts on hardware", not "is a
+placeholder" - the two are correlated today but not the same concept,
+worth remembering as more of this gets built for real.
+
+VISUAL CROSS-REFERENCE COLOR SYSTEM, ADDED 2026-07-23 (mockup-only
+polish, no functional change - dataviz-skill methodology: status colors
+reserved, categorical identity colors assigned in fixed order, never
+cycled, texture/pattern used alongside color for the cascade-mask case so
+it isn't color-only):
+  - US/DS identity: a consistent --side-us/--side-ds accent used
+    everywhere a row/group is already labeled US or DS (FEB, LV, HV, DCDC
+    crate, Readout module groups) - purely a scan aid, the label text is
+    still the source of truth, color never replaces it.
+  - Mega-section identity: --sec-power/--sec-readout/--sec-calibration -
+    each mega-section header gets a small colored xref-dot next to its
+    title, and the SAME dot appears wherever another section's data is
+    being displayed/borrowed (e.g. Thr's target grid shows a readout-
+    colored xref-dot next to its read-only mask/enable mirror of
+    Readout's own state) - makes "this value actually lives in a
+    different section" visible at a glance instead of only discoverable
+    by reading a tooltip.
+  - Health-status dots: a shared groupStatusDot()-style green/grey/red
+    dot on every group header (FEB/LV/HV/Readout groups), computed only
+    from already-shown per-row fields (same "no new data" rule as 3.4's
+    group summaries) - green = every row in the group in the good state,
+    grey = mixed/off, red = a real fault flag present. Two real CSS bugs
+    were found and fixed while building this (both worth remembering if
+    a similar dot/pill is added elsewhere): a `.dot`/`.group-status-dot`
+    needs an explicit `display:inline-block` to render inside a plain
+    `<td>` (works for free inside a flex-parent card, silently invisible
+    inside a table cell without it); and the masked-by-ASIC-cascade
+    channel cells use a diagonal-stripe CSS pattern (not just a different
+    color) so cascade-masked vs individually-masked channels stay
+    distinguishable for a colorblind reader, not just by hue.
+
+Page 1 (Geometry, right column) is PURE DIAGNOSTIC now, not an editor -
+see the REVISED note on Page 1 above. Clicking an element there surfaces
+power state from Power, mask/selection/readout info from Readout, and
+calibration parameters from Calibration - it doesn't let you change any
+of them directly.
+
+The safety panel (3.2 below) is a 4-card auto-wrapping grid (Emergency,
+Required Programs, Service Status, PySequencer status) rather than a
+fixed 3-across row - see 3.2 for what changed on each card.
+
+
+3.2) Page 2 - TOP-LEFT ZONE (global control/safety panel): concrete
+     design (2026-07-22)
+------------------------------------------------------------------
+Source: 5 live screenshots of pixel's actual running "Pixel Control"
+page (VTX_Generic.html, taken by the user 2026-07-22 08:46-08:56,
+localhost) - the top-left third of the page, distinct from Power
+Control/Status (3.1, bottom-left) and Geometry View (right, out of
+scope). Pixel's page has 3 zones; this section is only about the first.
+Every claim about which frontend serves which equipment, and which
+Watchdog programs actually exist, was cross-checked against real ODB
+(docs/odb_210726_091138.json's /Programs and /Equipment/<name>/Common
+trees), not assumed from the screenshots' labels alone.
+
+Pixel's top-left zone, as photographed: an emergency power-off button,
+"Open Manual"/"Open Operation Form" links, a persistent Sequencer/Run
+status bar, two more collapsible panels behind it (Sequencer Status +
+Run Status + Run Actions), then three more collapsible panels (Watchdog
+Status, Required Programs for Operation, Service Status), then the tab
+bar (Expert/Power/Manual Config/Calibration/Tuning/Slow Control).
+
+Decision, per-block (SciFi has none of pixel's per-partition modularity,
+so the goal is picking what's load-bearing, not copying the whole zone):
+
+  KEEP - Emergency stop:
+    "Turn Off All SciFi Power" - a single button aggregating the 3
+    bulk-off calls that already exist: SciFiDetector.
+    turn_off_all_feb_power(), turn_off_all_lv(), det.hv.turn_off().
+    Zero new Python work - same 3-write PySequencer-ODB mechanism as
+    3.1's per-category buttons, or a 4th tiny script that just calls all
+    three in sequence (open implementation choice, not decided here).
+    Safety-critical regardless of how simple SciFi's power model is
+    compared to pixel's - always keep.
+    ADDED 2026-07-22: 3 smaller secondary buttons alongside the main
+    one - "Turn off FEB" / "Turn off LV" / "Turn off HV" - each a
+    thin call to its own already-existing script (feb_power.py/
+    lv_power.py/hv_power.py, power_on=False) - no new Python work for
+    these three, unlike the main all-in-one button's own open question
+    above. Lets a shifter kill one category without touching the other
+    two.
+
+  KEEP - Required Programs for Operation:
+    A plain green/red /Programs/<name> status table, no control logic,
+    no button - a pre-flight check answering "should I even try to power
+    things on". REAL list for SciFi (confirmed via odb_210726_091138.json
+    /Equipment/<name>/Common's "Frontend name" field for every
+    SciFi-relevant equipment, cross-referenced against /Programs' own
+    keys - not guessed/copied from pixel's mhttpd/Sequencer/CR
+    Frontend/SW Central/Pixel Watchdog list):
+      mhttpd            - base MIDAS, always required
+      SW Fibre          - serves LinksFibre, SciFiFibre AND
+                          SwitchingFibre all at once (mu3esw3.mu3e) -
+                          THE one genuinely SciFi-specific frontend
+      DCDC Frontend     - serves DCDCCrates (LV), shared across
+                          subdetectors (mu3ebe)
+      HV Frontend       - serves HV, shared (mu3ebe)
+      Febcrate Frontend - serves FEBCrates, shared - any FEB-having
+                          subdetector needs it (mu3ebe)
+      Powerrack Frontend - serves TDK, shared (mu3ebe)
+      Sequencer / PySequencer - needed to run the power scripts
+                          themselves, not just read status
+    (Full Frontend-name -> equipment mapping checked this way: LinksFibre/
+    SciFiFibre/SwitchingFibre -> "SW Fibre"; DCDCCrates -> "DCDC
+    Frontend"; HV -> "HV Frontend"; FEBCrates -> "Febcrate Frontend";
+    TDK -> "Powerrack Frontend".)
+
+  KEEP - Service Status:
+    Directly backed by common_scripts/common/services.py's
+    TDKService/DCDCCratesService.check_status() - already written,
+    tested, cross-checked against live ODB (implementation.txt section
+    4), just never wired to any frontend before now. This IS the
+    "Service Status" block, not a new thing to build. Whether to also add
+    an HV-frontend-alive check or a Helium status line here is an open
+    extension, not decided today (see the open point below).
+    ANSWERED 2026-07-30, and narrowly: the block was first widened to 13
+    rows covering everything found that day, then TRIMMED on the user's
+    call to exactly three subjects - TDK, DCDC crates, power
+    distribution - six rows, each with its ODB path in the tooltip. So
+    no, no HV-frontend or Helium line: this block is about POWER
+    SERVICES and nothing else.
+    That scoping is one row group per service class, which surfaces a
+    gap: services.py has TDKService and DCDCCratesService, and nothing
+    for PowerDist. A PowerDistService shaped like the other two is the
+    backend work this implies; until it exists the page reads those
+    channels directly, which is the duplication the service classes were
+    written to prevent. See chain_and_monitoring.txt section 16.
+
+  REDUCE - Sequencer Status / Run Status / Run Actions:
+    NOT duplicating pixel's full expandable panels (Sequencer file, Run
+    Number/Crew/Comments, Start-with-Fixed-Duration button, etc.) - that
+    is global MIDAS run/sequencer state, shared by the whole experiment,
+    already available on mhttpd's own Status/Sequencer/PySequencer nav
+    pages (visible in every screenshot's left rail). Duplicating it here
+    would be scope creep for a page whose job (per section 3's two-page
+    split) is control, not general monitoring, and a second copy of the
+    same state is a duplication-drift risk of exactly the kind already
+    flagged for safety logic (section 3's option (a) vs (b) discussion).
+    Keep at most a single minimal line - "PySequencer: Running/Not
+    running" - because it's directly load-bearing for 3.1's concurrency
+    note (the page's power buttons should disable themselves while
+    Running=true, since a second Command/"Start script" write would stomp
+    on whatever's already executing).
+    UPGRADED 2026-07-22: promoted from a faint caption line to a 4th
+    card in the same safety-panel grid as Emergency/Required Programs/
+    Service Status - a colored status pill (green = idle = actions
+    available), same visual weight as the other three cards instead of
+    easy to miss. Content unchanged, just the presentation - still just
+    reads /PySequencer/State/Running, still not a duplicate of mhttpd's
+    own Sequencer/Run panels. Positioned 4th in the grid (right after
+    Service Status) - at the page's actual halved column width the
+    4-card grid wraps 2-by-2, which is why it visually lands next to
+    Service Status and below Required Programs, a direct consequence of
+    grid order, not a separate layout decision.
+
+  DROP - Watchdog Status:
+    Confirmed via /Programs (odb_210726_091138.json): only "Watchdog"
+    (generic, Start command /home/mu3e/online/install/bin/mu3e_watchdog,
+    Alarm class unset) and "Pixel Watchdog" (Start command .../
+    pixel_watchdog, Alarm class "Program Alarm") exist - no "SciFi
+    Watchdog" or equivalent. Pixel's Watchdog Conditions table itself
+    (both screenshots, full list: Max_LV_current, Max_VDD_voltage,
+    Min_VDD_voltage, Max_HV_current, Max_HV_curr_read, Max_Temperature,
+    Warn_Temperature, Min_Temperature, TDK, PwrDistPixel, PwrDistCrates,
+    He, He_mode, He_O2, Programs, Programs_debug) splits into two kinds:
+    conditions phrased "turn off PP if ..." (pixel-specific hardware -
+    PwrDistPixel is even named after pixel directly) vs conditions
+    phrased "turn off/detector if ..." (He, He_mode, He_O2, Programs/
+    Programs_debug - phrased at the DETECTOR level, not PP level).
+    Building a SciFi-specific Watchdog Status panel makes no sense
+    without a backend daemon behind it - same class of gap as 3.1's
+    per-row-targeting gap (UI can't exist before the Python/frontend
+    side does). NOT reconsidering this today.
+    RECONSIDERED AND PARTLY REVERSED 2026-07-30 (user's call). The
+    argument above is about a panel that CONTROLS a daemon, and it still
+    holds - v3's panel arms nothing. What v3 adds is a panel that STATES
+    what is unwatched: ten conditions modelled on pixel's, each pointed
+    at SciFi equipment, each row's state column saying plainly whether
+    it is "not built", "no alarm either", "alarm inactive" or "readable
+    now". It sits as a card in the safety zone next to Alarms - where
+    pixel keeps its own Watchdog Status - not as a tab, and it carries
+    no arm/disarm controls, consistent with that zone only ever writing
+    to turn things OFF.
+    The reason it earned its place: the day's sweep found that SciFi's
+    FEBs have NO over-temperature alarm at all (the SCTS alarms cover
+    LinksCentral, our FEBs are on LinksFibre), and that four SciFi-
+    relevant alarms are defined but inactive. Those facts had nowhere
+    else to live once the red banner and the Service status rows were
+    trimmed away. A panel that says "nobody is watching this" is worth
+    having before the daemon exists, which is the part the 2026-07-22
+    reasoning did not consider.
+    Detail: chain_and_monitoring.txt sections 5 and 16.
+    RESOLVED 2026-07-22 (the open point above, from re-reading the
+    screenshots more carefully): NOT passively covered. Screenshot 3's
+    "Enabled Power Partitions" table - the list Pixel Watchdog actually
+    acts on when any condition trips, regardless of that condition's own
+    wording - lists only pixel's own 8 partitions (US/DS Layer 1/2 Top/
+    Bottom). So even the conditions phrased "turn off detector if ..."
+    (He/He_mode/He_O2/Programs) almost certainly only ever touch those 8
+    pixel partitions in practice - "detector" in the tooltip text is
+    loose phrasing, not a literal shared action. CONCLUSION: SciFi has
+    NO continuous safety interlock today, for anything - not Helium, not
+    TDK, not temperature, not required-programs-down. This is a real,
+    standing gap, bigger than today's page-design scope (it would need
+    its own always-on daemon/frontend, in the spirit of pixel_watchdog
+    but SciFi-specific) - noted here so it isn't silently assumed
+    "someone else's problem" going forward, not something to fix today.
+    One narrower, immediately actionable piece of this DID get picked up
+    today though - see 3.1's "Power actions are gated on Service Status"
+    decision, which reuses the ALREADY-BUILT check_shared_equipment()
+    (TDK+DCDCCrates) as a one-shot pre-run gate on the power scripts,
+    closing the part of this gap that's cheap to close now (a
+    before-you-start check) without attempting the much bigger
+    continuous-monitoring daemon question.
+
+  DROP (low priority) - Open Manual / Open Operation Form:
+    Only worth adding if a real SciFi-equivalent doc exists to link
+    (e.g. scifi_scripts' own README, or scifi-userfiles' HOW_TO_RUN.txt)
+    - not built today, not blocking anything.
+
+
+4) Open questions to actually ask Marius (collected during this
+   investigation - don't guess these, ask directly). Updated 2026-07-20
+   - grouped by topic for the actual conversation; items resolved since
+   this list was first drafted are marked done and kept only as a
+   heads-up to mention, not to ask.
+
+4.1) Housekeeping / heads-up (tell him, don't need his input to act) -
+     USER DECISION 2026-07-20: skip bringing this up in the upcoming
+     conversation, not worth the time right now.
+     DROPPED FOR GOOD 2026-07-21 (user decision - "non e importante"):
+     not just deferred anymore, not going to be raised with Marius at
+     all. Kept below only as a historical record of what these were.
+  - feb_power.py's feb_index<->FEBCrate[]/FEBSlot[] mapping (flagged
+    2026-07-15 as "no offset/mapping found, verify against live ODB
+    once mu3ebe is available") turned out to be a REAL, CONFIRMED bug:
+    FEBCrate[]/FEBSlot[] are indexed by the GLOBAL LinkFEB value, not
+    the local feb_index. Run for real, this would have powered the
+    wrong crate/slot for every SciFi FEB. Already fixed (2026-07-20,
+    scifi_topology.py + feb_power.py) and verified offline against a
+    real ODB dump - old vs new indices differ for all 12 FEBs. NOT yet
+    exercised live on mu3ebe. Tell him this existed and was fixed - his
+    script, he should know.
+  - scifi-userfiles/scripts/hv_power.py has had an uncommitted local
+    change sitting since at least 2026-07-16 - confirm this is still
+    intentional/pending, don't let it get lost.
+
+4.2) Script scope / what's still needed - USER DECISION 2026-07-20:
+     skip this group too, old/stale - not worth bringing up. Kept here
+     (not deleted) in case it's worth revisiting later.
+  - Which of the still-unbuilt 19 scripts are actually still needed as
+    PySequencer automation, given MutrigConfiguration.html already
+    covers mask/unmask, resets, configure, readback manually?
+  - Is sorter_tuning()'s apparent sorter=0-never-runs gap a known,
+    intentional limitation, or a real bug in the reference
+    implementation?
+  - Why is the run-active safety gate in MutrigConfiguration.html
+    (disabling Configure/Readback during a run) currently commented out?
+
+4.3) SciFi hardware/ODB structure (topology research done 2026-07-20 -
+     see topology.txt for full detail; these are the parts local
+     research couldn't fully close)
+  - ANSWERED 2026-07-20 (Marius, direct reply): "LinksFibre -> what
+    detector/FEBs are connected to the SciFi Switching board,
+    SciFiFibre -> configuration of the detector. LinksCentral -> this
+    is for the central PIXEL detector. It's confusing since SciFi is
+    also central..." I.e. LinksCentral is NOT a SciFi-relevant
+    aggregation tree at all - it's Pixel's own link tree for Pixel's
+    "Central" station (as opposed to Pixel's Recurl-US/Recurl-DS
+    stations - matches switch_id 0=Central/1=Recurl-US/2=Recurl-DS/
+    3=Fibre in link_constants.h). The naming collision ("Central" vs
+    SciFi's own geometrically-central region) is a real, Marius-
+    acknowledged source of confusion, not something SciFi code should
+    ever query. [DROPPED 2026-07-21, user decision - "no lavoriamo su
+    quello noi"] FOLLOW-UP: MutrigConfiguration.html queries LinksCentral
+    (see section 2.3 above) - given Marius's answer, that looks like it
+    might be querying the WRONG tree for SciFi's purposes, or there's
+    still something not understood about why it works that way. Not our
+    page, not our problem to chase - not being asked.
+  - ANSWERED 2026-07-20 (Marius, direct reply): "No only Mutrig3. The
+    mutrig2 is legacy code..." - CLOSED. SciFi ASICs are only ever
+    MuTRiG3 in real deployments; MuTRiG2 support in the software is
+    legacy/dead, not a live concern. No mixing, ever. (topology.txt
+    section 3 updated to match - this was previously "inference, not
+    confirmed", now a direct answer.)
+  - LEANING ANSWERED 2026-07-20 (user, as a direct consequence of the
+    per-partition/per-supply-type ranges item in section 4.4 above -
+    not independently confirmed by Marius, an inference from that
+    answer): do US-side and DS-side modules need different parameter
+    handling, or is treating them identically safe? Old working
+    assumption was identical ("for measurement uniformity"). Since
+    ranges will depend on which power supply feeds a given
+    partition/module (section 4.4), and US/DS are fed differently,
+    US/DS will end up needing different parameters too, as a
+    consequence - not because US vs DS itself is the deciding factor.
+    Worth confirming this reasoning with Marius directly rather than
+    treating the inference alone as settled.
+  - (Optional, low priority - already a dead end via ODB) HVBoxN's
+    minimum_voltage_variation=0.01V step: no resolution/step field
+    exists anywhere in ODB (double-checked 2026-07-20) - only the
+    hardware datasheet or Marius can answer this, not worth chasing
+    further otherwise.
+  - [DROPPED 2026-07-20, user decision - not a Marius question anymore]
+    DCDC crate Enabled/Crate On mismatch (4 crates one direction, 2 the
+    reverse). User's own explanation: "è tutto in fase di testing" -
+    commissioning-order noise, everything will settle to Enabled=True +
+    Crate On=True eventually. Not worth Marius's time right now.
+  - ANSWERED 2026-07-21 (Marius, direct reply: "In the specbook"): HV
+    channel <-> SMB mapping. Came up during the scifi_scripts power/HV/LV
+    brainstorm (see scifi_code_design.txt section 2.6, topology.txt
+    section 4c for the full evidence trail and a correction of my own
+    first read). Short version: section 3.7 point 9's summary table
+    (24 channels, 6 boards for SciFi, "Approved" status) is the real
+    design number, matching section 6.5.2's prose - HV IS 1:1 with SMB
+    by design (24 channels, 24 SMBs), NOT 32 as the crate-assignment
+    table (3.5.2) and live hv_fe.cxx firmware suggested on first read
+    (those extra 2 boxes are spares, per section 3.7 point 12). Still
+    not given anywhere: the explicit ordered per-channel-to-SMB list.
+    Doesn't change anything currently designed (Feb owns LV directly, HV
+    stays independent of Feb per that same decision) - asked for
+    completeness, not urgency.
+
+4.4) Data & results
+  - ANSWERED 2026-07-20 (Marius, direct reply): "and .root and CDB
+    would be good" - BOTH .root files (current) AND CDB (Conditions
+    Database), not one or the other. NEW REQUIREMENT: a CDB writer
+    doesn't exist yet - scifi_code_design.txt section 2.5 already flagged
+    "Conditions DB (offline-reconstruction destination)" as a
+    brainstormed idea (HACKATHON.txt 5.9) with "ResultSaverODB... still
+    an unimplemented stub on the pixel side too" - this is now a
+    CONFIRMED requirement, not just an idea, on both pixel and scifi
+    sides. Also answers the merged-in "does the page need its own
+    archive" question implicitly - CDB is that archive.
+  - ANSWERED 2026-07-20 (Marius, direct reply): "For HV I want to have
+    an IV scan from 54 to 58V and then we have to decide how this looks
+    between DS/US." Concrete numbers now exist for scan_vbr.py's
+    iv_start/iv_end (54V/58V) - but the DS/US (and by extension per-
+    partition/per-supply-type) breakdown is EXPLICITLY still open,
+    Marius's own words ("we have to decide"). REFRAMED 2026-07-21 (user
+    decision): not a separate conversation to have with Marius first -
+    this is just a parameter that gets set directly in the custom
+    control page whenever it's built, same as any other per-partition
+    value. Not a blocking question, don't chase it standalone.
+
+4.5) Control page design
+  - [DROPPED 2026-07-20, user decision: moot given the current design
+    direction - parameters will be written directly into the control
+    page's own HTML rather than relying on a generic PySequencer
+    remote-start mechanism, and the page itself is still to be defined]
+    Does PySequencer have an ODB-driven remote-start interface a
+    custom JS control page could use?
+  - ANSWERED 2026-07-20 (Marius, direct reply): "Yes also that the
+    shifter can change by hand things. I would expect that this is
+    limited like a hand full channels." WRITE ACCESS CONFIRMED, but
+    explicitly LIMITED/BOUNDED - "a handful of channels", not full
+    unrestricted control. Real scope now for Page 2/masking editor: not
+    a read-only dashboard, but also not a general-purpose control
+    surface - something narrow and channel-scoped. This directly
+    affects the masking editor decision (which of the two partial
+    starting points to build on) - a "handful of channels" scope maps
+    naturally onto Scifi-monitor.js's own per-channel grid editor
+    (already working, per-channel granularity) more than scifi.html's
+    ring-view (built for a spatial/module-level overview, not fine-
+    grained few-channel edits) - worth weighing this when comparing the
+    two (scifi.html's ring-view: reusable geometry/edit-flow, but its
+    masking write path was never wired to a real ODB write and uses
+    stale equipment naming; Scifi-monitor.js's own per-channel grid
+    editor: more mature, actually working, and now a closer scope match).
+    REFRAMED 2026-07-21 (user decision): exact meaning of "a handful"
+    (hard limit vs just typical-usage expectation) and which specific
+    parameters/fields a shifter can touch isn't a separate question to
+    resolve with Marius first - it gets decided by what actually ends up
+    exposed when the page is built. Not a blocking follow-up.
+  - [DECIDED 2026-07-20, NOT a Marius question - user already knows the
+    answer and is acting on it] Is VTX_Generic.html's pattern
+    (ConfigManager + declarative descriptors + tabs) something SciFi
+    would want to formally align on? YES - user is already working
+    towards this direction with a colleague (the same colleague
+    scifi_modularity_reference.txt was written for, 2026-07-20).
+    SciFi's version will be "molto più semplice" (much simpler) than
+    pixel's - narrower scope, not a full port of VTX_Generic.html's
+    complexity.
+
+
+5) Priorities toward October (to actually decide together with Marius,
+   not unilaterally)
+------------------------------------------------------------------
+Rough shape, needs Marius's input to actually rank:
+  - Must probably work by October: FEB/LV/HV power (built), threshold
+    scan + apply (built), some form of masking (not built - depends on
+    whether the manual MutrigConfiguration.html tool is judged
+    sufficient for the first run or not).
+  - Can likely wait: IV scan / VBR-finding refinement (built as a
+    draft, usefulness itself still an open question - see
+    project_marius_proposal.md), optimizeRates/sorter_tuning/
+    sorter_scan (reference implementations exist in Scifi-monitor.js,
+    not yet ported), the custom control-page dashboard (PySequencer's
+    generic UI is a working fallback).
+  - Genuinely undecided: shift-report generation (create_shift_report/
+    end_of_shift_report - ties into whatever the dashboard ends up
+    being, if anything).
+
+
+6) REAL BUILD (2026-07-31) - hardcoded vs. read-live-from-ODB audit
+------------------------------------------------------------------
+online/mhttpd/custom/SciFi_page/*.js, the actual running page (not the
+mockup). User asked directly what's hardcoded vs. read from ODB, since
+the FEBName bug (topology.txt section 6) showed hardcoded/stale data can
+silently diverge from reality. Full inventory, by file:
+
+A) Compile-time hardware constants - safe, confirmed NOT exposed in ODB
+   anywhere (from real source comments: detector/feb.py, febcratefe.cpp):
+   MAX_FEBS_PER_CRATE=15, FEBTYPE_FIBRE="0x00000003", FEBCRATE_UNMAPPED=255,
+   SCFC layout (20 values/crate), NCHANNELS_PER_ASIC=32, SFFE(26)/SFLE(2)
+   per-FEB field counts. These can't go stale the way FEBName did - they
+   describe firmware/ODB array SHAPE, not detector state.
+
+B) Naming-convention filters - dynamic, robust as long as the naming
+   convention itself holds: "SMB_"/"LDO_" prefix (SciFi_Emergency.js,
+   SciFi_PowerLV.js), "SciFi CH" substring (SciFi_PowerHV.js), "SciFi"
+   substring (TDK rows in SciFi_ServiceStatus.js/SciFi_PowerSupply.js).
+
+C) Curated lists/maps - the REAL risk category, same failure mode as
+   FEBName if the underlying ODB structure ever changes without the page
+   being updated to match:
+     SciFi_Programs.js       hardcoded list of 7 required program names
+     SciFi_Alarms.js         hardcoded list of 10 "SciFi-relevant" alarm names
+     SciFi_Cooling.js        8x [label, path, array-index] triples into
+                             two Equipment's flat "Input" arrays
+     SciFi_ServiceStatus.js  PD_CRATE_MAINS/PD_SMB_LDO/PD_HV - 26 fixed
+                             PowerDistStaging channel indices (also used
+                             by SciFi_PowerSupply.js)
+     SciFi_PowerHV.js        HV_BOARDS - THE BIGGEST ONE: the entire 32-
+                             cell board->module wiring map (chain_and_
+                             monitoring.txt section 15, itself user-
+                             supplied 2026-07-30), not recomputed from
+                             ODB in any way. If the physical HV wiring
+                             ever changes, this needs a manual code edit -
+                             it will not self-correct like everything in
+                             category D does.
+
+D) Fully live, self-correcting - everything else: every numeric value
+   shown anywhere on the page, FEB/LV/HV/TDK/PowerDist row identity and
+   state, FEBName labels (so the FEBName bug fix requires zero page code
+   changes once corrected upstream - see topology.txt section 6).
+
+E) Deliberately fully static, NEVER from ODB (documented reason, not an
+   oversight): SciFi_Watchdog.js - real backend writes to shared
+   /Watchdog/Variables/<name>_status keys pixel's own conditions already
+   use, so a live binding would misrepresent pixel's status as SciFi's.
+    being, if anything).

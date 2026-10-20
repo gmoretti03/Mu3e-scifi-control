@@ -1,0 +1,583 @@
+CALIBRATIONS ROADMAP - THRESHOLD SCAN + IV SCAN
+====================================================================
+A planning document, not a spec: what's already decided, what's still
+genuinely open, and in what order it makes sense to tackle it, for the
+two calibrations scifi_scripts needs (threshold scan / scan_thr, IV
+scan / scan_vbr). Nothing here is built - this consolidates reasoning
+from 2026-07-22 into one place before any implementation starts.
+Originally written waiting on Marius's Zoom verdict (see todo.txt's
+PAUSED note) - this was planning, not a green light to build. UPDATED
+2026-07-23: unlike this real backend work (still paused, genuinely
+un-started), the custom-page MOCKUP moved ahead without waiting for the
+call (todo.txt's SUPERSEDED note) - docs/page/custom_page.txt 3.5's
+Calibration section is now a fully built HTML mockup with real
+per-module parameter tables (the original Page/Hardware button tiers
+were later simplified away for parameter-setting, 2026-07-24 - see
+docs/page_io_reference.txt 4.5), but it's still UI only, backed by demo
+data, not by any of the result-saving/granularity work this document
+plans. Don't read the mockup's existence as this plan having also
+started. UPDATED 2026-07-24: the whole custom_page/ folder was renamed
+to docs/page/ during a docs reorg - update any other path references to
+match if found stale.
+CALL HAPPENED 2026-07-23 (docs/old/marius_zoom_2026-07-23.txt, now
+archived) - ANSWERED the granularity questions (1.3/2.3/2.5): the
+already-implemented structure (granularity mirroring the control page's
+own power groups - US/DS for FEB/LV, 4 crates for HV) is fine as
+designed, no redesign wanted. Also gave a "don't worry about it, current
+defaults are fine" answer on the IV over-current limit (2.4). Neither
+answer changes that the backend work below is still genuinely
+un-started - a verdict on WHAT SHAPE granularity should take isn't the
+same as the result-saving/CDB/plots/actual-per-group-scan-loop work
+being built.
+
+
+1) THRESHOLD SCAN (scan_thr / calibrations/thr_scan.py)
+====================================================================
+
+1.1) Result saving - REMOVED, needs reviving with a clear head
+--------------------------------------------------------------------
+Built once (2026-07-21): ResultSaverRoot/ResultSaverODB/ResultSaverCDB/
+ResultSaverMultiple, incremental per-step .root writing (not batch-at-
+the-end, so a mid-scan crash doesn't lose completed steps). Removed the
+same day, user's own call ("ci penserò poi") - not because it was wrong,
+because it felt premature to lock in.
+Hard requirement (Marius, confirmed): BOTH .root (current, ours to
+build) AND CDB (delegated to whoever owns that piece - just needs a
+real hook point in finalise(), not our implementation).
+Destinations framework already sketched (code_design.txt 2.5's 5.9),
+complementary not alternative:
+  - local JSON/scratch - debug only
+  - live ODB - real-time monitoring during a scan (transient)
+  - RunODB - free per-run traceability
+  - CDB - the offline-reconstruction destination (delegated)
+OPEN: is the removed ResultSaver* architecture still the right shape,
+or does today's granularity reasoning (1.3 below) change what "one
+step's result" even means? If per-channel-independent ranges ever get
+built, a step is no longer "one offset x one threshold for everyone" -
+the incremental-write schema would need to carry per-channel state, not
+just a flat step index. Worth deciding 1.3 before re-locking 1.1's
+schema, not the other way round.
+RESOLVED (confirmed 2026-08-21): ResultSaverROOT/CDB-based saving is
+fully built (thr_scan.py/vbr_scan.py's build_root_report(), tested via
+test_calibration_factory.py) - and the schema already accounts for
+per-item granularity, keying ParametersUsed/Results/Conditions rows by
+folder (per-ASIC/per-module), not a flat step index.
+
+1.2) Plots - never built at all
+--------------------------------------------------------------------
+Clean slate - no prior art to revive or reconcile with, unlike scan_vbr
+(which already has a plot_manager.py draft, section 2.2). Needs: what
+to plot (rate vs threshold per channel? per-offset overlay?), format
+(PNG, per scan_vbr's own convention), where it's saved (data/scan_thr/
+plots/, mirroring scan_vbr's PLOTS_DIR convention). Not designed yet.
+RESOLVED, later the same day (2026-08-21) - this note was written
+before the plotting system was actually designed/built that same
+session, went briefly stale, now corrected: ScanThr/ScanVbr/PllTest all
+have a real build_plots() (calibrations/thr_scan.py, vbr_scan.py,
+pll_scan.py), saved via the new results.saver.ResultSaverPlot into
+scifi_scripts/output_plot/{name}_{run}/, one PNG per ASIC/module/FEB,
+styled to match docs/presentations/imgs/img_scanthr_plot.png/
+img_scanvbr_plot2.jpeg. Gated by the new make_plots ODB flag (see
+todo.txt 2026-08-21 / page/TODO.txt item 8 - page-side checkbox still
+pending).
+
+1.3) Granularity - today's real limitation, real precedent exists
+--------------------------------------------------------------------
+Today: ONE shared offset x threshold grid for every active, non-masked
+channel - ScanThr.execute()'s loop has no per-channel/per-group range.
+Real, working precedent for the redesign this would need: pixel's
+VTX_iv_scan.msl (per-partition independent range + a shifter-selectable
+mask + a loop sized by the longest range, shorter ones dropping out via
+their own Done flag - see 2.3 below, same pattern applies here). Costs
+nothing extra in scan time if done right (bounded by the longest range,
+not the sum).
+User's own framing (2026-07-22): should granularity follow the SAME
+power groupings already built for the control page (US/DS for FEB/LV) -
+i.e. per-Feb or per-US/DS threshold ranges, not a third, disconnected
+grouping scheme. Agreed as directionally right in discussion - no
+channel-order ambiguity blocks this for thr scan the way it does for HV
+(channel->FEB mapping is already exact and known).
+ANSWERED 2026-07-23 (Zoom call, docs/old/marius_zoom_2026-07-23.txt
+point 2, now archived): the granularity/grouping structure ALREADY
+IMPLEMENTED in the mockup - US/DS per FEB/LV, mirrored here for thr
+scan - is fine as-is, no redesign needed. Confirms the "User's own
+framing" paragraph above was directionally right. Does NOT close the
+underlying scan-mechanics gap (1.3's own opening paragraph - ScanThr's
+loop still has no per-channel/per-group range today), just confirms
+WHAT shape it should eventually take when built.
+RESOLVED (confirmed 2026-08-21): ScanThr.execute() now scans per-ASIC
+independent threshold/offset ranges (self.asics carries its own params
+per folder, checked against its own range each tick) - the scan-
+mechanics gap this section opened with is closed.
+
+1.4) Priority
+--------------------------------------------------------------------
+MUST work by October per Marius's own framing (todo.txt/docs/page/
+custom_page.txt section 5's priority list) - the highest-priority piece
+of the two.
+
+
+2) IV SCAN (scan_vbr / scifi-userfiles' scan_vbr/*.py, not yet ported
+   into scifi_scripts)
+====================================================================
+
+2.1) Current status
+--------------------------------------------------------------------
+Still a DRAFT in scifi-userfiles (scan_vbr.py, iv_scan.py, vbr_finding.py,
+root_writer.py, plot_manager.py, apply_vbr.py) - never reviewed with
+Marius. Confirmed parameters: iv_start=54V, iv_end=58V (Marius, direct
+reply).
+PORTED 2026-07-22 (scan mechanics only, mirroring how scan_thr's own
+port started): calibrations/vbr_scan.py's ScanVbr - Demand sweep +
+Current readback into in-memory scan_data, same prepare/execute/
+finalise shape as ScanThr. Needed 2 new SciFiDetector primitives
+(configure_short_mode()/configure_alloff() - "short mode" ASIC config
+for IV scan, tthresh pinned at 63, mirrors iv_scan.py's own configure_
+short()/configure_alloff()) and 2 new ScifiHv primitives (set_demand_
+all()/read_current_all() - plain sweep writes/reads, no per-step
+readback verification, same as the original's own choice, unlike
+turn_on()'s write-and-verify). prepare() refuses (FAIL) if iv_end is
+above ScifiHv.MAX_DEMAND_VOLTAGE or no HV channels are found - same cap
+turn_on() already enforces, checked again here rather than trusted from
+the caller. New test_vbr_scan.py (9th test file) verifies the reject
+case, the short-mode config writes, scan_data shape, and the Demand-
+reset-to-0 + MutrigConfigAllOff on finalise() - full suite (9 files)
+re-verified passing after adding it.
+Deliberately NOT included in this port (still open, per 2.2/2.4 below):
+result saving, plotting, and the per-channel over-current abort (2.4's
+safety gap) - this was mechanics only, same scope discipline as
+scan_thr's own first pass.
+
+VBR-FINDING PORTED 2026-07-22, same day, right after the mechanics port
+above: calibrations/vbr_find.py - unlike thr_find.py's own port, NO
+adaptation was needed at all here (not even the run_*_finding() wrapper)
+- the original's iv_data shape ({channel: {"voltage":[...],
+"current":[...]}}) already matches ScanVbr.scan_data exactly, since HV
+channels are flat/independent (not owned by Feb) with nothing to adapt
+away from. Wired into ScanVbr via a new run_vbr_finding parameter (name
+kept from the original script, not renamed to match thr_scan's own
+"run_autofinding" - each calibration keeps its own established name
+rather than cross-matching the other's), run in finalise() AFTER
+configure_alloff() (hardware cleanup first, CPU-only analysis after -
+same ordering as thr_scan.py). New scripts/vbr_run.py - 5th PySequencer
+entry point (feb_power/lv_power/hv_power/thr_run/vbr_run), same thin-
+bridge shape as thr_run.py. New test_vbr_find.py (11th test file
+overall, tests/ + shared mock support) - a direct algorithm check (an
+obvious step-function breakdown found and trusted, a flat jittery curve
+correctly NOT trusted - had to add small jitter to the synthetic data
+after the first run: a perfectly flat baseline has zero variance, which
+the algorithm's own confidence check always rejects regardless of peak
+height, avoiding a division-by-zero-shaped edge case - a real IV curve
+always has some noise anyway) plus a real integration check through
+ScanVbr(run_vbr_finding=True) with one channel mocked to have an actual
+breakdown (Current computed live from whatever Demand was just written,
+since a real sweep writes Demand before reading Current back) and the
+rest flat. Full suite (now 10 test files) re-verified passing.
+
+AUDITED 2026-07-22 (user requested a real check, not just trusting the
+narrative): found and fixed a real bug in prepare() - iv_step wasn't
+validated, so iv_step=0 crashed execute() with a ZeroDivisionError
+instead of failing cleanly (same latent gap as the original iv_scan.py,
+never validated there either). Also RE-CONFIRMS 1.3/2.3's granularity
+gap directly from the code, not just from reading the original scripts:
+ScanVbr sweeps every HV channel the "SciFi CH" pattern-match finds, no
+selection mechanism, no Enabled/ready check first - matches ScanThr's
+own "acts on everything the discovery step finds" behaviour exactly
+(the whole flat 512-channel array for thr, not filtered by active
+status either). Neither script reads its own scan parameters from ODB -
+always operator-chosen via PySequencer's param form.
+
+DISPATCH ADDED 2026-07-22: CalibrationExecute.SCAN_VBR = "ScanVbr" in
+calib_run.py (mirrors SCAN_THR's own entry - constructor defaults, not
+read from ODB, same as ScanThr's). This was flagged as a genuinely
+open, undecided question after the mechanics port (ScanThr's own
+dispatch integration happened as a separate, later step too) - user
+confirmed to add it now. test_calibration_factory.py extended with a
+real ScanVbr dispatch check. Full suite re-verified passing.
+
+2.2) Result saving + plots - already drafted, unlike scan_thr
+--------------------------------------------------------------------
+Unlike scan_thr, scan_vbr's draft already HAS root_writer.py and
+plot_manager.py (writes .root before plots, so data survives even if
+plotting fails - a good convention worth carrying over to scan_thr's
+own still-undesigned version, section 1.2). Same CDB requirement as
+scan_thr (Marius: ".root and CDB would be good", not detector-specific).
+VBR-finding itself (breakdown-voltage extraction via derivative peak +
+Gaussian fit, confidence-checked) is real analysis logic scan_thr's
+side has no equivalent of - purely additive, not something thr scan
+needs to mirror.
+RESOLVED for result-saving (confirmed 2026-08-21): same ResultSaverROOT/
+CDB path as 1.1, tested via test_calibration_factory.py. RESOLVED for
+plots too, later the same day (this note went briefly stale after
+1.2's plotting system was built - see 1.2's own resolution note):
+vbr_scan.py now has a real build_plots() (I vs V + derivative/Gaussian-
+fit overlay, styled to match img_scanvbr_plot2.jpeg) - not a port of
+root_writer.py/plot_manager.py, a fresh implementation using the same
+ResultSaverPlot mechanism as ScanThr/PllTest.
+
+2.3) Granularity - pixel already solved this in production
+--------------------------------------------------------------------
+VTX_iv_scan.msl (pixel legacy MSL, read in full 2026-07-22): scans
+per-power-partition, each with its own Start_HV/Stop_HV/Step_HV stored
+in ODB, a shifter-selectable user_mask (partition-level opt-in per
+run), and a per-partition Done flag so shorter ranges stop early while
+longer ones continue - the global loop is sized by the MAX iteration
+count, not the sum, so this costs nothing extra in scan time.
+scan_vbr.py/iv_scan.py has none of this today - one shared range for
+every SciFi HV channel, all swept together.
+Same question as 1.3, same answer: CONFIRMED 2026-07-23 (Zoom call) -
+granularity follows the same power groupings already in the control
+page (the 4 real HV crates - US Top/US Bottom/DS Top/DS Bottom) - the
+already-implemented structure is fine, no redesign wanted. Still capped
+at the CRATE level for now regardless: going finer (a specific FEB's
+own IV range) is blocked by the still-unconfirmed HV-channel-to-SMB/FEB
+ORDER (topology.txt 4c - only the total count, 24, is confirmed 1:1,
+not which specific channel is which SMB) - that part is unrelated to
+today's granularity answer and stays open.
+PARTIALLY RESOLVED (confirmed 2026-08-21): the per-group scan-mechanics
+gap is closed - ScanVbr.execute() sweeps per-module independent
+iv_start/iv_end ranges, loop sized by the longest range (math.ceil per
+range, taking the max), exactly the VTX_iv_scan.msl pattern described
+above.
+RESOLVED 2026-08-21 (user: "è già stato assolutamente risolto, va a
+vedere in Power dentro custom page"): the HV-channel-to-SMB/FEB order
+IS known - online/mhttpd/custom/SciFi_page/SciFi_PowerHV.js's HV_BOARDS
+constant has it, resolved dynamically by MSCB hostname + name pattern
+(rewritten 2026-08-10 to survive a real mu3ebe hv_fe.cxx edit, not a
+fixed index table): 4 groups (US Top/Bottom, DS Top/Bottom), each with
+its own mscbHost and an 8-slot `modules` array giving the module index
+per position (null = unused slot). This was never ported to Python
+(hv.py) - calibration_open_items.txt's "HV_BOARDS still JS-only" note
+is the tracked pointer for that, and ScanVbr itself doesn't need it
+(sidestepped 2026-08-11, each ScanVbr folder already carries its own
+HVChannel field) - only a future finer-than-crate ScanVbr granularity
+would need this ported, and isn't blocked on "the mapping is unknown"
+anymore, just on "nobody's written the Python port yet".
+
+2.4) SAFETY GAP found 2026-07-22, not just a granularity nice-to-have
+--------------------------------------------------------------------
+VTX_iv_scan.msl has a real over-current abort scan_vbr.py's loop has no
+equivalent of: reads a configurable Max_Current_per_Chip parameter,
+computes max_hv_current = that x n_chips, and cuts a partition's Demand
+to 0 (marking it Done) if the measured current reaches that limit
+mid-sweep. Checked whether HV's own frontend covers this the way it
+covers voltage (mdev_hv4.cxx's real Voltage-limit clamp) - it does NOT:
+HV/Settings/"Current limit" exists in the live ODB (confirmed,
+docs/odb_220726_121718.json) but is only ever stored/displayed in
+mdev_hv4.cxx, never compared against the measured Current. A real gap
+to close whenever scan_vbr gets built for real, not something already
+covered elsewhere.
+ANSWERED 2026-07-23 (Zoom call, docs/old/marius_zoom_2026-07-23.txt
+point 3, now archived): NOT IMPORTANT - Marius said the current
+default (whatever's sitting in ODB, 1000uA/channel) and every other
+UNVERIFIED value in the mockup can stay as-is, no real numbers given,
+not a priority to chase down right now.
+
+CLOSED 2026-07-22 (same day, user: "over current possiamo implementarlo
+ora?"): ScanVbr now checks Current[] against the existing per-channel
+Settings/"Current limit"[] every step (new ScifiHv.read_current_limits_
+all() in detector/hv.py) - a faulting channel's Demand is cut to 0 (new
+ScifiHv.set_demand_channels(), a per-channel-subset variant of
+set_demand_all()) for the rest of the sweep, mirroring VTX_iv_scan.msl's
+own per-partition Demand-to-0 reaction, not a full-scan abort - other
+channels keep ramping. One warning per faulting channel, deduped via a
+new self.__over_current_channels set (same pattern as ScanThr's
+self.__over_current_febs). The actual numeric limit still uses whatever
+is in ODB (live default 1000uA per channel, confirmed in the dump) -
+"reasonable current limits" itself is still the open Marius-call
+question above, this only closes the mechanism gap, not the value
+question. Also fixed the same warnings-overwrite bug just found in
+ScanThr's finalise(): ScanVbr.finalise() was replacing self.warnings
+with vbr_find's own warnings when run_vbr_finding=True, silently
+dropping any over-current warnings collected during execute() - now
+extends instead. New covering test in test_vbr_scan.py (one channel
+deliberately given a low Current limit, verifies its Demand is cut
+starting the step AFTER the fault is caught while every other channel
+ramps unaffected, and exactly one warning is recorded) - had to also
+seed a generous Current limit for test_vbr_find.py's mocked channels
+(its own dynamic breakdown-current mock legitimately reaches ~1000uA,
+which the unhandled-path stub's dummy 1uA limit would otherwise have
+falsely flagged as over-current, corrupting that test's own curve).
+Full 11-file suite re-verified passing.
+
+FULL AUDIT + FIXES 2026-07-22, same day (user: "fai un check finale su vbr
+e thr. un check completo e approfondito"): read every line of thr_scan.py/
+vbr_scan.py/thr_find.py/vbr_find.py/feb.py/hv.py/scifi.py/calib_base.py/
+calib_run.py/thr_run.py/vbr_run.py, plus the original rate_scan.py for
+comparison. Found and fixed 3 real issues:
+  1. BUG (safety-relevant): thr_run.py/vbr_run.py only printed
+     calib.warnings via seq.msg() INSIDE the run_autofinding/
+     run_vbr_finding conditional block - but the over-current warnings
+     ScanThr/ScanVbr collect during execute() are independent of that
+     flag. Since run_autofinding/run_vbr_finding default to False, an
+     operator running with default parameters would NEVER see an
+     over-current warning in the PySequencer log, even though the
+     hardware-level mitigation (masking/demand-cut) DID happen - directly
+     undermining the safety value of the checks just built. FIXED: the
+     warnings loop now runs unconditionally, right after finalise().
+  2. GAP: all 3 dispatch points (thr_run.py, vbr_run.py, calib_run.py's
+     perform_calibration()) skipped finalise() entirely whenever
+     execute() returned anything other than SUCCESS. For ScanThr this was
+     theoretical (execute() never actually fails); for ScanVbr it's real -
+     floating-point drift on voltage accumulation near the 60V cap
+     (observed directly: 58.00000000000001 in our own test) could make
+     set_demand_channels()/set_demand_all() reject the last step and
+     return FAIL, skipping finalise()'s configure_alloff() and leaving the
+     ASICs stuck in short-mode test configuration (or, for ScanThr, the
+     switching board left bypassed - affecting every other subdetector
+     sharing it). FIXED: finalise() (hardware cleanup) now always runs
+     regardless of execute()'s outcome in all 3 call sites; the original
+     failure result is still what gets returned/reported, cleanup just no
+     longer gets skipped to do it. New regression test in
+     test_calibration_factory.py (monkeypatches ScifiHv.set_demand_
+     channels to force a failure, confirms MutrigConfigAllOff still fires).
+  3. TEST REGRESSION (self-inflicted, found via the audit):
+     test_calibration_factory.py's ScanVbr dispatch test never seeded
+     Settings/"Current limit"[] for its HV channels, so today's own
+     over-current check (see above) fell back to the mock's dummy 1uA
+     limit against a mocked 1.5uA current - tripping on the very FIRST
+     step and silently turning the test into a degenerate
+     "all-channels-faulted-immediately" run instead of the real full
+     sweep it was meant to exercise (confirmed: 186 "unhandled path" hits
+     for Current limit during a debug run). Fixed by seeding a generous
+     1000uA limit for all 6 mocked channels, same as test_vbr_scan.py/
+     test_vbr_find.py already do.
+Observations noted but NOT changed (not bugs, need a product decision
+first, not a code fix): thr_scan.py's pre-offset-loop noisy-channel mask
+gets wiped by the very first __set_array_all("mask", 0) inside the
+offset loop, making that pre-pass a no-op for masking purposes -
+confirmed IDENTICAL in the original rate_scan.py, not something
+introduced by this port. Neither scan early-exits when every channel/Feb
+ends up masked/faulted - both just idle to completion instead. A NaN
+current reading would silently pass the over-current check (abs(nan) >
+limit is always False in Python) - no confirmed case of a real SciFi
+channel reading NaN, so left undefended rather than guarding against an
+unconfirmed scenario. Full 11-file suite re-verified passing after all 3
+fixes.
+
+CLOSED 2026-07-22, same day (user: "7. può essere sistemato?" - the
+remaining open item from the audit, the LV-before-HV pre-check): added
+Feb.check_lv_power_good() (detector/feb.py, reads Variables/"Power
+Good"[ch], same no-UNVERIFIED-constants pattern as check_lv_over_
+current()) and wired it into ScanVbr.prepare(), mirroring VTX_iv_scan.
+msl's own check_if_dcdc_power_good() gate before sweeping HV. Adapted for
+SciFi's coarser granularity at the time: pixel gates PER POWER PARTITION
+since its LV<->HV mapping within a partition is confirmed; SciFi's HV
+channel<->SMB/Feb order was NOT confirmed then (topology.txt 4c), so
+there was no way to gate just the affected channels - was a
+WHOLE-DETECTOR LV gate at the time.
+SUPERSEDED, confirmed 2026-08-21 (checked the real current code, not
+just this note): ScanVbr.prepare() no longer has any LV check at all -
+it now gates on `self.detector.hv.check_chain_for_channels(hv_indices)`
+(core/hv.py), an HV-side TDK/PowerDist chain check scoped to exactly the
+selected modules' own hv_indices - already per-selection, not
+whole-detector, and already HV rather than LV. Whether this was a
+deliberate redesign or this note was simply never updated when it
+happened isn't clear, but the code today already does what 2.4/this
+item were asking for - nothing left to implement here. The whole-
+detector LV check this paragraph describes only still exists for
+ScanThr/PllTest (Feb.check_lv_feb_chain(), unrelated to this item). Also fixed a related visibility gap found
+while wiring this in: all 3 dispatch points (thr_run.py, vbr_run.py,
+calib_run.py) only printed calib.warnings AFTER a successful prepare() -
+a prepare()-time failure (like this new gate) would report just the
+bare CalibrationResult.FAIL enum with no reason attached. Now all 3
+print calib.warnings on a prepare() failure too. New covering test in
+test_vbr_scan.py (Power Good=False -> prepare() FAILs with 12 warnings,
+one per commissioned Feb, since all share the dry-run stub LV channel -
+same mock limitation as test_scan_thr.py's own LV over-current test);
+had to seed a healthy Power Good baseline in test_vbr_scan.py/
+test_vbr_find.py/test_calibration_factory.py so their existing "real
+scan" paths still get past prepare(). Full 11-file suite re-verified
+passing.
+
+CLOSED 2026-07-22, same day (user: "voglio arrivare qui... 5 script
+solidi che eseguono e basta tutti bulk. all'interno però devono avere
+check e strutture solide" - so the only future work after Marius's call
+is granularity, nothing else): closed the last known structural gap -
+NONE of the 5 scripts/ entry points (feb_power.py, lv_power.py,
+hv_power.py, thr_run.py, vbr_run.py) called common/services.py's
+TDK/DCDCCrates shared-equipment health check, even though it already
+existed and was wired into CalibrationFactory. Rather than duplicate the
+same 2-service loop into 5 new call sites, factored it into a new free
+function common/services.py's check_shared_equipment(client) (returns
+(bool ok, str message)) - CalibrationFactory.check_shared_equipment() now
+delegates to it (same public bool-returning signature, no test changes
+needed), and all 5 scripts call it first thing inside their MidasClient's
+try block, refusing to run (seq.msg(is_error=True), early return) if
+unhealthy. Note: common/services.py lives in common_scripts (shared with
+pixel_scripts, same branch - gmoretti-common-script-implementation -
+already pending PR review with Luigi, 2026-07-27) - this is an additive
+change (new function, existing classes untouched), pixel's own
+ActionFactory keeps its own separate copy (out of scope, different
+repo/PR concern, not touched). All 5 scripts' module docstrings updated
+to mention the gate. Full 11-file suite + syntax-check on all 5 scripts
+re-verified passing.
+REFINED 2026-07-22, same day (user caught it during a "siamo in linea
+con l'obiettivo?" self-check): the shared-equipment gate above was
+originally unconditional in feb_power.py/lv_power.py/hv_power.py -
+blocking power_on=False (turning OFF) just as much as power_on=True.
+That's backwards for a safety gate: turning off is the de-escalation
+action, it should stay available precisely when shared equipment is
+unhealthy, not be blocked by it. Fixed: the check now only runs when
+power_on=True in all 3 scripts; power_on=False always proceeds straight
+to det.turn_off_all_*(). thr_run.py/vbr_run.py are unaffected (pure
+"start a scan" actions, no on/off duality - the unconditional gate is
+correct there). Full 11-file suite + syntax-check re-verified passing.
+
+With this, the 5 scripts/ entry points are now considered STRUCTURALLY
+DONE for bulk execution (validation, domain-specific safety checks,
+shared-equipment gate that doesn't block shutdown, hardware cleanup
+guarantees) - the only remaining planned work on them is granularity
+(per-Feb/per-crate/per-channel selection), deliberately deferred until
+after tomorrow's Marius call (section 3.1/4 below).
+
+Residual, NOT fixed (structural limits, not code bugs): none of the 5
+scripts' sequence(seq) has ever been functionally exercised end-to-end
+(midas.client.MidasClient needs a real MIDAS connection, unlike core/'s
+own ODBCommand which respects is_odb_available) - only reasoned through
+and syntax-checked.
+
+CLOSED 2026-07-22, same day (user decided on all 3 of the earlier
+audit's open observations at once: "1. e giusto che il masking si
+resetti ad ogni offset [confirmed correct, no change]. 2. ha senso fare
+un early-exit [build it]. 3. si va fixato [fix the NaN edge case]"):
+  1. CONFIRMED, no code change: the per-offset noisy-channel mask reset
+     (and the pre-scan pass being a no-op for masking, since it gets
+     wiped by that same reset) is correct as designed, not a bug -
+     user's own call, matches the original rate_scan.py too.
+  2. BUILT: early-exit for both calibrations when nothing is left to
+     measure. ScanThr gets __all_febs_faulted() (checked right after
+     each __check_lv_over_current() call, both in the pre-scan pass and
+     inside the threshold loop) - if every Feb that HAS an LV supply is
+     over-current-faulted, execute() returns SUCCESS immediately with a
+     clear warning instead of scanning the rest of the range uselessly.
+     ScanVbr gets the equivalent __all_channels_faulted() check inside
+     the sweep loop - if every discovered HV channel is over-current-
+     faulted, the loop breaks (falls through to the existing Demand-
+     reset-to-0 cleanup, unlike ScanThr's direct return - execute() has
+     its own post-loop cleanup step to run). A crash risk surfaced while
+     wiring ScanThr's version: run_threshold_finding() (thr_find.py)
+     expects scan_data[offset][t] for the FULL requested range - an
+     early abort leaves later offsets missing entirely, which would
+     raise a KeyError, not just a partial result. Fixed by tracking a
+     new self.__aborted_early flag; finalise() now skips autofinding
+     cleanly (with an explanatory warning) instead of crashing on
+     incomplete scan_data when it's set. ScanVbr's own vbr_find.py needed
+     no equivalent guard - already handles short/partial per-channel
+     curves gracefully (found=False below 3 usable points), confirmed by
+     checking its code again before deciding not to touch it.
+  3. FIXED: __check_over_current()'s abs(current) > limit comparison
+     silently passed a NaN reading (any comparison against NaN is always
+     False in Python/IEEE 754) - now checks math.isnan(current) first
+     and treats it as a fault too (reason: "reading is NaN (unreliable
+     measurement)"), on the reasoning that an unreadable measurement is
+     at least as suspect as a high-but-valid one, not something to treat
+     as "fine" by omission. Real precedent for this actually happening:
+     a non-SciFi HV channel in the live ODB dump reads NaN.
+Found and fixed a REAL TEST BUG while verifying (2): test_find_thr.py
+never seeded a healthy LV baseline (Over Current[0]) - previously
+harmless (its static FCCR mock has no wiring to the ODB mask array, so
+masking every Feb from the start had no visible effect), but the new
+early-exit turned that same latent gap into an immediate scan abort,
+breaking the test. Fixed by adding the same baseline test_scan_thr.py
+already had. test_scan_thr.py's own over-current test also had to be
+redesigned: it used to fault ALL 12 Febs via the shared dry-run stub
+channel specifically to test PERSISTENCE across offsets - which the new
+early-exit now short-circuits before ever reaching a second offset.
+Split into two separate tests: one monkeypatches Feb.check_lv_over_
+current() directly to fault only feb_index 1 (bypassing the shared-
+stub-channel mock limitation entirely) to properly test per-Feb
+targeting + persistence without triggering the early-exit; the other
+uses the real shared-stub channel (which genuinely faults all 12 at
+once) to test the early-exit path itself. test_vbr_scan.py gained 2 new
+dedicated blocks for fix (2) (all-channels-faulted) and fix (3) (NaN).
+Full 11-file suite re-verified passing.
+
+2.5) DS/US split parameter - CLOSED 2026-07-23
+--------------------------------------------------------------------
+"For HV I want to have an IV scan from 54 to 58V and then we have to
+decide how this looks between DS/US" (Marius, direct quote) - was
+explicitly open in his own words. ANSWERED on the 2026-07-23 Zoom call
+(docs/old/marius_zoom_2026-07-23.txt point 2, now archived): same
+answer as 1.3/2.3 - the already-implemented structure (granularity
+mirroring the control page's own power groups, US/DS split included) is
+fine, no separate DS/US redesign needed beyond that.
+
+2.6) Priority
+--------------------------------------------------------------------
+Confirmed useful (user's own call 2026-07-22, closing what was
+previously an open "is this even wanted" question from Marius's own
+framing) - but still sequenced LAST among the calibrations (user
+decision, 2026-07-21, "allora IV andrà alla fine") and explicitly lower
+priority than scan_thr for October ("can likely wait", Marius's own
+framing, todo.txt section 5).
+
+
+3) SHARED, CROSS-CUTTING QUESTIONS
+====================================================================
+
+3.1) Granularity model, if built, should be ONE model, not two
+--------------------------------------------------------------------
+Both 1.3 and 2.3 point at the same underlying redesign - a global tick
+loop with per-item (per-Feb, per-crate, per-channel) independent ranges
+and early-stopping, selection-gated, following the SAME power groupings
+already in the control page. If/when this gets built, it should likely
+be one shared mechanism (e.g. in a common calibration-loop helper), not
+reinvented separately for scan_thr and scan_vbr - worth designing once
+both calibrations actually need it, not before.
+STILL OPEN (confirmed 2026-08-21): thr_scan.py and vbr_scan.py each
+independently implement their own per-item grouped-range loop - no
+shared calibration-loop helper was factored out. Both calibrations now
+actually need it (1.3/2.3 above are each independently resolved), so
+this factoring question is live, not just hypothetical anymore.
+DECIDED 2026-08-21 (user, explicit): leave separate, no shared helper
+for now - both loops work, are tested, and the duplication is small;
+factoring now would be a refactor without a concrete immediate need.
+Revisit if a third calibration needing the same shape ever gets built.
+
+See scripts_io_reference.txt (new 2026-07-22, same docs/code/ folder as
+this file since the 2026-07-24 docs reorg) for the concrete
+starting point of this design: every parameter each of the 5 scripts/
+entry points currently takes, and its source (hardcoded/PySequencer/ODB
+state) - this is exactly the list to go through, item by item, when
+deciding which ones need to become per-Feb/per-crate/per-channel instead
+of the single bulk value they are today, and what to actually ask Marius.
+
+3.2) CDB stays delegated either way
+--------------------------------------------------------------------
+Neither calibration needs its OWN CDB writer built here - both just
+need a real, working hook point in finalise() (or equivalent) for
+whoever owns the CDB piece to plug into, per code_design.txt 2.5's
+DELEGATED note.
+
+3.3) Result-saving schema should be decided AFTER the granularity
+     question, not before
+--------------------------------------------------------------------
+Both 1.1 and 2.2 flag this: if per-channel/per-group independent ranges
+ever get built, "one scan step" stops meaning the same thing for every
+channel - the incremental-write schema (and the plot layout) would need
+to account for that. Locking the saving format first and retrofitting
+granularity later risks a second redesign.
+
+
+4) SUGGESTED ORDER (not decided, just a reasoned proposal)
+====================================================================
+  1. DONE 2026-07-23 (Zoom call): granularity should mirror the
+     already-implemented power-group structure (US/DS for FEB/LV, 4
+     crates for HV) - see 1.3/2.3/2.5. Resolves 3.3's "decide
+     granularity first" concern in favor of "yes, this is the shape" -
+     the still-open part is building the actual per-group scan loop
+     (1.3's own scan-mechanics gap), not deciding its shape anymore.
+  2. Design scan_thr's result-saving schema + plots for real (informed
+     by the answer above) - highest priority, must work by October.
+  3. DONE 2026-07-22, ahead of this order (scan mechanics only - see
+     2.1): scan_vbr ported into scifi_scripts' detector/-based
+     architecture. STILL TO DO from this item: reusing scan_vbr.py's
+     already-drafted root_writer.py/plot_manager.py where the schema
+     allows once 2.2 is designed, and closing the over-current gap (2.4)
+     - neither done yet, both deliberately left for later.
+  4. Revisit whether a shared granularity mechanism (3.1) is worth
+     factoring out, once both calibrations actually need it.
+This order is a proposal for after tomorrow's call, not a commitment -
+today's session ends with planning, not building (see todo.txt PAUSED
+note).

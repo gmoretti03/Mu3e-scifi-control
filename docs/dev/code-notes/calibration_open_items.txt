@@ -1,0 +1,1422 @@
+CALIBRATION - CONSOLIDATED OPEN ITEMS
+====================================================================
+Written 2026-08-07, REVISED twice same day (user: "fai un altro giro
+per sicurezza" x2). Pass 1-2: calibration_process.txt +
+calibration_page_plan.txt + todo.txt. Pass 3: scripts_io_reference.txt
++ calibrations_plan.txt (surfaced a real DEADLINE, section 0). Pass 4:
+discovered a SEPARATE, previously-unchecked 158KB open-items file
+(Docs/devolpment/page/TODO.txt - not the same file as Docs/devolpment/
+todo.txt used throughout this whole session) plus code_design.txt -
+surfaced concrete cross-tab consequences of this session's ScanVbr work
+(section 6A). Every item below traces to something actually written
+down somewhere in this repo, not memory. This file is a snapshot - if
+it drifts from the source files named in brackets, they win, not this
+list. Diminishing returns reached on pass 4 (page_io_reference.txt/
+geometry_page_io_reference.txt/code_implem.txt checked too, nothing
+calibration-relevant beyond what's already superseded by this session's
+real build) - further passes unlikely to find much more.
+
+====================================================================
+ROADMAP, AGREED 2026-08-07, REVISED same day (user's own sequencing -
+not a commitment to build all of it now, just the agreed order for
+whenever each piece gets picked up)
+====================================================================
+1. DONE 2026-08-07: finish the IV scan custom page (items 6-10 in
+   section 4 below - overwrite protection, result age, PySequencer
+   cross-check, Stop/Pause, selection-vs-results distinction).
+2. DONE 2026-08-08: Thr scan custom page - status/result read-back,
+   live plot, per-ASIC Start writes, correct Calibration/SciFi/ScanThr
+   placement, AND the channel-selection grid converted to a read-only
+   Geometry-style coloured display (masking design rule enforced - see
+   section 2 below for full detail).
+3. Geometry tab - originally planned LAST because it needs both
+   calibrations' data - IV/VBR PART DONE 2026-08-07, ahead of step 2, by
+   explicit user request, then substantially extended same day: per-
+   module temperature (Feb S1/S2, incl. SI1/SI2) AND IV calibration
+   info wired to real data (VbrResult, status, age); every module-
+   detail section (DCDC/FEB/LV/HV/Calibration/Readout) is now its own
+   collapsible menu with a row of real-signal-backed colour dots next
+   to its header; LV got an aggregate fault dot; FEB's Active-ch got a
+   real status-pill (header+content+the real Power-FEB table too), FEB
+   header trimmed 7->6 dots (two temp dots merged into one), FEB
+   content split into its own "Crate rails & temperatures" sub-block;
+   HV Current/Voltage-over-limit became a REAL fault state feeding
+   geoHvStatusFor() - colours the main ring AND the Calibration page's
+   own HV dot (shared function), plus status-pills in content and the
+   real Power-HV table; legend updated with the new HV fault colour.
+   Thr scan info in Geometry DONE 2026-08-08 (per-ASIC Thr status dot +
+   label in the Readout section, new Thr summary block + aggregate dot
+   in the Calibration section, header label corrected from "IV scan" to
+   "IV/Thr" to match) - closes the "STILL OPEN" item from this section.
+   CORRECTED 2026-08-09: "STILL OPEN: sub-tabs" above was STALE
+   documentation, not real state - verified live against SciFi_main.html
+   and found sub-tabs (.mtabs/.mtab) already exist and work in BOTH
+   Power (Supply/LV power/FEB power/HV power) and Calibration (IV scan/
+   Thr scan/PLL test), built + the collapse-on-second-click bug fixed
+   2026-08-07 (same day as the original "add sub-tabs" note - see
+   todo.txt around "Power and Calibration sub-tabs... now collapse when
+   you click the already-active tab again"). This roadmap file just
+   never got updated when that shipped. The only real remaining gap is
+   the PLL test sub-tab's CONTENT ("PLL test - not implemented yet." -
+   a stub <p>, cal_pll_tab in SciFi_main.html) - a third calibration
+   type never built, not a sub-tab mechanism gap. See section 6A below
+   and todo.txt's "NEW FEATURE IDEAS" entry for the original notes.
+4. Rewrite the scifi_scripts code to actually integrate ScanVbr and
+   ScanThr (the vbr_run.py/thr_run.py rewrite, section 1's "banco di
+   lavoro" work becoming real - still explicitly not started). NOTE,
+   2026-08-07: the page's Stop/Pause buttons do NOT need separate
+   wiring as part of this - confirmed in sequencer.py's real source
+   that Stop/Pause/Resume are handled generically at the PySequencer
+   ENGINE level (same polling loop as Start/Load), not per-script. They
+   already work for whatever script ends up running here.
+5. Integrate the two calibrations together (wire them into a real,
+   working end-to-end path - the CalibrationFactory/dispatch question
+   in section 1 needs answering as part of this).
+6. Introduce ROOT file saving (the gap flagged in section 0 - currently
+   no destination for it at all, not even a stub, unlike ODB/CDB).
+7. IN PARALLEL with all of the above (user, 2026-08-07: "integrali nel
+   roadmap come punto 7"), no fixed position in the sequence - pick up
+   opportunistically alongside 1-6:
+   - PLL test calibration - RESOLVED 2026-08-14: pll_test.py is
+     superseded by HIST for real (Yifen Wan, Slack, directly - see
+     todo.txt section 1b and project_scifi_dryrun_status memory).
+     Rebuilt across the same day into a full IV/Thr-scan-style tab
+     (superseding an earlier, now-discarded direct-`/Equipment/
+     SciFiFibre/.../Histogram/*` single-FEB-dropdown version):
+     - cal_pll_tab, tab label "PLL Test" (kept, not "HIST" - HIST is
+       the implementation, PLL Test is what the user calls it), moved
+       to FIRST position in Calibration's sub-tabs.
+     - Unit of selection = FEB, not module (hardware constraint: HIST
+       reads a whole FEB's 8 ASIC lanes - both modules - at once, no
+       per-module sub-selection possible). Confirmed with the user.
+     - Table (per FEB): checkbox, FEB label, Link/FEB/LV status dots
+       (same 3-dot pattern as Thr scan, same underlying hardware),
+       Status pill, Verdict, Warnings, then 8 per-row editable
+       ParametersUsed cells (preset/left_bound/bin_width/
+       interval_clocks/filter_mode/filter_field/filter_value/
+       poll_budget) - string fields use a new calFillParamSelectCell()
+       (calFillParamInputCell only supported number/bool). Shared form
+       above is for bulk-apply; per-row cells for editing one FEB at a
+       time - same "shared vs per-row" split as IV/Thr, except PLL
+       Test has no separate "per-unit-only" field group since nothing
+       legitimately varies FEB-to-FEB (config gets re-pushed to the
+       firmware on every FEB's turn in the sequential loop anyway).
+     - Checks (calPllWarnings), copied from Thr scan's pattern +
+       PLL-specific range validation (calPllSharedErrors: bin_width
+       power-of-two, left_bound+256*bin_width signed-21-bit range,
+       filter_value range per filter_field) + "all ASICs on this FEB
+       disabled" (Thr's per-ASIC analogue, adapted to FEB granularity
+       since there's no per-ASIC control here).
+     - Detector-wide ASIC test-pulse injection setup ported from
+       Scifi-monitor.js's configure_pll()/configure_short() (HIST
+       needs a known timing reference - arrival - true_hit_timestamp -
+       the HIST guide doesn't cover generating one). "Configure PLL
+       injection"/"Revert to normal" buttons, scoped to selected FEBs'
+       channel ranges for the 5 genuinely per-channel fields (cml,
+       cml_sc, tdctest_n, recv_all, mask); tx_mode stays global
+       (harmless, same value in both modes) and dmon_select[*] + the
+       mask[asic*32+4] unmask loop (asic 8-15) stay exactly as the
+       original wrote them (indexing scheme unconfirmed - per-ASIC or
+       a MuTRiG-design constant replicated on every chip - not safe to
+       guess-scope). Revert deliberately skips tthresh[*]/
+       tthresh_offset[*] (real Thr scan calibration results, unlike
+       configure_short()'s hardcoded 63/0 reset).
+     - ODB shape mirrors ScanVbr/ScanThr exactly (checked live against
+       the real local ODB): `PllTest/selected_febs` + per-FEB folders
+       (`US_SM<n>`, no module suffix) each with Status/Message/
+       Warnings/ParametersUsed/Result (Verdict/Peak/Width/Bins[256]) -
+       no `Output/` (no continuous readback concept here). Field names
+       follow mhttpd's ODB->JSON convention (plain lowercase, no
+       underscore - `VBreakdownRaw`->`vbreakdownraw`), fixed a naming
+       bug caught this way (`peak_ns`/`width_ns` -> `peak`/`width`).
+     Reads/writes `CAL_ODB_BASE + "/PllTest/..."` - same base as
+     ScanVbr/ScanThr, not the old direct-Equipment-tree approach.
+     SciFi_Calibration.js v47->v59 across the whole rebuild (v59: also
+     fixed calPllFebs sort order - was unsorted link_feb order, US SM
+     1/3/0/5/2/4, now US then DS by SM number like calModules; and
+     the FEB row detail now always shows a read-only 8-ASIC overview,
+     stated in the same visual style as Thr scan's per-ASIC blocks
+     [enabled/disabled pill, unmasked-channel-count pill, channel
+     mask grid], live from ODB regardless of whether PllTest has ever
+     run - Status/ParametersUsed/Verdict/histogram plot underneath,
+     conditional on a real result existing).
+     REAL BUG FOUND+FIXED 2026-08-14 (user: "non scrive nulla ne
+     legge"): `db_paste` (what `mjsonrpc_db_paste`/`modbset` both call
+     under the hood) requires the ODB key to ALREADY EXIST - it calls
+     `db_find_key()` and silently skips (no JS exception) any path
+     that isn't found (see midas/src/mjsonrpc.cxx `js_db_paste`).
+     ScanVbr/ScanThr only work because something pre-seeded their
+     per-unit folders (`SeedScanThr`/`RestructureScanVbrToCalibration`
+     in `/Programs`) - `PllTest` had never been created, so every
+     Apply/Start/per-row write was silently failing, and every read
+     found nothing. Seeded the full local-ODB tree by hand (odbedit,
+     12 US/DS SM folders with Status/Message/Warnings/ParametersUsed/
+     Result, verified live) - confirmed `set`/db_paste_json_node DOES
+     auto-grow STRING sizes on write once the key exists, only
+     creation itself needs a pre-existing key.
+     Also seeded the missing sibling tree, `/CosmicRun/
+     CalibrationDefaults/SciFi/PllTest` - a SEPARATE single, non-
+     partitioned default template (same shape as one FEB's own
+     subtree: Status/Message/Warnings/ParametersUsed/Result), matching
+     the real Calibration-vs-CalibrationDefaults convention documented
+     in calibration_process.txt and `restructure_scanvbr_to_
+     calibration.py`'s docstring: `Calibration/SciFi/<Scan>` holds the
+     REAL per-unit live state (what the page reads/writes), `Calibration
+     Defaults/SciFi/<Scan>` holds ONE canonical default/reset template,
+     not read by the page's own JS today (same as ScanVbr/ScanThr -
+     their own page code never reads CalibrationDefaults either, it's
+     backend/maintenance-script territory, consumed by things like the
+     Rebuild*DefaultsTemplate programs). Confirmed via live ODB that
+     this second tree existed for both ScanVbr and ScanThr and was
+     missing for PllTest before this fix.
+     STILL NEEDED before this works on mu3ebe/production: an
+     equivalent one-time seeding step there too, for BOTH trees (a
+     script mirroring SeedScanThr/RestructureScifiCalibration, or
+     db_create via the mjsonrpc "db_create" method instead of
+     db_paste) - added to todo.txt, not done, this session only fixed
+     the local dev ODB. Confirmed working live after the seeding fix
+     (user edited a per-row select cell, US_SM2 shows preset=rate/
+     filter_field=asic actually written to ODB).
+     Closed the `filter_field=asic-channel` gap flagged earlier: the
+     guide's exact ASIC/channel comparison needs two separate values
+     packed together (CSR7 = `(((ASIC&7)<<5)|(channel&31))<<16`), not
+     a single number - added `filter_asic`/`filter_channel` as two
+     more ParametersUsed fields (only meaningful when filter_field=
+     asic-channel, same pattern as filter_value being meaningless
+     when filter_mode=off), replaced the old hard-blocking error with
+     real 0-7/0-31 range validation in calPllSharedErrors. Table now
+     10 per-row param columns (18 total), seeded on both ODB trees.
+     SciFi_Calibration.js v59->v60.
+     Simplified `filter_value` away 2026-08-14: since filter_asic/
+     filter_channel already exist, reused them directly for the
+     channel-only and asic-only filter_field cases too instead of
+     keeping a third, overlapping field - table now 9 per-row columns
+     (17 total). SciFi_Calibration.js v60->v61.
+     REAL ARCHITECTURE BUG FOUND+FIXED 2026-08-14 (user: "paramter
+     used dentro odb deve scriversi solo se parte la calibrazione"),
+     applies to the whole Calibration section, not just PLL Test:
+     `ParametersUsed` in ODB is meant to be a historical record of
+     what a run actually used, but every edit path (shared form +
+     "Apply to selected", and each per-row cell's onchange) wrote to
+     it immediately, live, regardless of whether Start was ever
+     pressed - editing settings was silently corrupting the audit
+     trail. Fixed for PLL Test (IV/Thr scan still need the same port,
+     explicitly agreed as the next step, not done this session):
+     - New `pllPendingEdits` - a client-side-only object (not ODB),
+       keyed by `feb.label + "|" + field`, holding in-progress edits.
+       `calPllFillParamInputCell`/`calPllFillParamSelectCell` (new,
+       PLL-specific replacements for the now-unused shared
+       `calFillParamSelectCell`, which was deleted - `calFillParamInputCell`
+       stays, IV/Thr still use it) write ONLY to this cache, never ODB.
+     - `calPllApplySelected()` redefined: copies the Shared form into
+       selected FEBs' pending edits (local only), not ODB.
+     - `calPllEffectiveParam(feb, field, odbValue)` resolves a cell's
+       displayed value: pending edit if one exists, else the last-used
+       ODB value - this is also what protects an edit that lost focus
+       from being wiped by the 2s poll rebuild (user's own follow-up
+       question caught this gap before it shipped).
+     - `calStartPll()` now reads effective (pending-or-ODB) values per
+       selected FEB, writes them to `ParametersUsed` as the ONLY write
+       path, then clears those FEBs' pending entries. `calPllWarnings()`
+       validates the same effective values per selected FEB (was
+       validating the shared form globally, less accurate).
+     Known accepted tradeoff (user chose this explicitly, given a
+     documented alternative persisted-staging-field design): edits are
+     lost on page reload or if the browser tab is closed before Start -
+     no server-side persistence for in-progress edits.
+     SciFi_Calibration.js v61->v62.
+     PORTED TO IV/THR SCAN same day (v62->v63), same pattern exactly:
+     - `ivPendingEdits` (key `row.label + "|" + field`) and
+       `thrPendingEdits` (key `calThrAsicKey(row, asic) + "|" + field`,
+       one level deeper than PLL/IV since Thr operates per-ASIC not
+       per-row) + their `calIvEffectiveParam`/`calThrEffectiveParam`
+       resolvers.
+     - New `calIvFillParamInputCell`/`calThrFillParamInputCell` replace
+       the old shared `calFillParamInputCell` (deleted, now truly dead -
+       PLL had already stopped using it) at both call sites: IV's per-
+       row cells in `renderIvTable()`, Thr's per-ASIC cells inside
+       `calBuildThrAsicBlock()`'s `calThrParamKvRow()`.
+     - "Apply to selected" (IV's dedicated click handler, Thr's) both
+       redefined the same way as PLL's: write into the pending cache
+       for the per-row/per-ASIC fields only (`ivParamFields`/
+       `thrParamFields`) - the truly shared fields (`ivSharedFields`/
+       `thrSharedFields`, e.g. iv_increment, threshold_step) never had
+       per-row cells to begin with, so they need no caching at all,
+       Start already reads them fresh from the form every time.
+     - `calStartIv`/`calStartThr` now write effective (pending-or-ODB)
+       values per selected row/ASIC, then clear those entries.
+       `calIvWarnings`/`calThrWarnings` validate the same effective
+       values instead of raw ODB `parametersused`.
+     Same accepted tradeoff as PLL Test (edits lost on reload, no
+     server persistence). All three calibrations now share the exact
+     same "ParametersUsed changes only at Start" rule.
+
+     PY SIDE WRITTEN 2026-08-14 (`calibrations/pll_scan.py`,
+     `scripts/pll_run.py`, `detector.SciFiDetector.configure_pll_mode()`),
+     mirroring `thr_scan.py`/`thr_run.py` exactly. Design decisions made
+     with the user before writing anything:
+     - Data acquisition = Option A, no Run Control: `PllTest.prepare()`
+       calls `detector.prepare_switching()` (Set Bypass/FEBs into
+       running) exactly like `ScanThr` already does - this is what
+       makes real hit traffic flow for FCCR rate reads today, reused
+       as-is for HIST, not new capability. `finalise()` calls
+       `configure_short_mode()` + `restore_switching()` to match.
+     - HIST is read via ODB only, never a raw slow-control mailbox
+       from Python - confirmed by finding `detector/scifi.py` already
+       has the exact reusable primitive, `common.odb.commands.
+       ODBBooleanCommand` (write True, poll until it reverts to
+       False), the same pattern `MutrigConfig` already uses. `pll_scan.
+       py` writes `/Equipment/SciFiFibre/Settings/Histogram/*` (the
+       guide's suggested layout - unimplemented C++ frontend still
+       required before any of this does anything real) and triggers
+       `Commands/Histogram/{Apply,Snapshot}` the same way. This also
+       means Python never computes the guide's raw CSR hex values
+       (0xfffffc18 etc.) - that translation is the future C++
+       frontend's job, not this script's.
+     - `configure_pll_mode()` added to `SciFiDetector`, ported from
+       Scifi-monitor.js's `configure_pll()` (same asic-8-15 caveat as
+       the JS side's `calPllConfigureAsics` - ported as-is, indexing
+       scheme unconfirmed). Reuses the EXISTING `configure_short_mode()`
+       for revert instead of writing a scoped variant - unlike the JS
+       "Revert to normal" button, this runs inside the same controlled
+       execute()->finalise() flow every other calibration already ends
+       with (which already resets tthresh/tthresh_offset to 63/0), so
+       there's no clobbering risk here the way there was for an ad-hoc
+       browser button.
+     - Loop is sequential per selected FEB (write Histogram Settings
+       for that FEB index -> Apply -> Snapshot -> read Bins), matches
+       the "call this firmware/script, read the histogram" flow the
+       user described and confirmed.
+     - Result written ONCE at the very end per FEB (user's explicit
+       call, no progressive/live writes) - `Result/{Verdict,Peak,
+       Width,Bins}`, matches what the page already reads.
+     - Peak/width/verdict (`_find_peak_and_width`/`_verdict` in
+       `pll_scan.py`) is a first-pass numpy half-max-crossing
+       algorithm, explicitly flagged as an unvalidated placeholder
+       (`MIN_PEAK_COUNTS`, `MAX_LOCKED_WIDTH_NS`) - needs real
+       calibration-expert review once HIST exists on real hardware.
+       Only meaningful for preset="delay" (rate mode has no timing
+       peak - verdict reports "n/a (rate mode)").
+     `CalibrationExecute`/`CalibrationFactory` in `calib_run.py` also
+     got a `PLL_TEST` entry for consistency with ScanThr/ScanVbr, even
+     though `pll_run.py` instantiates `PllTest` directly like the other
+     `_run.py` scripts do. All new files import-checked and py_compile
+     clean; peak/width/verdict logic sanity-checked against synthetic
+     bin arrays (narrow peak, flat noise, empty) - not yet exercised
+     against anything real, since HIST doesn't exist on real hardware.
+
+     ALIGNMENT PASS 2026-08-14, requested by the user explicitly ("dimmi
+     cosa manca per allinearli") - compared PllTest against ThrScan/
+     VbrScan step by step (not identical granularity, PllTest keeps its
+     own per-FEB shape, but the same logical pattern) and closed 5 real
+     gaps found this way:
+     1. `Conditions` ROOT tree - was missing entirely (Meta/
+        ParametersUsed/Results only); added, same field set as ThrScan's
+        `__feb_conditions_fields` (temperature/link/LV/data-flow), one
+        row per tested FEB.
+     2. `finalise()` was calling `configure_short_mode()` (resets
+        tthresh/tthresh_offset to 63/0 - clobbers real ScanThr results,
+        the exact risk already avoided for the JS "Revert to normal"
+        button) instead of `configure_alloff()`, which is what VbrScan's
+        own finalise() actually uses. Fixed.
+     3. `prepare()` had no server-side parameter validation - ThrScan/
+        VbrScan both validate again server-side, not just trust the
+        page. Added `__params_valid()`, mirror of the page's own
+        `calPllSharedErrors()`.
+     4. Per-FEB `Warnings` was seeded on ODB but never written by
+        Python - added `warnings_for_feb()`/`__write_feb_warnings()`,
+        same pattern as ThrScan's `warnings_for_asic`.
+     5. Architecture change, user's own suggestion ("configure pll
+        injection e revert to normal potrebbe essere introdotto nello
+        script... una FEB alla volta"): configure/verify/measure/revert
+        moved from prepare()-once-for-all-FEBs into the execute() loop,
+        one FEB at a time - same shape as ScanThr's own configure/
+        verify/adjust-per-step loop. Needed a NEW scoped revert,
+        `SciFiDetector.revert_pll_mode(channel_indices)` (mirrors the
+        page's own `calPllRevertAsics()` exactly - never touches
+        tthresh, never the global MutrigConfigAllOff, since
+        `configure_alloff()` can't be scoped to one FEB). Verification
+        reads back `cml_sc` for a sample channel; if it doesn't match,
+        that FEB is skipped (warning, `Result=None`) rather than
+        aborting the whole test. Revert always runs via try/finally,
+        even if the measurement itself raises - `finalise()`'s
+        `configure_alloff()` stays as a final safety net regardless.
+        Also added, found while doing this pass: an LV over-current
+        check per FEB (ThrScan/VbrScan both check this every step,
+        PllTest had none despite enabling real current-drawing
+        injection) and a placeholder `EXPOSURE_SECONDS` dwell between
+        configure and Snapshot - HIST only bins traffic while hits are
+        actually flowing, back-to-back Apply/Snapshot with no dwell
+        would likely read empty/near-empty accumulation. Not a page
+        parameter (unlike ScanThr/ScanVbr's settle_seconds), not tuned.
+     All changes py_compile-clean and import-checked.
+   - CDB/RunDB save mechanism (ResultSaverRunDB - still empty, distinct
+     gap from ROOT, see step 6). CONCRETE DIRECTION FOUND 2026-08-09:
+     read Docs/devolpment/Mu3e-Note-0133-CDB_RDB.pdf (Urs Langenegger,
+     v2.0, 5 Aug 2026) end to end. The CDB actually hosts THREE distinct
+     storage mechanisms, easy to conflate: (1) the real conditions
+     database (/cdb, global tags/tags/payloads) - heavyweight, requires
+     a dedicated calAbs-derived C++ class + schema + GT inclusion, meant
+     for FINAL reconstruction-consumed constants, not a good fit for a
+     WIP scan-result dump; (2) /detconfigs - opaque config file bundles
+     (e.g. pixel mask/TDAC), grouped by string tag, NO run/IOV
+     versioning; (3) /detcal ("Detector Calibration Files") - THIS looks
+     like the right destination: arbitrary calibration-procedure output
+     files (JSON/ROOT/binary), keyed by (name, run) with IOV-style
+     lookup (largest stored run <= queried run, or exact=1 for an exact
+     match), a simple REST API already built and documented with
+     working curl/Python examples (POST /detcal/upload with file+name+
+     run+optional comment/replace=1; GET /detcal/:name to list; GET
+     /detcal/:name/:run to download; DELETE to remove). Much lighter
+     than the real conditions DB - no schema class, no GT wiring. Two
+     caveats found in the doc itself: the file-based CDB backend for
+     /detcal isn't implemented yet (only the MongoDB-backed REST server
+     works, at http://mu3edb0/detcal - fine, since a save mechanism
+     would talk to that REST server directly anyway); and none of these
+     routes enforce authentication. Not yet decided whether our
+     "ResultSaverRunDB" naming should actually map to /detcal instead of
+     RDB proper (RDB's runrecords are per-run bookkeeping documents,
+     though they do support generic GridFS attachments via /rdb/
+     addResource/:id) - /detcal's (name, run) IOV-style versioning is a
+     closer conceptual match to "one saved result per scan run" than
+     attaching to a run's own bookkeeping record. Still not implemented
+     - this is a grounding finding, not a decision, and it's a real
+     external system (mu3edb0) so any actual write there needs the same
+     care as any other live-system action, not just a local ODB script.
+
+     DESIGN AGREED 2026-08-09 (user: "il salvataggio deve essere più
+     completo possibile - una persona deve riuscire a ricostruire tutti
+     i salvataggi e le info che ci sono nella tab calibration e
+     geometry della pagina" - not just the calibration algorithm's own
+     output, a full conditions snapshot too):
+     - name = one per calibration TYPE ("scifi_scan_thr",
+       "scifi_scan_vbr"), not per module/ASIC - matches how thr_run.py/
+       vbr_run.py each execute once and internally loop over the whole
+       detector; avoids a ~96-name explosion for ScanThr.
+     - run = the real DAQ run number, read live from ODB (/Runinfo/Run
+       number - no existing script reads this path today, confirmed by
+       grep), or the last completed run if DAQ is stopped at save time
+       (user, explicit: "DAQ è normalmente attivo durante le scansioni
+       e se è fermo prendiamo il precedente").
+     - ONE file per (name, run) - re-running the same calibration for
+       the same run OVERWRITES via /detcal's own replace=1 (no
+       versioning within a run, matches the real API's own semantics
+       exactly, no extra logic needed on our side).
+     - Checked what's already available before designing content:
+       detector/feb.py's Feb class already has check_lv_status()
+       (current/voltage/sense/temperature + all 7 LV fault flags) and
+       get_power_monitoring() (crate rail voltages, CC temp, FEB temp);
+       detector/hv.py's ScifiHv already has check_status() (current/
+       voltage/enabled per channel) and read_current_limits_all().
+       REAL GAPS found (exist in Geometry.js today, reading ODB
+       directly, but NOT wrapped by any Python class method yet): FEB
+       onboard readings (SI1/SI2/Arria/Max/extArria/DCDC, from sffe[]),
+       FEB datapath link flags (PLL locked/RX ready/DPA locked/Buffer
+       full/Frame desync), and HV limits combined into one call (exists
+       separately via read_current_limits_all(), just not merged with
+       check_status()). These 3 gaps need new Feb/ScifiHv methods
+       before the "Conditions" tree below can be filled for real -
+       that's the next step after this design is finalised.
+
+     FINAL ROOT STRUCTURE, v1 - 2026-08-09, SUPERSEDED 2026-08-13 (see
+     REVISED version directly below) - kept here only so the v1->v2
+     reasoning is traceable, not as the current design:
+     5 TTrees per file (ScanThr; ScanVbr the same idea, simplified):
+     Meta(1 row, incl. "ParametersUsed (7 fields)" as ONE row) /
+     RawScan(1 row per (offset,threshold), dense rate[] for every
+     global channel) / Results / Conditions(1 row per module) /
+     ChannelMasks. Broken by the SAME DAY's own earlier work
+     (2026-08-09's later session, then 2026-08-13's PowerGroup/R1-R2-R3
+     work): ScanVbr/ScanThr gained real PER-MODULE/PER-ASIC
+     ParametersUsed (not one global set - a v1 assumption that no
+     longer holds) and ScanThr's own offset/threshold ranges are now
+     genuinely per-ASIC (entries_covering()/channels_covering()) - a
+     dense per-tick 512-channel row would contain meaningless values
+     for whichever ASICs aren't covered at that particular tick.
+
+     REVISED FINAL ROOT STRUCTURE, v2 - 2026-08-13. 6 TTrees per file
+     (ScanThr; ScanVbr the same idea, simplified - see below):
+     1. Meta (1 row): run, timestamp, overall Status, Warnings
+        (vector<string>), + THR ONLY: the R1/R2 readout-branch signals
+        (ROSWBF/ROSWBC/ROSWBDS readout_scifi, the "SciFi readout" Run
+        Parameter) - whole-detector/whole-run facts, same level as
+        run/timestamp, added 2026-08-13 alongside the page's own R1/R2
+        readout-branch status block (Readout tab). NOT in ScanVbr's own
+        Meta (user, 2026-08-13: "quelle sono info da salvare solo in
+        thr scan" - R1/R2/R3 are about whether SwitchingFibre's
+        datapath is moving data, irrelevant to VBR, which reads HV
+        current/voltage directly, never through that chain at all).
+     2. ParametersUsed (NEW in v2) - 1 row per ASIC for ScanThr (96
+        rows: threshold_start/stop, offset_start/end, noisy_rate_
+        threshold, run_thr_finding, threshold_step, settle_seconds) /
+        1 row per module for ScanVbr (24 rows: iv_start/end, fit_
+        window_v, min_peak_prominence, run_vbr_finding, iv_increment,
+        settle_seconds) - its own tree because Conditions is per-
+        MODULE (wrong granularity for ScanThr's own per-ASIC
+        parameters) and because "what was configured" (input) is a
+        different kind of thing than "what came out" (Conditions/
+        Results, output/telemetry) - mirrors the ODB's own ParametersUsed
+        subfolder being separate from Output/VbrResult/ThrResult there.
+     3. RawScan - REVISED grouping key: 1 row per (ASIC, tick), NOT per
+        global (offset, threshold) - offset/threshold/n_step stay as
+        plain per-row columns (still directly filterable/groupable by
+        offset, e.g. tree[tree.offset==1] works identically to a v1-
+        style dense grid), but each row's fccr[32] is a FIXED-size
+        array scoped to exactly that ASIC's own 32 channels - matches
+        thr_scan.py's own already-existing per-ASIC Output write
+        (__write_output(entry["folder"], threshold, offset, tick,
+        fccr) inside entries_covering(offset, threshold)) exactly, so
+        no new in-memory bookkeeping is needed to produce it, just
+        writing the same values to ROOT instead of only to ODB. Chosen
+        over the alternative (1 row per (offset,threshold) with a
+        variable-length/jagged channel array, awkward-array-backed)
+        for computational efficiency - fixed-size arrays read as plain
+        rectangular NumPy via uproot, no jagged-array overhead, while
+        still supporting the "give me everything at a given offset"
+        access pattern via the plain offset column either way.
+     4. Results - unchanged from v1: 1 row per (channel, pe_level),
+        chosen result + full per-offset audit trail.
+     5. Conditions - 1 row per MODULE (24 rows), unchanged shape from
+        v1 (FEB-level fields repeated across a Feb's two modules,
+        module-specific fields not repeated) PLUS, new 2026-08-13, THR
+        ONLY: the R3 data-flow diagnosis for that module's own Feb
+        (Merger Rate, LINK FIFO FULL, hits lost summed across both
+        sorter stages, credits) - mirrors the "data flow" column added
+        to the Readout tab and Geometry's per-module detail the same
+        day. NOT in ScanVbr's own Conditions - same R1/R2/R3-is-THR-
+        only reasoning as Meta above.
+     6. ChannelMasks - unchanged from v1: 1 row per active channel.
+     ScanVbr: same ParametersUsed/base-Conditions shape (WITHOUT the R3
+     data-flow fields - see point 5) and a Meta WITHOUT the R1/R2
+     fields (see point 1); RawScan stays
+     1 row per HV channel (voltage[], current[] - the full sweep, not
+     per-step rows - this row shape was ALREADY correct in v1, each
+     channel already has its own independent array, no v1->v2 change
+     to the SHAPE needed here). CONTENT check 2026-08-13 (user: "vorrei
+     avere nel root... tutti i dati che leggo durante lo scan" - what's
+     actually read during execute() vs what scan_data currently keeps):
+     THR is already complete (everything read - read_fccr() - already
+     flows into scan_data). VBR has a real gap: voltage[] in scan_data
+     today is the COMMANDED/demand value (voltages[ch], what execute()
+     sets), never an independent per-tick readback - hv.read_voltage_
+     all() exists and is already used elsewhere in execute() but only
+     ONCE, at the very start, to capture the pre-scan value for the
+     end-of-scan restore, not every tick. RawScan's voltage[] should be
+     the ACTUALLY-READ voltage per tick, not just what was demanded -
+     a real code gap to close when this is picked up (add a per-tick
+     read_voltage_all() call alongside the existing read_current_all(),
+     append into scan_data[ch]["voltage"] instead of the demand value).
+     Chiller temperature (also read every tick, also not kept in
+     scan_data today, also overwritten-not-logged in its ODB Output
+     field) was raised as the same class of gap but user, explicit:
+     "lascia stare la temperatura" - deliberately NOT added, left as
+     today (read per tick, written to ODB, not preserved in ROOT).
+     Results 1 row per HV channel (found/confident/fitfailed/
+     vbreakdownraw/ibreakdown/vbreakdownfit/fitsigma); ChannelMasks not
+     obviously needed for VBR - still left open, not blocking.
+
+     4 MORE ADDITIONS AGREED 2026-08-13 (user: "altre info da salvare",
+     "vai pure" - all approved, design-only, no code):
+     a. Per-module (VBR)/per-ASIC (THR) Warnings, not just Meta's one
+        global vector<string> - both vbr_scan.py/thr_scan.py already
+        compute this exact filtered-by-folder subset internally
+        (__write_module_warnings()/__write_asic_warnings(), today only
+        written to each folder's own ODB Warnings field) - add a
+        Warnings field to ParametersUsed (or Conditions/Results - exact
+        tree not yet chosen, any of the three already has the right
+        per-module/per-ASIC granularity) instead of forcing a reader to
+        re-parse Meta's flat global list by string prefix.
+     b. A "faulted at tick N" field (RawScan or Results) - today an
+        early-stopped curve (over-current fault mid-scan) is only
+        distinguishable from "reached its own iv_end/range end
+        normally" by noticing the array is short and cross-referencing
+        Warnings text - an explicit per-channel (VBR)/per-ASIC (THR)
+        fault-tick field (null if never faulted) makes this a direct,
+        structured check instead of an inference.
+     c. Software version in Meta - the git commit hash of scifi_scripts
+        that produced the file (standard reproducibility practice - if
+        the calibration algorithm changes later, a saved file should
+        still say which version made it). Mechanism not decided (read
+        via `git rev-parse HEAD` at save time, or a version string
+        baked in some other way) - not blocking, just noted.
+     d. VBR's Results enriched with the SAME "keep the audit trail"
+        philosophy already applied to THR - CONFIRMED AVAILABLE FOR
+        FREE, 2026-08-13: calibrations/vbr_find.py's own find_
+        breakdown_voltage() already computes AND returns deriv_voltage/
+        derivative (the full log-derivative curve used to locate the
+        peak and feed the Gaussian fit) for every channel, today
+        silently discarded by run_vbr_finding()/ScanVbr.finalise() -
+        only the final scalar results (found/confident/v_br_raw/
+        v_br_fit/fit_sigma/i_br) are kept anywhere. Zero new
+        computation needed - just stop throwing deriv_voltage[]/
+        derivative[] away and add them as two more array fields on
+        Results' existing per-HV-channel row.
+     e. Meta's single "timestamp" is ambiguous (scan start vs. file-
+        write time at finalise()) - split into explicit start_time/
+        end_time, useful for correlating with external logs and for
+        knowing how long the scan actually took.
+     f. Meta gains an explicit AbortedEarly boolean - both ScanVbr/
+        ScanThr already track this internally (__aborted_early), today
+        only surfacing as free text inside Status/Warnings - a direct
+        boolean avoids having to infer it from string content.
+
+     DESIGN REVIEW CLOSED HERE, 2026-08-13 (user: "vai si" after being
+     asked whether to stop adding to the design and move to
+     implementation) - v2 design, as amended by all of today's points
+     a-f above, is the current target. Next: close the 4 real gaps
+     (3 from 2026-08-09 + the SFSO/SFCN resolver from today) with new
+     getter methods in scifi_scripts/detector/, per the NEXT STEP note
+     above - this is the actual implementation starting point.
+
+     4TH REAL GAP FOUND 2026-08-13 (in addition to the 3 from 2026-08-09
+     below): the R3 data-flow resolution (Names SFSO/SFCN parsing,
+     per-Feb Merger Rate/LINK FIFO FULL/hits-lost/credits) exists ONLY
+     in JavaScript today (SciFi_Readout.js's parseSfcnByFebIndex()/
+     parseSfsoByBlock()/buildFebDataFlowStats()/dataFlowPillFor()) -
+     needed in Python too (scifi_scripts/detector/, not common_scripts -
+     SwitchingFibre is SciFi-specific) before Conditions' new data-flow
+     fields can be filled for real. Same "capability first, wiring
+     separate" precondition as the original 3 gaps.
+
+     NEXT STEP, AGREED 2026-08-09 - 4 GAPS CLOSED 2026-08-13, IMPLEMENTED
+     WITH TEST COVERAGE (scope confirmed earlier: scifi_scripts-only,
+     no common_scripts changes - Feb/ScifiHv are scifi_scripts-only
+     classes, pixel_scripts has its own separate Feb):
+       1. Feb.get_onboard_monitoring() (detector/feb.py) - SI1/SI2/
+          Arria/Max/ext_arria/DCDC from SFFE, base=feb_index*26,
+          offsets +1..+6, ported 1:1 from SciFi_Geometry.js's
+          GEO_SFFE_VALUES_PER_FEB layout. Returns None if SFFE missing/
+          too short for this Feb's index.
+       2. Feb.get_link_flags() (detector/feb.py) - raw per-flag dict
+          (not collapsed to pass/fail like the existing
+          check_link_flags() health check), reuses Feb.DATAPATH_FLAGS/
+          the same ODB paths.
+       3. ScifiHv.get_channel_conditions_all() (detector/hv.py) -
+          combined enabled/output_on/current/voltage/current_limit/
+          voltage_limit per channel, one call, merging what was
+          previously only available via check_status() (per-channel,
+          no limits) and read_current_limits_all() (limits only)
+          separately.
+       4. SciFiDetector.get_feb_data_flow_stats() (detector/scifi.py),
+          backed by new module-level _parse_sfcn_by_feb_index()/
+          _parse_sfso_by_block() - Python port of SciFi_Readout.js's
+          parseSfcnByFebIndex()/parseSfsoByBlock()/
+          buildFebDataFlowStats(), same SFCN-index-trusted/SFSO-block-
+          matched resolution and the same documented residual
+          assumption (SFSO block order trusted to match SFCN's own
+          verified order, not independently checkable).
+     Test coverage added: test_feb_power.py (1+2), test_hv_power.py
+     (3), test_detector_construction.py (4, with a deliberately
+     non-identity block<->feb_index mapping in the mock data so a
+     naive by-position resolver would be caught). All 12 scifi_scripts
+     test scripts pass.
+
+     ROOT/CDB SERIALISATION IMPLEMENTED 2026-08-13, SAME SESSION -
+     BEFORE STARTING, DISCOVERED common_scripts already has an
+     unrelated, unfinished ResultSaver framework (common/results/
+     saver.py + common/operation/*.py, user's own commit d0d2e9b,
+     2026-08-11, on the gmoretti-common-script-implementation branch -
+     not main, and not referenced anywhere in this whole design
+     conversation until found). ScanThr/ScanVbr already inherit a
+     ResultSaverMultiple via CalibrationBase but never actually use it
+     (no append_step_result()/run()/save_final() call anywhere in
+     thr_scan.py/vbr_scan.py/thr_run.py/vbr_run.py - they write ODB by
+     hand instead) - confirmed effectively dead code, not a conflict
+     with today's design. DECISION (user, asked directly): extend the
+     ResultSaver family with two new classes rather than build
+     something bespoke, and keep them in common_scripts even though
+     only SciFi uses them today (explicit call, not the default "no
+     premature abstraction" outcome - the classes are generic {tree_
+     name: rows} in, no scifi-specific content, so the "shared" label
+     is honest even with one real consumer) - but WITHOUT forcing
+     ScanThr/ScanVbr's own tick-loop bookkeeping through the generic
+     step-loop/run() machinery, which doesn't fit their architecture
+     and would have risked pixel's own already-different usage of the
+     same base classes. Implemented:
+       - common/results/saver.py: write_root_file(path, {tree_name:
+         rows}) (module-level helper, row-list -> column-array
+         transpose via new _to_columns(), uproot.recreate() - a tree
+         with zero rows is skipped, not written empty). ResultSaverROOT
+         (save_final() writes <name>.root to a folder). ResultSaverRunDB
+         (was an empty stub) - save_final() writes a temp .root file,
+         POSTs to <server>/detcal/upload with name/run/replace=1 (run
+         number read live from /Runinfo/Run number), deletes the temp
+         file after - matches the /detcal REST semantics grounded
+         2026-08-09 above. ResultSaverMultiple gained has_root_result/
+         root_file_folder for symmetry, but scifi_scripts does NOT go
+         through it (see above) - thr_run.py/vbr_run.py construct
+         ResultSaverROOT/ResultSaverRunDB directly.
+       - ScanThr.build_root_report() / ScanVbr.build_root_report()
+         (calibrations/thr_scan.py, vbr_scan.py) - build the {tree_
+         name: rows} dict from each scan's own already-tested in-memory
+         state (self.scan_data/asics or modules/parameters/warnings/
+         calibration_by_feb or vbr_results), per the v2 schema (as
+         amended by points a-f) above. Small supporting refactors, both
+         low-risk (re-ran the full existing test suite after each):
+         thr_scan.py's entries_covering()/channels_covering() moved
+         from local closures inside execute() to instance methods (so
+         the report builder can reuse the exact same per-ASIC offset/
+         threshold-covering logic instead of a second, driftable
+         copy); tick-per-(offset,threshold) and fault-tick-per-Feb now
+         recorded during execute() (self.tick_for_offset_threshold,
+         self.fault_tick_by_feb - faulted_at_tick uses -1 as the
+         never-faulted sentinel, since ROOT/uproot has no None for a
+         fixed-dtype int column); start_time/end_time recorded in both
+         classes; __write_asic_warnings()/__write_module_warnings()
+         split into a reusable warnings_for_asic()/warnings_for_module()
+         + the ODB write, so the report and the ODB write can't drift
+         either. New calibrations/calib_base.git_commit_hash() (best-
+         effort git rev-parse HEAD of scifi_scripts, try/except None on
+         any failure - metadata, never something a calibration should
+         fail over) and calib_base.CDB_SERVER = "http://mu3edb0",
+         shared by both scan classes/scripts.
+       - VBR's Conditions scoped to ONLY the HV channel's own status+
+         limits (ScifiHv.get_channel_conditions_all()) plus module
+         identity - deliberately NOT the FEB-level power/onboard/link
+         fields THR's Conditions has, because there is no reliable HV-
+         channel-to-Feb mapping today (topology.txt section 4c, also
+         test_hv_power.py's own docstring: HV is "NOT owned by Feb...
+         the channel<->SMB ORDER isn't documented anywhere") - inventing
+         one here would have been exactly the kind of index-based
+         guess this whole roadmap exists to avoid. VBR has no
+         ChannelMasks tree (left open per the design doc, not blocking).
+       - thr_run.py/vbr_run.py: replaced the "NOTE: .root/CDB result
+         saving is not built yet" placeholder with build_root_report()
+         + ResultSaverROOT.save_final() (always, local-only, safe) +
+         ResultSaverRunDB.save_final() gated behind a NEW opt-in
+         PySequencer param "save_to_cdb" (default False) - the CDB
+         write is a real external write to mu3edb0, so it does not fire
+         by default the way the local .root save does.
+     Test coverage: new tests/test_root_report.py - write_root_file()
+     (fixed/jagged arrays, 1-row Meta-style trees, empty-tree skip),
+     ResultSaverROOT, ResultSaverRunDB (mocked requests.post - payload
+     shape, temp-file cleanup, failure reporting - never hits the real
+     mu3edb0), and both build_root_report()s against realistic mock
+     scans, including a full round-trip through the real uproot writer
+     and a deliberately non-identity mapping to catch a by-position
+     resolver bug the way test_detector_construction.py's SFCN/SFSO
+     test already does. All 13 scifi_scripts test scripts pass.
+     NOT done: real save_to_cdb=True test against mu3edb0 (never
+     attempted - real external write, out of scope for local testing);
+     VBR's voltage[] still the commanded value, not a true per-tick
+     readback (flagged 2026-08-13 above, still open); a real end-to-end
+     PySequencer run of either script has still never happened (section
+     0's pre-existing gap, unchanged by today).
+   - Get this session's ODB design (Calibration/SciFi/ScanVbr's shape)
+     reviewed by someone outside this session - Marius or the team -
+     per section 1's IMPORTANT CAVEAT, it's a proposal, never checked
+   - Verify the UNVERIFIED hardcoded physical constants in the real
+     scripts today (LV/HV expected-current+tolerance, vbr's
+     fit_window_v/min_peak_prominence) - see section 0
+   - Functionally test the 5 real scripts end-to-end against a real
+     MIDAS connection - never done, only reasoned through + syntax-
+     checked (section 0)
+   - DONE 2026-08-13, same session: "invisible bottleneck" readout
+     monitoring (R1/R2/R3 - ROSWBF/ROSWBC/ROSWBDS + Run Parameter
+     branch status, SwitchingFibre SFSO/SFCN data-flow diagnosis) -
+     built on the Readout tab (branch-status pills + data-flow column)
+     and Geometry tab (module summary rows + module-fill color), see
+     the two dedicated todo.txt sections from today. This stale bullet
+     ("not started at all", citing a "section 6A" that was never about
+     this) was leftover text from before that work happened - left
+     here struck-through rather than deleted, for traceability.
+   - CLOSED 2026-08-13, same session (see the full entry further down,
+     "Real MIDAS message question (step 8, RETURN/REPORT) - CLOSED"):
+     seq.msg() already IS cm_msg() - PySequencer's SequenceClient
+     inherits MidasClient.msg() unmodified. Nothing further needed;
+     this stale duplicate bullet is kept only for traceability.
+   - Keep closing the scattered todos as they come up (this file +
+     todo.txt) - the original, catch-all part of this item
+
+====================================================================
+0. TIME-SENSITIVE / HIGHEST PRIORITY (found on this 3rd pass, missed
+   by the first two)
+====================================================================
+- RESOLVED 2026-08-13 (see section 7's "ROOT/CDB SERIALISATION
+  IMPLEMENTED" entry, full detail there): scan_thr's result-saving
+  schema + plots was marked "highest priority, must work by October".
+  thr_run.py/vbr_run.py now both call build_root_report() +
+  ResultSaverROOT.save_final() (local .root, always) and optionally
+  ResultSaverRunDB.save_final() (CDB /detcal, opt-in param
+  save_to_cdb). Plots are still NOT built (not part of today's work -
+  ROOT/CDB save only). Kept below for traceability, no longer current.
+  [calibrations_plan.txt: "4) SUGGESTED ORDER", item 2;
+  scripts_io_reference.txt: thr_run.py/vbr_run.py OUTPUT sections]
+
+- RESOLVED 2026-08-13, same entry as above: ROOT file output now has a
+  real destination, common/results/saver.py's new ResultSaverROOT +
+  write_root_file(). calibrations_plan.txt's reference to a "scan_vbr.
+  py's already-drafted root_writer.py/plot_manager.py" was confirmed
+  stale/lost, as suspected below - today's write_root_file() was built
+  fresh, not recovered from anywhere.
+  [calibrations_plan.txt: "4) SUGGESTED ORDER", item 3;
+  scripts_io_reference.txt: cross-cutting notes]
+
+- UNVERIFIED hardcoded physical constants baked into the CURRENT real
+  scripts (not this session's design - the actual live code): lv_power.
+  py's expected_current_a=6.5/current_tolerance_a=3.0; hv_power.py's
+  expected_current_ua=1.5/current_tolerance_ua=1.0; vbr_run.py's
+  fit_window_v=0.5/min_peak_prominence=3.0 - all explicitly flagged
+  UNVERIFIED in scripts_io_reference.txt, meaning nobody has confirmed
+  these are physically correct for SciFi hardware. A calibration could
+  pass/fail based on numbers nobody checked.
+  [scripts_io_reference.txt: lv_power.py/hv_power.py/vbr_run.py INPUT
+  (HARDCODED) sections]
+
+- None of the 5 current scripts/ entry points (feb_power.py, lv_power.py,
+  hv_power.py, thr_run.py, vbr_run.py) have EVER been functionally
+  exercised end-to-end against a real MIDAS connection - only reasoned
+  through and syntax-checked, since MidasClient needs a real connection
+  unlike core/'s own dry-run-capable ODBCommand.
+  [calibrations_plan.txt: "Residual, NOT fixed" note]
+
+- DONE 2026-08-11: script-side scan granularity is now ONE shared
+  mechanism, built the same way for both ScanVbr and ScanThr, not
+  reinvented separately - closes this exact ask. Shared increment
+  (iv_increment for VBR, threshold_step for Thr) + genuinely independent
+  per-module/per-ASIC range (iv_start/iv_end; threshold_start/stop +
+  offset_start/offset_end), with early-stopping once a channel/ASIC's
+  own range is exhausted - VBR holds at its own end value (a real,
+  physically valid steady state), Thr excludes/masks instead (a stale
+  threshold register would mislabel the recorded rate, unlike a held
+  voltage). See section 3's own DONE entry for the full design and the
+  new tests that verify it.
+  [calibrations_plan.txt: "3.1) Granularity model, if built, should be
+  ONE model, not two"]
+
+====================================================================
+1. BLOCKING FOR ANYTHING TO ACTUALLY RUN
+====================================================================
+- STALE, RESOLVED: "vbr_run.py does not exist" - it exists today
+  (scifi_scripts/scripts/vbr_run.py), was already being edited well
+  before this bullet was written. Left here crossed out rather than
+  silently deleted, since the OPEN ARCHITECTURE QUESTION right below
+  (which script/path is canonical) is still real and still unresolved.
+
+- OPEN ARCHITECTURE QUESTION, RESOLVED 2026-08-11 (user, directly): the
+  page's "Start Scan" button calls PySequencer - i.e. path (b) below is
+  the real, canonical entry point. Kept the two-paths description below
+  for context/history, now resolved rather than deleted.
+  TWO parallel dispatch paths exist in the code, both genuinely work -
+  (a) calibrations/calib_run.py's CalibrationFactory, reading
+  /CosmicRun/Calibration/SciFi/CurrentCalibration and calling
+  calib.run() (the common/ lifecycle, wired 2026-08-11); (b)
+  scripts/thr_run.py and scripts/vbr_run.py, each their own PySequencer
+  entry point reading params via seq.get_param(), calling
+  prepare()/execute()/finalise() by hand (NOT calib.run() - deliberate,
+  they need per-stage seq.msg() reporting mid-flight, not the single
+  blocking call .run() makes) and calling
+  calib_run.scifi_check_shared_equipment() directly, bypassing
+  CalibrationFactory. CONFIRMED: (b) is the real path - the page's Start
+  Scan button drives PySequencer directly, not CurrentCalibration.
+  CalibrationFactory.perform_calibration() (path a) is NOT dead code -
+  user confirmed it, 2026-08-11 - it has a real purpose distinct from
+  the Start Scan button, just not yet written down anywhere. Keep as-is,
+  do not remove/refactor without asking what it's actually for.
+  [calibration_page_plan.txt: "HOW A CALIBRATION ACTUALLY GETS STARTED"]
+
+- DONE 2026-08-11: scifi_scripts IMPORT-BROKEN state fixed - old flat
+  common.services/common.odb/common.power_supply/common.command_mixin
+  paths updated to common.equipment.services/common.odb.commands/
+  common.power.supply/common.odb.mixin across 9 files (calib_run.py,
+  detector/{channel,scifi,hv,feb}.py, scripts/{vbr_run,thr_run}.py,
+  tests/{test_mock_odb_data,test_vbr_find}.py), verified by actually
+  running all scifi_scripts tests (not just re-checking syntax). Found
+  and fixed a real PRE-EXISTING bug along the way: test_mock_odb_data.py
+  only ever monkeypatched odb_read_test (scalar) never
+  odb_read_test_array, so every array-shaped ODB read in
+  common/equipment/services.py's Service classes silently fell through
+  to the real (unmocked) dummy stub regardless of what the test set up -
+  this was the actual root cause of test_calibration_factory.py's
+  failure, not just the missing name-filter (see next item).
+
+- HV_BOARDS (module -> HV channel mapping) STILL exists ONLY in
+  JavaScript (SciFi_PowerHV.js) - STILL never ported into hv.py. Gap
+  WIDENED this session, not closed: SciFi_PowerHV.js's mapping was
+  itself rewritten 2026-08-10 to resolve channels dynamically by real
+  MSCB hostname + name-pattern match (survived a real mu3ebe hv_fe.cxx
+  edit that broke the old fixed-index version) - hv.py's Python side has
+  no equivalent at all, still just flat "SciFi CH" substring matching,
+  no module/SM-level grouping. Any real Python script that needs "which
+  HV channel belongs to module X" still doesn't have it.
+  SIDESTEPPED for ScanVbr specifically, 2026-08-11: it doesn't need
+  HV_BOARDS ported at all - each /ScanVbr/<folder> already carries its
+  own real, always-populated HVChannel field (page-written), resolved to
+  an HV index via the new ScifiHv.find_channel_index(name). The general
+  "which HV channel belongs to module X" gap for OTHER callers is
+  unchanged.
+  [calibration_process.txt: "CONCRETE CHECK VALUES", item 2]
+
+- DONE 2026-08-11 ("punto 1" - user: run only the page's Start Scan
+  selection, not the whole detector): ScanVbr/ScanThr constructors no
+  longer take iv_start/threshold_start/etc kwargs at all - they now read
+  ScanVbr/selected_modules and ScanThr/selected_asics (comma-separated
+  folder-name lists, page-written at Start) plus each selected folder's
+  own ParametersUsed straight from ODB, and only touch those channels/
+  ASICs (vbr_run.py/thr_run.py's define_params() no longer register the
+  old scan-parameter PySequencer params either - the page is now the
+  only source for them).
+
+  FOLLOW-UP DONE same day (user: "queste due cose non vanno bene, come
+  potremmo ottenere la massima flessibilità per ogni modulo/asics?" -
+  the two shared-grid limitations just above were real gaps, not
+  accepted as final): both are now genuinely per-module/per-ASIC, not
+  reduced to the first-selected item.
+  - VBR: iv_start/iv_end are now truly per-module. The shared invariant
+    became the RAMP INCREMENT (V/tick), taken from the first selected
+    module's (iv_end-iv_start)/iv_step, not the range itself - every
+    selected module ramps at the SAME V/tick, computed as
+    min(own_iv_start + tick*increment, own_iv_end), so a narrower-range
+    module simply reaches its own end sooner and holds there while a
+    wider-range module keeps going, instead of everyone being dragged
+    through the first-selected module's range. This needed a new
+    ScifiHv.set_demand_channel_map(index_to_voltage: dict) (per-channel
+    DIFFERENT voltages in one call - set_demand_channels() only ever
+    took one shared voltage for N channels).
+  - Thr: threshold_start/stop and offset_start/end are now truly
+    per-ASIC. execute()'s offset/threshold loops run over the UNION of
+    every selected ASIC's own range - at each tick, only the ASIC(s)
+    whose own range actually covers it get unmasked/written; the rest
+    stay masked=1 (excluded entirely, NOT held at a stale value like
+    VBR's voltage ramp - a stale threshold register would silently
+    mislabel whatever rate got recorded under the current tick, so
+    "hold" isn't safe here the way it is for a real physical voltage).
+  - Genuinely still shared (not reduced further, real hardware
+    constraint): iv_step/settle_seconds for VBR, settle_seconds/
+    noisy_rate_threshold for Thr - one settle time and one measurement
+    grid density for the whole selection, taken from the first selected
+    item. VBR-finding params (fit_window_v/min_peak_prominence) also
+    stay shared - vbr_find.run_vbr_finding() applies them as plain
+    scalars to every channel; changing that would mean touching the
+    fit algorithm itself, judged out of scope for this pass.
+  - Verified (not just written): both test_vbr_scan.py and
+    test_scan_thr.py got new dedicated test cases - an asymmetric
+    3-module VBR range (narrower holds, wider keeps ramping, exact
+    voltage sequences asserted) and an asymmetric 2-ASIC Thr range
+    (verified via a spy on write_channel_field_bulk("tthresh", ...)
+    rather than scan_data, since the mock's static FCCR array doesn't
+    actually reflect masking) - both pass. The existing test suite
+    (12 files) was fully re-run and fixed where the new selection-based
+    constructors broke it (all tests already used the old kwargs-style
+    ScanVbr(det, iv_start=...)/ScanThr(det, threshold_start=...) -
+    every one of those needed updating to seed ODB selection instead).
+    One real regression caught this way: test_calibration_factory.py's
+    forced-execute()-failure test patched ScifiHv.set_demand_channels(),
+    which execute()'s new tick loop no longer calls at all (it calls
+    set_demand_channel_map() now) - would have silently stopped testing
+    what it claimed to.
+
+  New geometry capability added to support ScanThr's selection:
+  Feb.get_side_sm(), SciFiDetector.find_feb_by_side_sm()/find_asic() -
+  resolves a page folder name like "US_SM1_M2_A0" to a real Feb/Asic by
+  parsing side/SM/module/asic and using
+  Asic.get_module() == position_in_feb // NASICS_PER_MODULE's own
+  convention (modules_per_feb derived from each Feb's real NumASICsMax,
+  not hardcoded). Verified against the live local ODB, not guessed: all
+  96 real ScanThr/<folder> names (24 modules x 4 ASICs) resolve to 96
+  distinct, collision-free (feb_index, position_in_feb) pairs.
+  CAVEAT: ScanVbr/selected_modules and ScanThr/selected_asics don't
+  exist in the live local ODB yet (checked via mjsonrpc, status 312/not
+  found) - the JS write path was added this session but nobody has
+  clicked Start Scan since, so this whole read path is unexercised
+  against a real MidasClient. If the key genuinely doesn't exist,
+  client.odb_get() likely raises rather than returning None - untested,
+  trusted rather than defensively guarded (matches the page's real
+  workflow: it always writes selected_modules/selected_asics
+  immediately before invoking PySequencer, so by construction the key
+  should already exist whenever this code actually runs).
+  Gap #2 (identified, NOT started): neither ScanVbr nor ScanThr write
+  Status/Message/Output/VbrResult|ThrResult back to the ODB tree the
+  page polls - results only ever live in calib.scan_data/vbr_results/
+  calibration_by_feb in memory. The page currently has no way to see
+  scan progress/results from a script run this way.
+  DONE 2026-08-11 (user: "sistema questo", referring to this exact gap):
+  Status/Message/Warnings were already wired earlier the same day (see
+  the entry below this one); this pass closed the remaining piece -
+  Output (live, written per module/ASIC on every tick of execute(), not
+  just once at the end - required for the page's live plot accumulation)
+  and VbrResult/ThrResult (written once in finalise(), only for
+  modules/ASICs that opted into run_vbr_finding/run_thr_finding).
+  The entire ODB leaf schema (field names/types/array lengths) turned
+  out to already be pre-seeded by an earlier seed script - db_create
+  calls all returned "already exists". Only one real bug found there:
+  ScanVbr's VbrResult/{VBreakdownRaw,IBreakdown,VBreakdownFit,FitSigma}
+  were TID_INT instead of TID_DOUBLE (would have truncated every value
+  to 0) - fixed via delete+recreate on the local test ODB (all 4 fields
+  x 24 modules, verified before/after). ScanThr's Output/ThrResult
+  schema was already correctly typed, no fix needed.
+  KNOWN LIMITATION, not fixed: VbrResult's Output/Temperature has no
+  data source anywhere in the codebase (ScifiHv/detector/hv.py exposes
+  no temperature reading) - left unwritten (stays at the ODB default)
+  rather than fabricating a value.
+  Verified: new ODB-write assertions added to test_vbr_scan.py (Output
+  holds the last tick's values; VbrResult written only for the opted-in
+  module) and test_scan_thr.py (Output's per-ASIC fccr slice correct;
+  ThrResult written only for the opted-in ASIC, values match the
+  in-memory calibration row) - these read FAKE_ODB directly, not just
+  in-memory state, so they'd catch a wrong path/field name too. Full
+  13-file suite re-run, all green.
+
+- DONE 2026-08-11 (same day as the "NOT STARTED" design note above -
+  user: "vai avanti con le implementazioni"): every item in that design
+  is implemented, matching what the page already writes.
+  Page side (done earlier the same session): .calib-form split into two
+  sections per tab. SHARED: VBR gets iv_increment ("deltaV", V/tick) +
+  settle_seconds; Thr gets threshold_step ("step") + settle_seconds -
+  real standalone top-level ODB fields (ScanVbr/iv_increment, ScanVbr/
+  settle_seconds, ScanThr/threshold_step, ScanThr/settle_seconds), NOT
+  nested under any module/ASIC. PER MODULE/ASIC: iv_start/iv_end (VBR),
+  threshold_start/stop/offset_start/offset_end (Thr), plus fit_window_v/
+  min_peak_prominence/run_vbr_finding (VBR) and noisy_rate_threshold/
+  run_thr_finding (Thr) moved in from the old single form.
+  Python side (this pass):
+  - ScanVbr.__init__(): self.parameters now only holds iv_increment/
+    settle_seconds, read straight from ScanVbr/iv_increment and ScanVbr/
+    settle_seconds. Per-module ParametersUsed no longer includes iv_step
+    or settle_seconds at all (page stopped writing them there).
+    execute()'s step_size is just self.parameters["iv_increment"]
+    directly - no more "derive the increment from the first selected
+    module's iv_step" indirection.
+  - ScanVbr.finalise(): fit_window_v/min_peak_prominence are now real
+    per-module {hv_index: value} dicts passed into
+    find_vbr.run_vbr_finding() (the dict-or-scalar capability from
+    earlier this session, now actually used, not just built). run_vbr_
+    finding is a genuine per-module opt-in: self.scan_data is filtered
+    to only the channels whose own module has run_vbr_finding=True
+    before calling run_vbr_finding() at all - a module that never opted
+    in never gets a vbr_results entry, full stop.
+  - ScanThr.__init__(): self.parameters gained threshold_step (read
+    from ScanThr/threshold_step) alongside the existing threshold_start/
+    stop/offset_start/offset_end union; settle_seconds now read from
+    ScanThr/settle_seconds too. A new self.__noisy_thresholds dict
+    ({global_channel_index: its own ASIC's noisy_rate_threshold}) is
+    built once from self.asics - __mask_noisy_channels() now checks each
+    channel against ITS OWN threshold, not one shared value.
+  - ScanThr.execute(): the threshold loop is now
+    range(threshold_start, threshold_stop, threshold_step) instead of
+    always +1 - a genuinely configurable sweep resolution, not hardcoded.
+  - ScanThr.finalise() + thr_find.run_threshold_finding(): run_thr_
+    finding is a genuine per-ASIC opt-in now too - finalise() builds the
+    set of channels whose own ASIC has run_thr_finding=True and passes
+    it as run_threshold_finding()'s new channel_filter parameter (only
+    channels in the filter are considered active on their Feb - everyone
+    else is treated the same as a disabled ASIC's channels). Also added
+    threshold_step as a parameter there (thresholds = range(start, stop,
+    threshold_step)), since scan_data only has entries for the stepped
+    values now, not every integer.
+  - scripts/vbr_run.py, scripts/thr_run.py: updated to stop reading
+    calib.parameters["iv_step"]/["run_vbr_finding"]/["run_autofinding"],
+    none of which exist as shared scalars any more.
+  Verified, not just written: the whole 12-file scifi_scripts test suite
+  was re-run and fixed for the new ODB schema (every test seeding
+  ParametersUsed had to drop iv_step/settle_seconds and add the new
+  shared top-level fields). New dedicated test coverage added: ScanVbr's
+  per-module run_vbr_finding opt-in (one module's channel gets a
+  vbr_results entry, the other's genuinely doesn't); ScanThr's
+  threshold_step (a spy on the real tthresh writes confirms only the
+  stepped values are ever visited); ScanThr's per-ASIC
+  noisy_rate_threshold (same raw rate masks one ASIC's channel but not
+  the other's, per their own different cutoffs); ScanThr's per-ASIC
+  run_thr_finding opt-in (calibration_by_feb only contains rows for the
+  opted-in ASIC's channel, mirroring VBR's own opt-in test). All 12
+  files pass.
+  [todo.txt: 2026-08-11 entry for the conversation this was decided in]
+
+- ResultSaverRunDB (CDB save) is still an empty __init__-only stub -
+  UNCHANGED by the 2026-08-11 ResultSaver wiring (that work turned on
+  ResultSaverLocal only, has_odb_result/has_rundb_result are still
+  hardcoded False in common/operation/base.py, same as pixel).
+  [calibration_process.txt: step 7, "ODB STRUCTURE CONSIDERED SETTLED"]
+
+- IMPORTANT CAVEAT: the entire ScanVbr ODB structure (this session's
+  design) has never been reviewed by anyone outside this session (e.g.
+  Marius) - it's a proposal, not a verified spec, informed by
+  VDAC_power_consumption's shape (a different calibration, different
+  subsystem) as the only real anchor. Whoever picks this up may
+  reasonably want changes.
+  [calibration_process.txt: "IMPORTANT CAVEAT"]
+
+====================================================================
+2. THR SCAN - BUILT 2026-08-08
+====================================================================
+IV scan got the full treatment first; Thr scan got the equivalent
+treatment 2026-08-08, adapted to its own ASIC-level granularity:
+- DONE: real per-ASIC ODB results structure (Calibration/SciFi/
+  ScanThr/<module>_A<asic>/ - Status/Message/ParametersUsed/Output/
+  ThrResult/Warnings), placed correctly from the start (not
+  CalibrationDefaults - the mistake ScanVbr had to be corrected out of,
+  not repeated here)
+- DONE: live read-back, per-ASIC detail (ParametersUsed, ThrResult
+  table split per PE level when Done+run_thr_finding); the original
+  always-visible Rate-per-channel plot was removed 2026-08-08 per user
+  request, then replaced by a click-a-channel live rate-vs-threshold
+  plot (one curve per offset), fed by Output's new live n_step/n_thr/
+  n_offset/fccr scalars instead of a stored curve
+- DONE: Start writes per-ASIC (calStartThr, mirrors calStartIv exactly)
+  to the correct Calibration/SciFi/ScanThr/<asic>/ location
+- DONE: real warnings (PySequencer busy/ghost-running/overwrite
+  protection), finally wired to the message row (was never even
+  connected before this pass)
+- DONE 2026-08-08: the channel-selection grid converted from the OLD
+  editable/clickable style to a read-only, colour-coded display -
+  calBuildChannelGrid now sources real masked/maskedByCascade state per
+  channel from SciFiFibre/Settings/ASICs/Channels/mask +
+  LinksFibre/Settings/ASICMask (mirrors SciFi_Geometry.js's
+  buildModuleAsics() exactly), renders cells as read-only
+  .geo-channel-cell divs (Geometry's own real CSS classes/colours, not
+  the editable .ch-cell used by Readout's real grid), column headers as
+  non-interactive .colbtn-static spans, tooltip shows real tthresh/
+  tthresh_offset/FCCR + masked-state via calChannelTitle(). All old
+  click handlers (column select-all, ASIC select-all, per-cell toggle)
+  and the "Apply to selected channels"/"Clear selection" toolbar
+  removed; thrSelectedChannels state deleted (confirmed dead via grep).
+  A visible note reminds the operator masking is read-only here. Two
+  real bugs caught before shipping: (1) CSS specificity - .colbtn-static
+  rules were initially placed BEFORE .colbtn:hover in SciFi_main.css,
+  which would have lost the cascade since both have equal specificity;
+  fixed by moving them after. (2) verified live against the real running
+  local mhttpd that mask/tthresh/tthresh_offset/FCCR all resolve
+  (db_get_values status all [1,1,1,1]) - found tthresh/tthresh_offset
+  are INT[512] while mask is BOOL[3072], which looks like a size
+  mismatch for the shared global-channel-index (gi) scheme, but checked
+  SciFi_Readout.js and confirmed it indexes tthresh[gi] the exact same
+  way already, in already-shipped code - so this is pre-existing,
+  accepted behaviour, not a bug introduced by this change; not
+  investigated further (not this change's problem to fix).
+- DONE 2026-08-08: per-module/per-ASIC readiness check (link OK + FEB
+  powered + LV Power Good, deduplicated per module across its selected
+  ASICs) added to calThrWarnings(), plus per-ASIC "disabled" and
+  param-bounds (calThrParamErrors) warnings - closes the "NOT done"
+  this line used to say. Also DONE same day: Stop/Pause buttons (mirror
+  IV's), FEB/LV/Link status dot columns in the module table (mirror
+  IV's HV/LV dots), run_autofinding renamed to run_thr_finding
+  everywhere incl. the real live ODB, Output reshaped twice (first to a
+  full raw scan grid, then - after discussing the real measurement
+  model with the user - to live status scalars matching ScanVbr's own
+  design, which is what actually shipped), and Geometry's own Thr
+  status display (per-ASIC rows, moved into the Calibration section
+  only, nothing left in Readout).
+Full build detail in calibration_process.txt's "THR SCAN BUILT
+(ROADMAP STEP 2)" section and everything filed under it same day.
+- DESIGN RULE, 2026-08-07 (user, explicit), NOW ENFORCED 2026-08-08:
+  Thr scan's page must NOT let the operator edit channel masking or
+  enable/disable ASICs there - that's Readout's job (its own module ->
+  ASIC -> channel masking UI, already built). Thr scan should only READ
+  what Readout has already set, read-only, same idea as what Geometry
+  already does (display, not edit) - "porting di quello che geometry fa
+  già con anche i colori dei canali" - including per-channel colour
+  coding like Geometry/Readout already use.
+- GRANULARITY DECIDED, 2026-08-07 (user: "io farei asics" - confirmed
+  against real evidence, not just preference): Thr scan's PARAMETER
+  STAGING (threshold_start/stop/offset_start/offset_end/etc - what IV
+  scan does per-module) goes down to ASIC level, NOT per-channel.
+  Grounded in real code, checked directly (not guessed): the actual
+  hardware sweep is GLOBAL today - both the legacy Scifi-monitor.js's
+  rate_scan() (setODBValue(".../tthresh[*]", i) - writes the same
+  value to literally every channel at once) and the current thr_run.py
+  ("whole-array bulk writes, every step", per scripts_io_reference.txt)
+  write one shared threshold to everyone simultaneously at each sweep
+  step. But thr_find.py's threshold-FINDING result is already
+  genuinely per-channel (confirmed in its own docstring: "Plateau-based
+  per-channel threshold finding"; run_threshold_finding() returns "one
+  row per (channel, pe_level)") - it gets per-channel results by
+  analysing each channel's own response curve along the SAME shared
+  sweep, no per-channel write differentiation needed for that part.
+  CONCLUSION: channel-level range staging would add complexity (finer
+  than the per-channel analysis actually needs) with no real benefit;
+  ASIC-level lets different ASICs scan different, more efficient
+  ranges without going that far. REAL IMPLICATION for the future
+  thr_run.py rewrite: the current blanket tthresh[*] write can no
+  longer be used if ASIC-level ranges are wanted - needs the same
+  per-item independent-progress state machine already agreed for IV
+  scan's own script-side granularity (calibrations_plan.txt section
+  3.1), just scoped to ASIC instead of module/channel - write tthresh
+  only to the channels of ASICs still within their own range at each
+  step, not every channel every step.
+  [calibration_process.txt: multiple "ScanThr...not yet designed" notes;
+  calibration_page_plan.txt: "STILL OPEN" section]
+
+====================================================================
+3. scifi_scripts -> common/ MIGRATION (5 STEPS, AGREED ORDER) -
+   ALL 5 STEPS DONE 2026-08-11
+====================================================================
+1. DONE - broken imports fixed across 9 files (see section 1 above for
+   the real mock-harness bug found along the way).
+2. DONE - calibrations/calib_base.py's CalibrationBase now subclasses
+   common.operation.calibration_base.CalibrationBase (execute_all_
+   stages()/run() inherited, replacing the hand-inlined prepare->
+   execute->finalise sequencing that used to live in calib_run.py's
+   CalibrationFactory.perform_calibration()). ResultSaver wired
+   automatically via the shared OperationBase.__init__ - SciFi
+   calibrations now write real local ndjson results (output_
+   calibrations/, gitignored) - verified by reading the actual files
+   back, not just checking exit codes. CalibrationResult kept as a
+   module-level alias for common.operation.result.OperationResult
+   (same enum object, not a lookalike - needed for execute_all_stages()'s
+   own SUCCESS/NOTHING comparisons to work at all) so none of scifi's
+   existing call sites needed touching for the enum swap. New: detector/
+   scifi.py's SciFiDetector.get_status_summary(), a NullDaqControl stub
+   (SciFi has no DAQ-control concept, unlike pixel), globals/folders.py
+   (new file, mirrors pixel's).
+3. DONE - calib_run.py's scifi_check_shared_equipment() composes
+   common/equipment/services.py's TDKService/PowerDistService/
+   DCDCCratesService/ProgramService/AlarmsService directly (NOT the
+   generic services.check_shared_equipment(), which can't express an OR
+   of two TDK name filters or three different PowerDist device names)
+   using curated SCIFI_TDK_NAME_FILTERS/SCIFI_POWERDIST_NAME_FILTERS/
+   SCIFI_REQUIRED_PROGRAMS/SCIFI_ALARM_NAMES lists transcribed from the
+   real page's own JS. scripts/thr_run.py and scripts/vbr_run.py updated
+   to call the same function instead of duplicating the composition.
+4. DONE - actions/bringup_declaration.py (new file, mirrors pixel's own
+   actions/bringup_declaration.py), build_lv_bringup_sequence()/
+   build_hv_bringup_sequence(), both matching Docs/devolpment/old/
+   chain_and_monitoring.txt section 14's LV/HV procedures exactly
+   (6 LV steps, 4 HV steps - see that file for the step-by-step
+   breakdown). One real design gap CLOSED along the way: LV step 3
+   (PowerDistStaging "Slow Control" crate-mains channels, US/DS DCDC
+   C1-8) was originally left out of section 14 as "role unresolved" -
+   traced via the real page's own PD_CRATE_MAINS_NAMES + this session's
+   crate/slot wiring table work and confirmed these are 1:1 per-crate
+   mains power (US DCDC C1 -> DCDC_C_1, etc.), which must precede
+   "Crate On" having any physical effect - now included as its own step,
+   marked shared=True same as Crate On itself. New SciFiDetector methods
+   (all_dcdc_crates_enabled/enable_all_dcdc_crates/all_dcdc_crates_on/
+   turn_on_all_dcdc_crates/turn_off_all_dcdc_crates) and ScifiHv.
+   all_channels_on() - nothing else needed, Feb's LV methods and
+   ScifiHv.turn_on()/check_power_distribution() were already Step-shaped.
+   New tests/test_bringup.py verifies real power-up from an all-off
+   mock state, idempotency, power-down via the reversed step list, and
+   that the HV sequence genuinely stops at "hv_frontend_running" without
+   ever touching the HV channels downstream of it.
+5. VERIFIED ALREADY DONE, no changes needed - a direct consequence of
+   step 2: ScanThr/ScanVbr already subclass calibrations.calib_base.
+   CalibrationBase with the exact __init__(det, name) shape and
+   prepare/execute/finalise signatures the framework expects. Confirmed
+   with isinstance() checks against both CalibrationBase and
+   OperationBase, plus a real calib.run() call with NON-default
+   constructor args (matching how thr_run.py/vbr_run.py actually build
+   them from seq.get_param(), not just CalibrationFactory's defaults).
+   [memory: project_common_scripts_migration_status;
+   calibration_process.txt: "KNOWN OPEN GAPS", step-by-step notes in
+   THE 8 STEPS section]
+
+BONUS, same session, not in the original 5 steps: a chiller-temperature
+precondition gate added to ScanVbr.prepare() (new SciFiDetector.
+check_chiller_temperature(), 15-25 C window - the same real window the
+currently-inactive "Min/Max SiPM Chiller Temp." ODB alarms use, not a
+guessed number) - chain_and_monitoring.txt section 4i flagged this
+exact gap ("running vbr_find/vbr_scan with the chiller off or
+unstabilised produces a meaningless result"). Re-read the doc's full
+"DO THEY MATTER FOR LV AND HV?" section before wiring it in: confirmed
+this belongs ONLY on VBR (breakdown voltage depends on temperature, not
+humidity) and NOT as an LV/HV bring-up step (turning either on doesn't
+need Environment per section 14) - scope matches the doc exactly.
+
+STILL OPEN, NOT part of this migration: SciFi's own Feb/chip topology
+class (a DIFFERENT "step 3" - CurrentVars/DAQ/SCF_chip_user_enabled in
+section 6 below - not touched); HV_BOARDS module->channel mapping still
+JS-only (section 1 above); ResultSaverRunDB still an empty stub;
+thr_run.py/vbr_run.py still don't call calib.run() - CONFIRMED
+deliberate, not just unresolved: the page's Start Scan button calls
+PySequencer directly (user, 2026-08-11, see section 1), so thr_run.py/
+vbr_run.py ARE the real entry points, not CalibrationFactory - the
+per-stage seq.msg() reporting they do instead of calib.run() is correct
+for that role, not a gap to close. CalibrationFactory.perform_
+calibration() itself is NOT dead code (user confirmed, section 1) - has
+a real purpose distinct from Start Scan, not yet written down.
+STALE, RESOLVED 2026-08-11: "scan parameters still never read from ODB
+(self.parameters = {} #TODO)" - ScanVbr/ScanThr's own __init__() now
+overwrites CalibrationBase's placeholder self.parameters = {} with real
+values read straight from ODB (iv_increment/threshold_step/
+settle_seconds shared, plus per-module/per-ASIC ranges) right after
+calling super().__init__() - the base class's own #TODO placeholder is
+still there (still shared with pixel's CalibrationBase, untouched), but
+ScanVbr/ScanThr no longer actually rely on it for anything real.
+
+====================================================================
+4. PAGE POLISH (calibration_page_plan.txt punch list, items 6-10) -
+   ALL DONE 2026-08-07, section closed
+====================================================================
+6. Overwrite protection - DONE, warns per selected module already
+   Status=Running.
+7. Result age - DONE, mjsonrpc's own "<field>/last_written" reused
+   directly (no new ODB field needed), shown as "Xm/h/d ago" in the
+   detail panel.
+8. PySequencer cross-check - DONE, both gaps: busy-with-something-else
+   warning + per-module "ghost Running" warning (checked across all
+   modules, not just selected).
+9. Stop/Pause control - DONE, dedicated Stop/Pause buttons writing the
+   real /PySequencer/Command fields, disabled (not warned) when nothing
+   is running since that's a genuine no-op, not a discouraged action.
+10. Selection vs available-results distinction - CONFIRMED already
+    resolved by the earlier Status-display work (checkbox and Status
+    pill were already fully decoupled) - no new code needed.
+[SciFi_Calibration.js v16->v19, SciFi_main.css v75->v77 - full detail
+in calibration_page_plan.txt's own item-by-item notes]
+
+====================================================================
+5. SAFETY / RISK FLAGS (not bugs, awareness items)
+====================================================================
+- SciFi's watchdog (separate C++ system, scifi_watchdog_create_
+  conditions.cpp) has almost every condition as "not implemented, stub
+  only" (TDK, PwrDist per DCDC crate, Enable US/DS, Helium, Temperature/
+  VDD) - meaning SciFi has EFFECTIVELY NO WORKING WATCHDOG SAFETY NET
+  TODAY, contrary to what the panel's existence on the page might
+  suggest. The two conditions that DO exist (Max_LV_current,
+  Max_HV_current) share the exact same ODB status key pixel's own
+  watchdog already uses - a real collision risk if SciFi's watchdog
+  were ever enabled as-is. Not a Python/common gap, not actionable from
+  these scripts - awareness only.
+  [calibration_process.txt: "KNOWN OPEN GAPS";
+  common_migration_plan.txt: "4. WATCHDOG"]
+
+- Conditions/SCF_* - all 17 keys exist but with placeholder values only
+  (0/""/False) - deliberately NOT populated with real thresholds, no
+  verified hardware commissioning data exists yet. Populating these
+  with guessed numbers would be actively unsafe if anything ever reads
+  them for real.
+  [calibration_process.txt: "CURRENTVARS/POWER + CONDITIONS INTEGRATED"]
+
+- RESOLVED 2026-08-07: Conditions/SCF_Monitor_PwrDistPixel naming
+  oddity - user renamed the SciFi key to SCF_Monitor_PwrDistSciFi
+  directly in the local ODB (VTX's own PwrDistPixel key deliberately
+  left untouched - only SciFi's copy was ever in question).
+  [calibration_process.txt: "CURRENTVARS/POWER + CONDITIONS INTEGRATED"]
+
+====================================================================
+6A. CROSS-TAB CONSEQUENCES OF THIS SESSION'S SCANVBR WORK (found on a
+    4th pass, in Docs/devolpment/page/TODO.txt - a SEPARATE, larger
+    open-items file for the whole page, never checked before this pass)
+====================================================================
+- VBR shows as a "—" placeholder in (at least) THREE already-built page
+  sections - Power, Readout, AND Geometry tabs - each explicitly noted
+  at build time (2026-08-03/04) as "no live ODB field exists anywhere".
+  That's no longer true: this session built Calibration/SciFi/ScanVbr/
+  <module>/VbrResult with real Found/Confident/VBreakdownFit data. None
+  of those three tabs have been revisited to actually read it - a
+  concrete, actionable follow-up connecting this session's work back to
+  the rest of the page, not a new build.
+  DONE 2026-08-11 (Readout only): SciFi_Readout.js's per-module table
+  had a genuine dead "VBR" column (`<th>VBR</th>`, always hardcoded
+  "—" text, never wired to anything) - now fetches ScanVbr's subtree
+  (same SCANVBR_PATH_RD pattern as Geometry's own GEO_SCANVBR_PATH),
+  builds the same side_SMx_My lowercase key, and shows the real
+  VBreakdownFit value ("54.2 V", "(low conf.)" suffix, "not found", or
+  a Running/Aborted status pill) instead of the always-"—" placeholder.
+  Power tab is a DIFFERENT situation: SciFi_PowerHV.js's hv-table has NO
+  VBR column at all (checked SciFi_main.html directly - the 11-column HV
+  table header has no such <th>), so "Power" in this bullet's original
+  claim was either already-stale or referred to something since removed
+  - adding VBR there would mean adding a new column to a live,
+  actively-used table, not just wiring an existing placeholder.
+  DECIDED, 2026-08-12 (user, explicit): leave as-is, no VBR column on
+  the HV Power tab - Readout/Geometry already show it, no third place
+  needed. Closed, not a gap.
+  UPGRADED FROM PASSIVE GAP TO EXPLICIT ASK, then DONE (Geometry/IV
+  part), 2026-08-07 (user's own notes, relayed in todo.txt): Geometry
+  tab, per module, should show temperature (Feb S1/S2) AND IV
+  calibration info. Both built: SI1/SI2 added to the FEB block (real
+  SFFE offsets +3/+4, matching SciFi_PowerFEB.js's own naming); a new
+  "Calibration - IV scan" detail-block (colour-coded Status dot, result
+  age, V breakdown) added to the module panel, real Calibration/SciFi/
+  ScanVbr/<module>/VbrResult data, same source the Calibration page's
+  own IV table reads. SciFi_Geometry.js v30->v31. Full detail in
+  calibration_process.txt's "GEOMETRY - IV/VBR + TEMPERATURE WIRED IN"
+  section.
+  CLOSED AS STALE, 2026-08-21 (user: "vanno assolutamente eliminati,
+  sono vecchissimi"): the 3 items below were still listed as open from
+  the original 2026-08-07 notes, but the premise behind all 3 (ScanThr
+  "still at the starting line") no longer holds - the real Thr scan
+  page (cal_thr_tab) has since been built. Dropped without re-verifying
+  each individually - if any turns out to still be a real gap, it'll
+  surface again from a fresh look at the current page, not from this
+  stale note:
+    - expandable menus for other things beyond the one IV block
+    - sub-tabs inside Power and Calibration
+    - Thr scan's own info in Geometry
+
+- Readout tab's tthresh/tthresh_offset fields - CLOSED AS STALE,
+  2026-08-21, same reasoning and same user instruction as above: this
+  was blocked on "ScanThr still at the starting line", which is no
+  longer true now that the real Thr scan page exists. Not re-verified
+  individually - a fresh look at the current Readout tab would be
+  needed to know if it's actually still read-only.
+
+- "Invisible bottleneck" readout monitoring (R1/R2/R3 signals from
+  chain_and_monitoring.txt) - NOT started at all. Real gap: today
+  nothing on the page reports whether SciFi data is ACTUALLY being read
+  out, only whether it's configured to be - "the whole power branch can
+  read green while nothing is actually being read out." Not calibration
+  itself, but relevant to trusting whether a calibration run's data is
+  real (R3 specifically: SwitchingFibre sorter/merger counters, hits
+  lost/FIFO full/merger rate/credits together show AT WHICH STAGE data
+  is lost).
+  [Docs/devolpment/page/TODO.txt: item 6, "STILL OPEN"]
+
+- root_writer.py existence claim re-checked from a second angle
+  (code_design.txt, dated 2026-07-21, describes it as "built earlier in
+  the day" as calibrations/root_writer.py) - still not found anywhere in
+  the repo, and no git history for that filename either. Strengthens
+  (doesn't just repeat) the section 0 finding: this isn't a case of
+  looking in the wrong folder, the file plausibly never made it into
+  version control at all, or existed only in a session that didn't
+  commit it.
+
+====================================================================
+6. SMALLER / LOWER-PRIORITY OPEN QUESTIONS
+====================================================================
+- CurrentVars/DAQ/SCF_chip_user_enabled - CLOSED, 2026-08-12 (user,
+  explicit): not needed, decided NOT to build a consumer for it.
+  Investigated first: real path is /CosmicRun/CurrentVars/DAQ/
+  <SUBSYSTEM>_chip_user_enabled - confirmed in a real ODB dump only
+  the pixel version (VTX_chip_user_enabled, BOOL[108]) actually
+  exists; the SciFi one doesn't exist in that dump at all (either
+  never created, or this key is per-run/CosmicRun-specific and just
+  wasn't present in that snapshot). Pixel's own copy is consumed by
+  core/detector.py's assign_chips_to_febs() - a per-chip user-
+  selection flag feeding chip->FEB assignment, same ODBSelection
+  pattern used for power partitions. SciFi doesn't need this (no
+  per-chip FEB-assignment workflow planned).
+  REMOVED from mu3ebe, 2026-08-13 (user, directly - mu3ebe hands-off
+  for assistant, see [[project_mu3ebe_hands_off]] in memory).
+- Real MIDAS message question (step 8, RETURN/REPORT) - CLOSED,
+  2026-08-13. Checked the real source: PySequencer's seq object
+  (midas.sequencer.SequenceClient) inherits directly from midas.
+  client.MidasClient and does NOT override .msg() - so seq.msg(), as
+  already called throughout scripts/vbr_run.py/thr_run.py/lv_bringup_
+  run.py/hv_bringup_run.py/feb_bringup_run.py, IS calling the real
+  client.msg() -> cm_msg() -> the actual MIDAS message log (the text
+  file behind the "Messages" webpage), not something PySequencer-local.
+  Nothing further needed - the mechanism this question was asking for
+  already exists and is already in use.
+  [calibration_process.txt: step 8]
+
+- PLL Test completeness review, 2026-08-14 (user shared a screenshot of
+  the page's live plot showing "Entries 0" for a FEB, asked what's
+  still missing). Found and fixed 3 real gaps:
+  1. EXPOSURE_SECONDS was a hardcoded Python constant (see item above,
+     2026-08-13) - now a real page/ODB parameter `exposure_seconds`,
+     same convention as ScanThr/ScanVbr's settle_seconds: a "Shared"
+     form field on the PLL tab, validated >=0 in prepare(), written to
+     PllTest/exposure_seconds and recorded per-FEB in ParametersUsed
+     for the ROOT report.
+  2. __write_result() only wrote Result/Bins when a snapshot was valid
+     - on "no data" (invalid HIST snapshot), the previous run's (or the
+     initial ODB seed's) bins were left in place, silently mismatched
+     with the fresh "no data" Verdict/NaN Peak/Width. Now always
+     overwrites Bins (all-zero fallback when there's nothing real to
+     show) - this is very likely what the screenshot was actually
+     showing (a FEB whose HIST snapshot has never come back valid, so
+     it's stuck on the original seed).
+  3. MIDAS encodes a float NaN as the JSON string "NaN" (mjson.cxx
+     EncodeDouble), not a numeric NaN - calFmt() on the page had no
+     handling for this (unlike geoFmt() in Geometry.js, which already
+     checks Number.isNaN()), so Peak/Width would have shown the literal
+     text "NaN ns" instead of "n/a". Fixed to match geoFmt's behaviour.
+  Regression-tested: added 3 assertions to test_pll_scan.py (negative
+  exposure_seconds rejected in prepare(); exposure_seconds recorded in
+  the ROOT report; Result/Bins resets to [0]*256 on a second run whose
+  snapshot is invalid, verified against a FEB that had real "locked"
+  data from a prior run in the same test). Full suite still passes.
+  [SciFi_Calibration.js, calibrations/pll_scan.py, SciFi_main.html,
+  test_pll_scan.py]

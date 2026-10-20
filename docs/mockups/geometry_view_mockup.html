@@ -1,0 +1,669 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SciFi Control — Geometry</title>
+<style>
+  :root{
+    --bg:#eef1f6;
+    --paper:#ffffff;
+    --paper-2:#f4f6fa;
+    --ink:#1c2430;
+    --muted:#5c6779;
+    --faint:#8993a4;
+    --line:#d9dfe8;
+    --line-strong:#b7c0cd;
+    --ok:#2f8a5f;
+    --ok-wash:#2f8a5f17;
+    --warn:#a97a1c;
+    --warn-wash:#a97a1c17;
+    --crit:#b8483f;
+    --crit-wash:#b8483f17;
+    --shadow:0 1px 2px rgba(28,36,48,0.05), 0 8px 20px -12px rgba(28,36,48,0.16);
+    --module-blue:#3b6dc9;
+    --sm-red:#c23b3b;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0f151b;
+      --paper:#171f28;
+      --paper-2:#1b2530;
+      --ink:#dde3ec;
+      --muted:#8b97a8;
+      --faint:#5f6b7c;
+      --line:#293544;
+      --line-strong:#3c4a5c;
+      --ok:#59b98a;
+      --ok-wash:#59b98a1c;
+      --warn:#dcae52;
+      --warn-wash:#dcae521c;
+      --crit:#e07268;
+      --crit-wash:#e072681c;
+      --shadow:0 1px 2px rgba(0,0,0,0.3), 0 12px 26px -14px rgba(0,0,0,0.55);
+      --module-blue:#7ea3e8;
+      --sm-red:#e08a8a;
+    }
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--bg);color:var(--ink);font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;}
+  .topstrip{display:flex;justify-content:space-between;align-items:center;padding:10px 18px;background:var(--paper);border-bottom:1px solid var(--line);}
+  .topstrip h1{font-size:15px;margin:0;}
+  .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .path{color:var(--faint);font-size:11.5px;margin-left:10px;}
+  .page{display:flex;gap:20px;padding:20px;max-width:1400px;margin:0 auto;}
+  .left-col{flex:0 0 640px;display:flex;flex-direction:column;gap:16px;}
+  .right-col{flex:1;min-width:0;}
+  .card{background:var(--paper);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);padding:16px;}
+  .ring-card h2{font-size:13px;margin:0 0 10px;display:flex;align-items:center;gap:8px;}
+  .side-tag{font-size:10px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:99px;}
+  .side-tag.us{background:#3b6dc914;color:var(--module-blue);}
+  .side-tag.ds{background:#8b5cf614;color:#8b5cf6;}
+  svg{display:block;margin:0 auto;}
+  .module-dot{cursor:pointer;stroke-width:3;}
+  .module-dot:hover{stroke:var(--ink);}
+  .module-dot.selected{stroke:var(--ink);stroke-width:3;}
+  .module-num{font-size:11px;font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;}
+  .sm-num{font-size:11px;fill:var(--sm-red);font-weight:700;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;}
+  .sm-arc{fill:none;stroke:var(--sm-red);stroke-width:2;opacity:.55;}
+  .asic-dot{cursor:pointer;stroke-width:2;}
+  .asic-dot:hover{stroke:var(--ink);}
+  .asic-num{font-size:8px;fill:#000;font-weight:600;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;pointer-events:none;}
+  .sm-health-dot{stroke:var(--paper);stroke-width:1.5;cursor:pointer;}
+  .sm-health-dot:hover{stroke:var(--ink);}
+  .sm-health-dot.selected{stroke:var(--ink);stroke-width:3;}
+  .ring-label{font-size:13px;fill:var(--faint);font-weight:600;}
+  .legend{display:flex;gap:14px;align-items:center;font-size:11px;color:var(--muted);margin-top:8px;justify-content:center;}
+  .legend .sw{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:4px;vertical-align:-1px;}
+  .detail-panel{position:sticky;top:20px;}
+  .detail-empty{color:var(--faint);font-style:italic;}
+  .detail-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);}
+  .detail-row:last-child{border-bottom:none;}
+  .detail-row .k{color:var(--muted);}
+  .detail-row .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .xref-hdr{font-size:11px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--faint);margin:14px 0 4px;}
+  .placeholder-box{border:1px dashed var(--line-strong);border-radius:8px;padding:10px;color:var(--faint);font-style:italic;font-size:12px;}
+  .channel-grid{display:grid;grid-template-columns:repeat(16,1fr);gap:4px;margin:8px 0;}
+  .channel-cell{
+    aspect-ratio:1;border-radius:4px;font-size:9px;font-weight:600;
+    display:flex;align-items:center;justify-content:center;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;cursor:default;
+    border:1px solid transparent;transition:transform .08s ease;
+  }
+  .channel-cell:hover{transform:scale(1.15);border-color:var(--ink);z-index:1;}
+  .channel-cell.ch-unmasked{background:var(--ok-wash);color:var(--ok);border-color:var(--ok);}
+  .channel-cell.ch-masked{background:var(--crit-wash);color:var(--crit);border-color:var(--crit);}
+  .channel-cell.ch-masked.ch-cascade{
+    background:repeating-linear-gradient(45deg,
+      var(--crit-wash), var(--crit-wash) 3px,
+      var(--paper-2) 3px, var(--paper-2) 6px);
+  }
+  .asic-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid var(--line);cursor:pointer;}
+  .asic-row:hover{color:var(--ink);}
+  .asic-row .k{color:var(--muted);}
+  .asic-row .v{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;}
+  .asic-expand{overflow:hidden;max-height:0;transition:max-height .15s ease;}
+  .asic-expand.open{max-height:260px;}
+  .ch-tooltip{
+    position:fixed;pointer-events:none;background:var(--ink);color:var(--bg);
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11px;
+    padding:6px 9px;border-radius:6px;opacity:0;transition:opacity .1s;z-index:50;
+    white-space:pre;
+  }
+  .ch-tooltip.visible{opacity:1;}
+</style>
+</head>
+<body>
+
+  <div class="topstrip">
+    <div><h1 style="display:inline">SciFi Control</h1><span class="path mono">/Custom/SciFi/Geometry</span></div>
+  </div>
+
+  <div class="page">
+    <div class="left-col">
+      <div class="card ring-card">
+        <h2><span class="side-tag us">US</span>Upstream ring</h2>
+        <svg id="ring-us" width="560" height="560" viewBox="0 0 560 560"></svg>
+      </div>
+      <div class="card ring-card">
+        <h2><span class="side-tag ds">DS</span>Downstream ring</h2>
+        <svg id="ring-ds" width="560" height="560" viewBox="0 0 560 560"></svg>
+      </div>
+      <div class="legend">
+        <span><span class="sw" style="background:var(--ok)"></span>link OK</span>
+        <span><span class="sw" style="background:var(--crit)"></span>link fault</span>
+        <span><span class="sw" style="background:var(--faint)"></span>disabled / unknown</span>
+      </div>
+      <div class="legend">
+        <span>ring color = HV:</span>
+        <span><span class="sw" style="background:var(--ok)"></span>enabled + on</span>
+        <span><span class="sw" style="background:var(--warn)"></span>enabled, off</span>
+        <span><span class="sw" style="background:var(--faint)"></span>disabled</span>
+      </div>
+      <div class="legend">
+        <span>ASIC fill:</span>
+        <span><span class="sw" style="background:var(--ok)"></span>enabled</span>
+        <span><span class="sw" style="background:var(--crit)"></span>disabled</span>
+      </div>
+      <div class="legend">
+        <span>ASIC border = channels:</span>
+        <span><span class="sw" style="background:var(--ok)"></span>all active</span>
+        <span><span class="sw" style="background:var(--warn)"></span>some active</span>
+        <span><span class="sw" style="background:var(--crit)"></span>none active</span>
+      </div>
+      <div class="legend">
+        <span>Channel cell:</span>
+        <span><span class="sw" style="background:var(--ok)"></span>unmasked</span>
+        <span><span class="sw" style="background:var(--crit)"></span>masked (individually)</span>
+        <span><span class="sw" style="background:repeating-linear-gradient(45deg,var(--crit-wash),var(--crit-wash) 3px,var(--paper-2) 3px,var(--paper-2) 6px)"></span>masked (ASIC disabled)</span>
+      </div>
+      <div class="legend">
+        <span>Super-module dot:</span>
+        <span><span class="sw" style="background:var(--ok)"></span>ok</span>
+        <span><span class="sw" style="background:var(--crit)"></span>fault</span>
+        <span><span class="sw" style="background:var(--faint)"></span>off</span>
+      </div>
+    </div>
+
+    <div class="right-col">
+      <div class="card detail-panel" id="detail-panel">
+        <h2 style="font-size:13px;margin:0 0 10px;cursor:pointer" id="detail-header">Module detail</h2>
+        <p class="detail-empty" id="detail-empty">click a super-module dot, a module dot, or an ASIC dot on either ring</p>
+        <div id="detail-content" style="display:none">
+          <div class="detail-row"><span class="k">Module</span><span class="v" id="d-module"></span></div>
+          <div class="detail-row"><span class="k">Super-module (FEB)</span><span class="v" id="d-sm"></span></div>
+
+          <div class="xref-hdr">Power — FEB</div>
+          <div id="d-feb"></div>
+
+          <div class="xref-hdr">Power — LV</div>
+          <div id="d-power"></div>
+
+          <div class="xref-hdr">Power — HV</div>
+          <div id="d-hv"></div>
+
+          <div class="xref-hdr">Power — DCDC crate</div>
+          <div id="d-dcdc"></div>
+
+          <div class="xref-hdr">Readout</div>
+          <div id="d-readout"></div>
+
+          <div class="xref-hdr">Calibration</div>
+          <div id="d-calib"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  var linkColor = {OK:"var(--ok)", Fault:"var(--crit)", Disabled:"var(--faint)", Unknown:"var(--faint)"};
+
+  var hvGroups = ["US Top", "US Bottom", "DS Top", "DS Bottom"];
+  var hvFlat = [];
+  for (var hvi = 0; hvi < 24; hvi++){
+    var hvGroupIdx = Math.floor(hvi / 6);
+    var hvChInGroup = hvi % 6;
+    hvFlat.push({
+      name: hvGroups[hvGroupIdx] + " SciFi CH" + (hvChInGroup + 1),
+      index: hvi,
+      enabled: !(hvi === 4 || hvi === 15),
+      outputOn: !(hvi === 4 || hvi === 15 || hvi === 8),
+      demand: 56.0,
+      current: 1.3 + (hvi % 5) * 0.1,
+      voltage: 55.8 + (hvi % 3) * 0.05
+    });
+  }
+  var hvStatusColor = {enabled_on:"var(--ok)", enabled_off:"var(--warn)", disabled:"var(--faint)"};
+  function hvStatusFor(hv){
+    if (!hv.enabled) return "disabled";
+    return hv.outputOn ? "enabled_on" : "enabled_off";
+  }
+
+  var ivParamDefaults = {
+    iv_start: 54.0, iv_end: 58.0, iv_step: 30, settle_seconds: 5,
+    fit_window_v: 0.5, min_peak_prominence: 3.0, current_limit_ua: 1000, run_vbr_finding: false
+  };
+  var thrParamDefaults = {
+    threshold_start: 0, threshold_stop: 63, offset_start: 0, offset_end: 2,
+    noisy_rate_threshold: 1000000, settle_seconds: 5, run_autofinding: false
+  };
+
+  function buildChannels(asicEnabled, ai, forceAllMasked){
+    var channels = [];
+    for (var ci = 0; ci < 32; ci++){
+      var maskedByCascade = !asicEnabled;
+      var maskedIndividually = asicEnabled && (forceAllMasked || (ai === 1 && ci === 7));
+      var masked = maskedByCascade || maskedIndividually;
+      channels.push({
+        ch: ci,
+        masked: masked,
+        maskedByCascade: maskedByCascade,
+        tthresh: 32 + (ci % 5),
+        tthreshOffset: ci % 3,
+        fccr: masked ? 0 : Math.round(78000 + ci * 300)
+      });
+    }
+    return channels;
+  }
+
+  function buildAsics(asicsEnabled, fullyMaskedAsicIndex){
+    var asics = [];
+    for (var ai = 0; ai < 4; ai++){
+      var forceAllMasked = asicsEnabled && ai === fullyMaskedAsicIndex;
+      var channels = buildChannels(asicsEnabled, ai, forceAllMasked);
+      asics.push({
+        enabled: asicsEnabled,
+        unmasked: channels.filter(function(c){ return !c.masked; }).length,
+        avgFccr: (asicsEnabled && !forceAllMasked) ? Math.round(80000 + ai * 5000) : 0,
+        channels: channels
+      });
+    }
+    return asics;
+  }
+
+  function buildModules(side, sequence){
+    var modules = [];
+    for (var p = 0; p < 12; p++){
+      var modNum = sequence[p];
+      var smIndex = Math.floor(modNum / 2);
+      var linkStatus = "OK";
+      // LinkStatus is per-FEB (topology.txt), NOT per-module - gate on
+      // smIndex so both modules of the same SM always share one value.
+      if (side === "US" && smIndex === 2) linkStatus = "Fault";
+      if (side === "US" && smIndex === 4) linkStatus = "Disabled";
+      if (side === "DS" && smIndex === 2) linkStatus = "Unknown";
+      if (side === "DS" && smIndex === 3) linkStatus = "Fault";
+      var hvOrdinal = (side === "US" ? 0 : 12) + p;
+      var hv = hvFlat[hvOrdinal];
+      var asicsEnabled = linkStatus === "OK";
+      var isCustomDemo = (side === "US" && modNum === 2);
+      var ivParams = Object.assign({}, ivParamDefaults);
+      if (isCustomDemo) ivParams.iv_start = 55.0;
+      var thrParams = Object.assign({}, thrParamDefaults);
+      if (isCustomDemo) thrParams.threshold_stop = 50;
+      var asics = buildAsics(asicsEnabled, isCustomDemo ? 2 : null);
+      var activeAsicCount = asics.filter(function(a){ return a.enabled; }).length;
+      var unmaskedTotal = asics.reduce(function(sum, a){ return sum + a.unmasked; }, 0);
+      modules.push({
+        side: side, position: p, module: modNum, sm: smIndex,
+        febName: side + " SM " + smIndex,
+        linkStatus: linkStatus,
+        hv: hv,
+        readout: {
+          asics: asics,
+          activeAsicCount: activeAsicCount,
+          unmaskedTotal: unmaskedTotal,
+          vbr: isCustomDemo ? 56.8 : null
+        },
+        calib: {
+          ivEligible: hv.enabled,
+          ivParams: ivParams,
+          ivCustomized: isCustomDemo,
+          thrEligible: linkStatus === "OK",
+          thrParams: thrParams,
+          thrCustomized: isCustomDemo
+        }
+      });
+    }
+    return modules;
+  }
+
+  var usSequence = [2,3,4,5,6,7,8,9,10,11,0,1];
+  var dsSequence = [3,2,1,0,11,10,9,8,7,6,5,4];
+  var usModules = buildModules("US", usSequence);
+  var dsModules = buildModules("DS", dsSequence);
+
+  var febPower = {};
+  function buildFebPower(side){
+    for (var sm = 0; sm < 6; sm++){
+      var name = side + " SM " + sm;
+      var febIndex = (side === "US" ? 0 : 6) + sm;
+      var linkFeb = 144 + febIndex;
+      var crateLink = !(side === "US" && sm === 5);
+      var power = crateLink && !(side === "DS" && sm === 2);
+      var lvOn = power;
+      var lvFaultCount = (side === "US" && sm === 1) ? 2 : 0;
+      var lvFlags = {
+        alert: lvFaultCount > 0, powerGood: lvOn, overTemp: false,
+        vinUnderVoltage: false, overCurrent: lvFaultCount > 0,
+        voutOverVoltage: false, interlock: false
+      };
+      var temps = power ? {
+        crate20: (20.0 + sm * 0.1).toFixed(1) + "V",
+        crate33: (3.30 + sm * 0.01).toFixed(2) + "V",
+        crate5: (5.00 + sm * 0.02).toFixed(2) + "V",
+        cc: (30 + sm).toFixed(1) + "°C",
+        feb: (28 + sm).toFixed(1) + "°C"
+      } : null;
+      var dcdcCrateIndex = Math.floor(febIndex * 2 / 3);
+      febPower[name] = {
+        febIndex: febIndex,
+        linkFeb: linkFeb,
+        crateLink: crateLink,
+        febCrate: crateLink ? Math.floor(febIndex / 6) : null,
+        febSlot: crateLink ? (febIndex % 6) + 1 : null,
+        power: power,
+        activeChannels: power ? 256 : 0,
+        temps: temps,
+        lvChannelName: "SMB_" + side + "_" + (2 * sm) + "-" + (2 * sm + 1),
+        lvPresent: true,
+        lvOn: lvOn,
+        lvCurrent: lvOn ? (6.2 + sm * 0.1) : null,
+        lvAdjust: lvOn ? (-3.0 + sm * 0.2) : 0,
+        lvSense: lvOn ? (1.80 + sm * 0.01).toFixed(2) + "V" : "—",
+        lvTemp: lvOn ? (29 + sm * 0.3).toFixed(1) + "°C" : "—",
+        lvFlags: lvFlags,
+        lvFaultCount: lvFaultCount,
+        dcdcCrateIndex: dcdcCrateIndex,
+        dcdcCrateOn: crateLink,
+        dcdcCrateEnabled: crateLink
+      };
+    }
+  }
+  buildFebPower("US");
+  buildFebPower("DS");
+
+  Object.keys(febPower).forEach(function(name){
+    var f = febPower[name];
+    var hosts = Object.keys(febPower).filter(function(otherName){
+      return febPower[otherName].dcdcCrateIndex === f.dcdcCrateIndex;
+    }).map(function(otherName){ return febPower[otherName].lvChannelName; });
+    f.dcdcHosts = hosts;
+  });
+
+  function asicChannelColor(asic){
+    if (asic.unmasked === 32) return "var(--ok)";
+    if (asic.unmasked === 0) return "var(--crit)";
+    return "var(--warn)";
+  }
+
+  function formatLvFlags(flags, lvOn){
+    if (!lvOn) return "n/a (LV off)";
+    var bad = [];
+    if (flags.alert) bad.push("Alert");
+    if (!flags.powerGood) bad.push("Power Good");
+    if (flags.overTemp) bad.push("Over Temperature");
+    if (flags.vinUnderVoltage) bad.push("Vin Under-voltage");
+    if (flags.overCurrent) bad.push("Over Current");
+    if (flags.voutOverVoltage) bad.push("Vout Over-voltage");
+    if (flags.interlock) bad.push("Interlock");
+    return bad.length ? bad.length + "/7 flagged (" + bad.join(", ") + ")" : "0/7 flagged";
+  }
+
+  function febHealth(name){
+    var f = febPower[name];
+    if (!f.crateLink) return "off";
+    if (f.lvFaultCount > 0) return "fault";
+    if (f.power && f.lvOn) return "ok";
+    return "off";
+  }
+  var febHealthColor = {ok: "var(--ok)", fault: "var(--crit)", off: "var(--faint)"};
+
+  var SVG_NS = "http://www.w3.org/2000/svg";
+  function svgEl(tag, attrs){
+    var el = document.createElementNS(SVG_NS, tag);
+    for (var k in attrs) el.setAttribute(k, attrs[k]);
+    return el;
+  }
+
+  function angleForPosition(p){
+    return (90 - (p - 0.5) * 30) * Math.PI / 180;
+  }
+
+  function renderRing(svgId, modules){
+    var svg = document.getElementById(svgId);
+    var cx = 280, cy = 280;
+    var rModule = 210;
+    var rSmArc = 170;
+    var rSmLabel = 150;
+
+    modules.forEach(function(m){
+      var a = angleForPosition(m.position);
+      var x = cx + rModule * Math.cos(a);
+      var y = cy - rModule * Math.sin(a);
+
+      var dot = svgEl("circle", {
+        cx: x, cy: y, r: 20, class: "module-dot",
+        fill: linkColor[m.linkStatus],
+        stroke: hvStatusColor[hvStatusFor(m.hv)],
+        "data-side": m.side, "data-module": m.module
+      });
+      dot.addEventListener("click", function(mod){
+        return function(){ selectModule(mod); };
+      }(m));
+      svg.appendChild(dot);
+
+      var numText = svgEl("text", {x: x, y: y + 4, "text-anchor": "middle", class: "module-num", fill: "#000"});
+      numText.textContent = m.module;
+      numText.style.pointerEvents = "none";
+      svg.appendChild(numText);
+
+      var tangentX = Math.sin(a), tangentY = Math.cos(a);
+      var asicOrder = m.side === "US" ? [0, 1, 2, 3] : [3, 2, 1, 0];
+      var asicBaseR = rModule + 34;
+      var asicSpacing = 22;
+      var abx = cx + asicBaseR * Math.cos(a), aby = cy - asicBaseR * Math.sin(a);
+      asicOrder.forEach(function(asicNum, i){
+        var offset = (i - 1.5) * asicSpacing;
+        var ax = abx + tangentX * offset, ay = aby + tangentY * offset;
+        var asicData = m.readout.asics[asicNum];
+        var asicDot = svgEl("circle", {
+          cx: ax, cy: ay, r: 9, class: "asic-dot",
+          fill: asicData.enabled ? "var(--ok)" : "var(--crit)",
+          stroke: asicChannelColor(asicData)
+        });
+        asicDot.addEventListener("click", function(mod, asicIndex){
+          return function(evt){ evt.stopPropagation(); selectModule(mod); expandAsic(mod, asicIndex); };
+        }(m, asicNum));
+        svg.appendChild(asicDot);
+        var asicText = svgEl("text", {x: ax, y: ay + 3, "text-anchor": "middle", class: "asic-num"});
+        asicText.textContent = asicNum;
+        svg.appendChild(asicText);
+      });
+    });
+
+    for (var pairIndex = 0; pairIndex < 6; pairIndex++){
+      var p1 = pairIndex * 2, p2 = pairIndex * 2 + 1;
+      var a1 = angleForPosition(p1), a2 = angleForPosition(p2);
+      var aMid = (a1 + a2) / 2;
+      var x1 = cx + rSmArc * Math.cos(a1), y1 = cy - rSmArc * Math.sin(a1);
+      var x2 = cx + rSmArc * Math.cos(a2), y2 = cy - rSmArc * Math.sin(a2);
+      var path = svgEl("path", {
+        d: "M " + x1 + " " + y1 + " A " + rSmArc + " " + rSmArc + " 0 0 0 " + x2 + " " + y2,
+        class: "sm-arc"
+      });
+      svg.appendChild(path);
+
+      var realSm = modules[p1].sm;
+      var smx = cx + rSmLabel * Math.cos(aMid);
+      var smy = cy - rSmLabel * Math.sin(aMid);
+      var smText = svgEl("text", {x: smx, y: smy + 4, "text-anchor": "middle", class: "sm-num"});
+      smText.textContent = realSm;
+      svg.appendChild(smText);
+
+      var febName = modules[0].side + " SM " + realSm;
+      var healthR = rSmLabel - 22;
+      var hx = cx + healthR * Math.cos(aMid);
+      var hy = cy - healthR * Math.sin(aMid);
+      var healthDot = svgEl("circle", {
+        cx: hx, cy: hy, r: 6, class: "sm-health-dot",
+        fill: febHealthColor[febHealth(febName)],
+        "data-side": modules[0].side, "data-sm": realSm
+      });
+      healthDot.addEventListener("click", function(side, sm){
+        return function(evt){ evt.stopPropagation(); selectSm(side, sm); };
+      }(modules[0].side, realSm));
+      svg.appendChild(healthDot);
+    }
+
+    var centerLabel = svgEl("text", {x: cx, y: cy + 5, "text-anchor": "middle", class: "ring-label"});
+    centerLabel.textContent = modules[0].side;
+    svg.appendChild(centerLabel);
+  }
+
+  renderRing("ring-us", usModules);
+  renderRing("ring-ds", dsModules);
+
+  var allModules = usModules.concat(dsModules);
+  var selectedDot = null;
+
+  var selectedHealthDot = null;
+
+  function clearSelectionDots(){
+    if (selectedDot) selectedDot.classList.remove("selected");
+    selectedDot = null;
+    if (selectedHealthDot) selectedHealthDot.classList.remove("selected");
+    selectedHealthDot = null;
+  }
+
+  function closeDetailPanel(){
+    clearSelectionDots();
+    document.getElementById("detail-content").style.display = "none";
+    document.getElementById("detail-empty").style.display = "block";
+    openAsics = {};
+    selectedAsic = null;
+  }
+
+  document.getElementById("detail-header").addEventListener("click", closeDetailPanel);
+
+  function populateFebPanel(febName){
+    document.getElementById("detail-empty").style.display = "none";
+    document.getElementById("detail-content").style.display = "block";
+    document.getElementById("d-sm").textContent = febName;
+    var f = febPower[febName];
+
+    document.getElementById("d-feb").innerHTML =
+      '<div class="detail-row"><span class="k">feb_index / link_feb</span><span class="v">' + f.febIndex + ' / ' + f.linkFeb + '</span></div>' +
+      '<div class="detail-row"><span class="k">Crate · slot</span><span class="v">' + (f.crateLink ? (f.febCrate + " · " + f.febSlot) : "unmapped") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Crate link</span><span class="v">' + (f.crateLink ? "connected" : "not connected") + '</span></div>' +
+      '<div class="detail-row"><span class="k">FEB power</span><span class="v">' + (f.power ? "on" : "off") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Active ch. (FEB-wide)</span><span class="v">' + f.activeChannels + '/256</span></div>' +
+      '<div class="detail-row"><span class="k">Crate rails / temps</span><span class="v">' + (f.temps ? f.temps.crate20 + " / " + f.temps.crate33 + " / " + f.temps.crate5 + " / CC " + f.temps.cc + " / FEB " + f.temps.feb : "—") + '</span></div>';
+
+    document.getElementById("d-power").innerHTML =
+      '<div class="detail-row"><span class="k">LV channel</span><span class="v">' + f.lvChannelName + '</span></div>' +
+      '<div class="detail-row"><span class="k">Present</span><span class="v">' + (f.lvPresent ? "yes" : "no") + '</span></div>' +
+      '<div class="detail-row"><span class="k">LV</span><span class="v">' + (f.lvOn ? "on" : "off") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Current</span><span class="v">' + (f.lvCurrent != null ? f.lvCurrent.toFixed(2) + "A" : "—") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Adjust</span><span class="v">' + f.lvAdjust.toFixed(2) + '%</span></div>' +
+      '<div class="detail-row"><span class="k">Sense</span><span class="v">' + f.lvSense + '</span></div>' +
+      '<div class="detail-row"><span class="k">Temperature</span><span class="v">' + f.lvTemp + '</span></div>' +
+      '<div class="detail-row"><span class="k">Fault flags</span><span class="v">' + formatLvFlags(f.lvFlags, f.lvOn) + '</span></div>';
+
+    document.getElementById("d-dcdc").innerHTML =
+      '<div class="detail-row"><span class="k">Crate</span><span class="v">DCDC_C_' + (f.dcdcCrateIndex + 1) + '</span></div>' +
+      '<div class="detail-row"><span class="k">Enabled</span><span class="v">' + (f.dcdcCrateEnabled ? "yes" : "no") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Crate on</span><span class="v">' + (f.dcdcCrateOn ? "yes" : "no") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Hosts</span><span class="v">' + f.dcdcHosts.join(", ") + '</span></div>';
+  }
+
+  function clearModuleLevelPanels(){
+    var msg = '<p class="detail-empty">select a module (not just a super-module) for this info</p>';
+    document.getElementById("d-hv").innerHTML = msg;
+    document.getElementById("d-readout").innerHTML = msg;
+    document.getElementById("d-calib").innerHTML = msg;
+    selectedAsic = null;
+  }
+
+  function selectSm(side, smIndex){
+    clearSelectionDots();
+    var dot = document.querySelector('.sm-health-dot[data-side="' + side + '"][data-sm="' + smIndex + '"]');
+    if (dot) dot.classList.add("selected");
+    selectedHealthDot = dot;
+
+    var febName = side + " SM " + smIndex;
+    populateFebPanel(febName);
+    document.getElementById("d-module").textContent = "—";
+    clearModuleLevelPanels();
+  }
+
+  function selectModule(m){
+    clearSelectionDots();
+    var dot = document.querySelector('.module-dot[data-side="' + m.side + '"][data-module="' + m.module + '"]');
+    if (dot) dot.classList.add("selected");
+    selectedDot = dot;
+
+    populateFebPanel(m.febName);
+    document.getElementById("d-module").textContent = m.side + " " + m.module;
+
+    var hv = m.hv;
+    document.getElementById("d-hv").innerHTML =
+      '<div class="detail-row"><span class="k">Channel</span><span class="v">' + hv.name + ' (idx ' + hv.index + ')</span></div>' +
+      '<div class="detail-row"><span class="k">Demand</span><span class="v">' + hv.demand.toFixed(1) + 'V</span></div>' +
+      '<div class="detail-row"><span class="k">Current</span><span class="v">' + hv.current.toFixed(2) + 'uA</span></div>' +
+      '<div class="detail-row"><span class="k">Voltage</span><span class="v">' + (hv.outputOn ? hv.voltage.toFixed(1) + "V" : "—") + '</span></div>';
+
+    var moduleSummaryRows =
+      '<div class="detail-row"><span class="k">ASIC active</span><span class="v">' + m.readout.activeAsicCount + '/4</span></div>' +
+      '<div class="detail-row"><span class="k">Channels unmasked</span><span class="v">' + m.readout.unmaskedTotal + '/128</span></div>' +
+      '<div class="detail-row"><span class="k">VBR</span><span class="v">' + (m.readout.vbr != null ? m.readout.vbr.toFixed(1) + "V" : "—") + '</span></div>';
+    var asicRows = m.readout.asics.map(function(a, ai){
+      return '<div class="asic-row" id="asic-row-' + ai + '"><span class="k">ASIC ' + ai + '</span><span class="v">' +
+        a.unmasked + '/32 unmasked · ' + a.avgFccr + ' Hz avg</span></div>' +
+        '<div class="asic-expand" id="asic-expand-' + ai + '"></div>';
+    }).join("");
+    document.getElementById("d-readout").innerHTML = moduleSummaryRows + asicRows;
+    m.readout.asics.forEach(function(a, ai){
+      document.getElementById("asic-row-" + ai).addEventListener("click", function(){
+        toggleAsic(m, ai);
+      });
+    });
+
+    document.getElementById("d-calib").innerHTML =
+      '<div class="detail-row"><span class="k">IV eligible</span><span class="v">' + (m.calib.ivEligible ? "yes" : "no") + '</span></div>' +
+      '<div class="detail-row"><span class="k">Thr eligible</span><span class="v">' + (m.calib.thrEligible ? "yes" : "no") + '</span></div>';
+
+    openAsics = {};
+  }
+
+  var openAsics = {};
+  var chTooltip = document.createElement("div");
+  chTooltip.className = "ch-tooltip";
+  document.body.appendChild(chTooltip);
+  function showChTooltip(evt, text){
+    chTooltip.textContent = text;
+    chTooltip.classList.add("visible");
+    positionChTooltip(evt);
+  }
+  function positionChTooltip(evt){
+    var pad = 14;
+    chTooltip.style.left = (evt.clientX + pad) + "px";
+    chTooltip.style.top = (evt.clientY + pad) + "px";
+  }
+  function hideChTooltip(){ chTooltip.classList.remove("visible"); }
+
+  function expandAsic(m, asicNum){
+    openAsics[asicNum] = true;
+    var asic = m.readout.asics[asicNum];
+    var el = document.getElementById("asic-expand-" + asicNum);
+    if (!el) return;
+    el.innerHTML = '<div class="channel-grid">' + asic.channels.map(function(c){
+      var cls = "channel-cell " + (c.masked ? "ch-masked" : "ch-unmasked") + (c.maskedByCascade ? " ch-cascade" : "");
+      return '<div class="' + cls + '" data-ch="' + c.ch + '">' + c.ch + '</div>';
+    }).join("") + '</div>';
+    el.classList.add("open");
+    asic.channels.forEach(function(c){
+      var cell = el.querySelector('[data-ch="' + c.ch + '"]');
+      var stateLine = !c.masked ? "unmasked" : (c.maskedByCascade ? "masked (ASIC disabled)" : "masked (individually)");
+      var text = "ASIC " + asicNum + " · ch " + c.ch + "\ntthresh: " + c.tthresh + "\noffset: " + c.tthreshOffset + "\nFCCR: " + c.fccr + " Hz\n" + stateLine;
+      cell.addEventListener("mouseenter", function(evt){ showChTooltip(evt, text); });
+      cell.addEventListener("mousemove", positionChTooltip);
+      cell.addEventListener("mouseleave", hideChTooltip);
+    });
+  }
+
+  function collapseAsic(asicNum){
+    openAsics[asicNum] = false;
+    var el = document.getElementById("asic-expand-" + asicNum);
+    if (!el) return;
+    el.classList.remove("open");
+    el.innerHTML = "";
+  }
+
+  function toggleAsic(m, asicNum){
+    if (openAsics[asicNum]) collapseAsic(asicNum);
+    else expandAsic(m, asicNum);
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,1215 @@
+PAGE I/O REFERENCE
+====================================================================
+NEW DOC 2026-07-24. Per-element input/output reference for the custom
+control page ITSELF (distinct from scripts_io_reference.txt, which is
+per-SCRIPT - NOTE added 2026-07-24 after a docs reorg: that file now
+lives at docs/code/scripts_io_reference.txt, this one at docs/page/ -
+every bare "scripts_io_reference.txt" mention below predates the move
+and means that same file). This one is per-PAGE-ELEMENT: for every
+field/button shown in custom_page_mockup_v2.html (custom_page_mockup_
+colored.html's successor, archived to docs/old/ same day - see 2.2's
+own note), where does the displayed value actually come from, and
+where does an action on it actually go.
+
+Built incrementally, one mega-section/zone at a time (user's own
+approach, 2026-07-24) - sections not yet covered are marked PENDING.
+Purpose: a single reference for whoever implements the real page,
+cross-referencing scripts_io_reference.txt (the script-level params)
+instead of duplicating it.
+
+Legend - INPUT origin (where a displayed value comes from):
+  ODB-LIVE    = read directly from a real ODB path, live state
+  COMPUTED    = derived client-side from ODB-LIVE data already read
+                elsewhere on the page - no separate ODB read
+  PAGE-LOCAL  = exists only in the page's own JS state (selection,
+                staged/unapplied edits - the PAGE tier from
+                custom_page.txt 3.5) - never read from ODB
+  HARDCODED   = a JS-side constant, not sourced from ODB at all
+
+Legend - OUTPUT destination (where an action goes):
+  ODB-DIRECT  = the page writes straight to an ODB path itself, no
+                script/PySequencer involved
+  PYSEQ       = the confirmed 3-write flow (State/Path+Filename,
+                Param/Value/<name>, Command/"Start script") - triggers
+                one of scripts_io_reference.txt's 5 entry points
+  PAGE-LOCAL  = state that lives only in the page's own JS, never
+                written to ODB by itself - selection (Power/Readout,
+                every "Sel." checkbox) is the main use today. UPDATED
+                2026-07-24: does NOT include a later separate HARDWARE-
+                commit step for Power's Adjust/Demand or Readout's
+                Mask/Enable anymore - those were simplified to single
+                immediate actions this same day (2.2/2.3, 3.2) and no
+                longer stage-then-apply. The 2-step stage/apply meaning
+                of this term may still apply to Calibration (not yet
+                covered here) - check the relevant section, don't
+                assume from this legend alone.
+  NOT-WIRED   = present in the mockup, no real behaviour yet (a true
+                HARDWARE-tier placeholder - this still exists in
+                Calibration's own Apply/Read/Stop buttons, not yet
+                covered here; Power/Readout's own placeholders of this
+                kind were removed 2026-07-24 along with the simplified
+                actions above)
+  NONE        = pure read-only display, no action attached
+
+
+1) SAFETY PANEL (top-left zone, custom_page.txt 3.2)
+--------------------------------------------------------------------
+6 elements across 5 cards in the mockup (custom_page.txt 3.2 still
+describes a 4-card grid - Run is a real drift, found 2026-07-24, see
+TODO at the end of this section).
+
+1.1) Emergency
+  "Turn off all SciFi power" button
+    INPUT:  none
+    OUTPUT: PYSEQ - NO SCRIPT EXISTS YET. Needs a new aggregating
+      script (e.g. scripts/all_power_off.py) that calls
+      det.turn_off_all_feb_power() / det.turn_off_all_lv() /
+      det.hv.turn_off() inside ONE sequence(), not 3 separate
+      PySequencer launches - PySequencer is a single shared instance
+      (custom_page.txt 3.1's concurrency note), so 3 sequential
+      trigger-and-poll-Running round trips from the browser would be
+      slow and fragile. CODE TODO, not built.
+  "Turn off FEB" / "Turn off LV" / "Turn off HV" buttons
+    INPUT:  none
+    OUTPUT: PYSEQ -> feb_power.py / lv_power.py / hv_power.py,
+      power_on=False (the only param this button needs to set;
+      is_odb_available/can_send_commands_to_odb stay at script
+      defaults). Verified in the scripts themselves (2026-07-24): the
+      off path is unconditional and instant - no
+      check_shared_equipment() gate, no settle_seconds wait, no
+      post-action current check (on/off asymmetry is deliberate, see
+      each script's own module docstring).
+
+1.2) Required programs
+  Program name list (mhttpd, SW Fibre, DCDC Frontend, HV Frontend,
+  Febcrate Frontend, Powerrack Frontend, Sequencer/PySequencer)
+    INPUT:  HARDCODED (JS-side constant list) - mirrors pixel's own
+      required_programs object (VTX_GenericDescriptions.js), itself
+      hardcoded and setup-filtered, not read from ODB.
+    OUTPUT: none
+  Per-program status dot
+    INPUT:  ODB-LIVE - /Programs/<name>/First failed, formula x == 0
+      (confirmed MIDAS-standard path+formula via
+      VTX_GenericPrograms.js - pixel binds this through a "modbbox"
+      custom element + configManager live polling, not a one-off
+      fetch; reuse the same binding mechanism rather than reinventing
+      polling).
+    OUTPUT: NONE (display)
+
+1.3) Service status
+  DECIDED 2026-07-24: option 1 below, not option 2.
+  TDK / DCDCCrates status dots
+    INPUT:  ODB-LIVE (raw) + COMPUTED (client-side formula, ported 1:1
+      from common_scripts/common/services.py):
+      - TDK: reads /Equipment/TDK/Settings/{Names, Enabled,
+        Fault Register, Interlock Trigger}; for every channel where
+        Enabled is true, red if Fault Register != 0 or
+        Interlock Trigger != 0 (mirrors TDKService.check_status()).
+      - DCDCCrates: reads /Equipment/DCDCCrates/Settings/
+        {Device Names, Enabled, Crate On}; red if Enabled is true but
+        Crate On is false (mirrors DCDCCratesService.check_status()).
+      Same pattern already used for "Required programs" above (raw ODB
+      read + client-side formula) - not new infrastructure, just a
+      small per-channel loop instead of a single scalar comparison.
+      REJECTED option: a dedicated backend process that runs
+      check_shared_equipment() periodically and publishes a single
+      health flag to ODB - would remove the duplication below, but
+      requires new always-on infrastructure (same category as the
+      "no continuous safety interlock" gap already flagged in
+      custom_page.txt 3.2, deliberately out of scope here too).
+    OUTPUT: NONE (display), but mirrors the same interlock the
+      Hardware-tier power-ON actions gate on (custom_page.txt 3.1) -
+      disable/warn those buttons when red. This is UX only: the real
+      enforcement stays server-side, each script still calls
+      check_shared_equipment() itself at execution time regardless of
+      what this card shows.
+    KNOWN RISK, explicit for whoever implements this: the JS formula
+      above and services.py's Python are two independent copies of the
+      same logic - nothing keeps them in sync automatically. If
+      TDKService/DCDCCratesService.check_status() ever changes, the JS
+      copy must be updated by hand to match.
+
+1.4) PySequencer
+  Status pill (idle/busy)
+    INPUT:  ODB-LIVE - /PySequencer/State/Running
+    OUTPUT: NONE (display), but gates every PYSEQ button on the page -
+      disable while Running=true (a second Command/"Start script"
+      write would stomp the one already executing, custom_page.txt
+      3.1's concurrency note).
+
+1.5) Run
+  Run number, State
+    INPUT:  ODB-LIVE - /Runinfo/Run number, /Runinfo/State (confirmed
+      via docs/old/odb_220726_121718.json)
+  Crew
+    INPUT:  ODB-LIVE - /Experiment/Run Parameters/Shift crew (NOT under
+      /Runinfo - confirmed via the same dump, a real path difference
+      worth remembering)
+    OUTPUT: NONE (display) - deliberately NOT duplicating mhttpd's own
+      Run Actions panel (Start-with-Fixed-Duration etc.), per
+      custom_page.txt 3.2's "REDUCE" decision - display only.
+
+TODO (doc drift, found 2026-07-24): custom_page.txt 3.2 still describes
+a 4-card grid (Emergency/Required Programs/Service Status/PySequencer);
+the mockup has a 5th "Run" card never written up there. Fold this
+section's 1.5 into custom_page.txt 3.2 once the whole safety-panel
+section here is closed out.
+
+
+2) POWER (custom_page.txt 3.1)
+--------------------------------------------------------------------
+Built one tab at a time (user's own pacing, 2026-07-24). All 4 parts
+closed: FEB power (2.1), LV power (2.2), HV power (2.3), DCDC crate
+block (2.4).
+
+2.1) FEB power
+  Status columns (read-only, polled directly from ODB - no script
+  involved, refreshed independent of any button):
+    FEBName, position (feb_index), link_feb
+      INPUT: ODB-LIVE - LinksFibre/Settings/{FEBName, LinkFEB}
+    crate . slot
+      INPUT: COMPUTED - from FEBCrates/Settings/{FEBCrate,FEBSlot}
+        [link_feb], shown as "unmapped" if either equals 255
+    power (on/off)
+      INPUT: ODB-LIVE - FEBCrates/Settings/FEBPower[crate*15+slot]
+    crate link (CrateControllerConnected)
+      INPUT: ODB-LIVE - FEBCrates/Variables/CrateControllerConnected
+        [crate]
+    active ch.
+      INPUT: COMPUTED - mirrors Feb.get_active_channels()'s own count,
+        derived from ASICMask already read, no separate ODB read
+    row detail (temperature / voltage rails, click-to-expand)
+      INPUT: ODB-LIVE - FEBCrates/Variables/SCFC - shown as plain
+        numbers only, deliberately NOT color-coded (no reference
+        "normal" value exists anywhere, detector/feb.py's own docstring
+        is explicit about this - don't invent a threshold in JS)
+    OUTPUT (all of the above): NONE (display)
+
+  Selection: "Sel." checkbox column + select-all
+    INPUT/OUTPUT: PAGE-LOCAL - lives only in JS state, no ODB write of
+      its own; feeds the action below
+
+  Action: "Power on selected FEBs" / "Power off selected FEBs"
+    INPUT:  selection (PAGE-LOCAL)
+    OUTPUT: PYSEQ -> feb_power.py, params:
+      power_on (True/False per button)
+      target_febs - NEW param, does not exist in the script today
+        (feb_power.py currently always loops over every Feb - CODE
+        TODO). TYPE CONFIRMED 2026-07-24 (read midas/python/midas/
+        sequencer.py's register_param()/get_param()): PySequencer
+        params take their ODB type from register_param()'s
+        default_value, so target_febs should be registered with a
+        list default (e.g. []) -> MIDAS creates a native ODB INT
+        ARRAY, not a JSON-encoded string. The page writes the selected
+        feb_index values directly as an ODB array to
+        /PySequencer/Param/Value/target_febs (same mechanism already
+        used for every other array field on this page, e.g.
+        FEBPower[]) - no JSON/CSV parsing needed on either side;
+        feb_power.py just does target_febs = seq.get_param
+        ("target_febs") and gets a plain list of ints back.
+      is_odb_available / can_send_commands_to_odb: always True, never
+        exposed as page controls (production page, not a dry-run tool)
+    EMPTY-SELECTION BEHAVIOUR, DECIDED 2026-07-24 (user): clicking
+      Run with nothing selected does NOT fall back to "every FEB" -
+      nothing starts. (No script write happens at all in that case -
+      implementer's choice whether that's a disabled button or a
+      no-op with a message, not specified further.)
+    FEEDBACK: after Command/"Start script", poll /PySequencer/State/
+      {Running,Finished,Message,Error} and show the script's own
+      seq.msg() text as-is - don't re-derive pass/fail in JS.
+    GATING: "Power on" disables/warns (UX only) when Service Status
+      (1.3) is red - mirrors feb_power.py's own server-side
+      check_shared_equipment() gate, which only applies to
+      power_on=True. "Power off" is never gated, in the page or in the
+      script.
+    CONCURRENCY: both buttons disable while /PySequencer/State/
+      Running is true (single shared PySequencer instance).
+
+2.2) LV power
+  NOTE on interaction model, confirmed 2026-07-24 against the real
+  mockup markup: the "Sel." checkbox and click-row-to-expand-detail are
+  TWO INDEPENDENT interactions (the checkbox has an explicit
+  stopPropagation() so clicking it never opens the detail panel).
+  Selecting a row only ever builds the list for a batch action below -
+  it does not change what data is displayed, expanded or not. Every
+  value shown, in the main row or the detail panel, is ODB-LIVE either
+  way - nothing on this table is computed from the selection state.
+  Same note applies to FEB power (2.1) above.
+
+  Main row columns (read-only, ODB-LIVE, no script involved):
+    LV channel name (e.g. "SMB_US_2-3")
+      INPUT: COMPUTED - derived from FEBName (ODB-LIVE) by parsing
+        "<side> SM <n>" (detector/feb.py's __parse_name()/
+        __build_lv_supply()); if FEBName doesn't parse, shown as a
+        distinct "no LV supply assigned" row state, not blank/error
+    present - ADDED 2026-07-24 (user request, prompted by the
+      grouping-is-hardcoded discussion below: not a fix for that, but a
+      cheap real-hardware sanity indicator worth having regardless)
+      INPUT: ODB-LIVE - DCDCCrates/Settings/Present[ch] - confirmed
+        real via the live ODB dump (docs/old/odb_220726_121718.json):
+        128-element per-channel array, genuinely mixed True/False
+        values (not a dead constant), with its own ODB-defined display
+        format ("Format Present": [grey, var(--mgreen)]). NOT
+        currently wrapped by DCDCPowerSupply's readables (common_
+        scripts/common/power_supply.py) - a real, previously unused
+        field, distinct from Enabled (configured) or on/off (powered):
+        this is actual hardware-presence detection.
+      OUTPUT: NONE (display) - a simple green/grey dot, no fault
+        semantics (unlike the 7 detail-panel flags - Present isn't a
+        pass/fail check, just "is there a physical channel here")
+      CROSS-CHECKED against FEB/HV: FEB already has an equivalent real
+        field (FEBCrates/Variables/CrateControllerConnected[crate],
+        already shown as FEB's "crate link" column, 2.1) - nothing new
+        needed there. HV has NO equivalent field - checked HV/Settings
+        in full, the only status flag is Enabled[ch] (already shown) -
+        nothing to add there.
+    active ch.
+      INPUT: COMPUTED - same value as the FEB table's own active ch.
+        column (a Feb's LV rail powers exactly its own channels)
+    on/off
+      INPUT: ODB-LIVE - DCDCCrates/Settings/"Channel on"[ch]
+    Current
+      INPUT: ODB-LIVE - DCDCCrates/Variables/Current[ch]
+    Adjust (editable input, see action below - renamed from "Voltage":
+      this IS the readback of the adjustable setpoint, not an
+      independent measurement)
+      INPUT: ODB-LIVE - DCDCCrates/Variables/"Voltage Adjust"[ch]
+    ok/fault pill (aggregates the 7 flags below into one pass/fail)
+      INPUT: COMPUTED - from the 7 detail-panel flags already read,
+        no separate ODB read
+    OUTPUT (all read-only fields above): NONE (display)
+
+  Detail panel (click-to-expand, ODB-LIVE, independent of selection -
+  see note above):
+    Sense
+      INPUT: ODB-LIVE - DCDCCrates/Variables/"Vdd MuPix"[ch]
+    Temperature
+      INPUT: ODB-LIVE - DCDCCrates/Variables/Temperature[ch]
+    7 fault flags (Alert, Power Good, Over Temperature,
+    Vin Under-voltage, Over Current, Vout Over-voltage, Interlock) -
+    real hardware flags, safe to color-code red/green directly (unlike
+    the raw Current/Adjust/Sense/Temperature numbers above)
+      INPUT: ODB-LIVE - DCDCCrates/Variables/<flag name>[ch] (Power
+        Good is inverted: True = healthy, all others False = healthy)
+    OUTPUT: NONE (display)
+
+  Selection: "Sel." checkbox column + select-all -> PAGE-LOCAL, same
+  shape as FEB power (2.1), feeds the actions below.
+
+  Action: "LV on selected" / "LV off selected" + editable param row
+  (settle_seconds, expected_current_a, current_tolerance_a - defaults
+  5s / 6.5A / 3.0A, UNVERIFIED)
+    INPUT:  selection (PAGE-LOCAL) + the editable params above
+    OUTPUT: PYSEQ -> lv_power.py, same shape as feb_power.py (2.1):
+      power_on, target_febs (same NEW array param / same CODE TODO as
+      FEB power - not built yet), settle_seconds, expected_current_a,
+      current_tolerance_a, is_odb_available/can_send_commands_to_odb
+      always True.
+    EMPTY-SELECTION: same decision as FEB power (2.1) - nothing starts.
+    FEEDBACK / GATING / CONCURRENCY: identical rules to FEB power
+      (2.1) - poll State/{Running,Finished,Message,Error} and show the
+      script's own text; power_on=True gated on Service Status (1.3),
+      power_off never gated (verified in lv_power.py: the off path is
+      unconditional and instant, no settle wait, no current check);
+      buttons disable while State/Running is true.
+
+  Action: "Adjust" - RE-CORRECTED 2026-07-24, SIMPLIFIED (the 2-step
+  PAGE-then-HARDWARE model written earlier the same day is now
+  SUPERSEDED - kept out of this doc entirely, not left as a "kept for
+  the trail" note, since it was live for less than an hour and never
+  reached the real page). Reasoning for reverting: the stage/apply
+  split earns its complexity in Readout (a big multi-way selection
+  across a 512-channel grid, built up over several clicks before
+  committing) and Calibration (a full multi-parameter scan config,
+  staged before an expensive, slow, real hardware action). Adjust is
+  neither - it's one number, one write, with NO server-side validation
+  to protect on either side of a stage/apply split (see below) - so
+  staging bought nothing and introduced a real ambiguity (a staged
+  edit and the last-polled live value would occupy the exact same
+  field in a real implementation, with no way to tell them apart, and
+  a live ODB poll could silently clobber an unsaved edit). Reverted to
+  a SINGLE action, same shape as the FEB/LV/HV power actions above:
+    Per-row Adjust input, or the bulk field + ONE button ("Set adjust
+    for selected")
+      INPUT:  selection (PAGE-LOCAL) + typed value
+      OUTPUT: ODB-DIRECT (OPTION A, unchanged) -
+        DCDCCrates/Variables/"Voltage Adjust"[ch], written immediately
+        per selected row, no intermediate staged state, no separate
+        Read/Apply buttons. The main table's own ODB-LIVE polling
+        (2.2 above) is what keeps the displayed value in sync
+        otherwise - no dedicated "Read" action is needed on top of it.
+    ACTIVE BUG, still blocks this action entirely today: common_
+      scripts/common/power_supply.py's DCDCPowerSupply.set_voltage()
+      writes Settings/Adjust[ch] (a 40-element array) instead of the
+      real, hardware-watched Variables/"Voltage Adjust"[ch] (128
+      elements) - confirmed against the dcdc_fe frontend source
+      (mdev_pdcc.cxx). Out of bounds for every one of SciFi's channels
+      (indices 6-121). MUST be fixed in common_scripts (shared with
+      pixel_scripts, not SciFi-specific) before this action can work at
+      all. The Option-A direct write from the page bypasses
+      DCDCPowerSupply's own (buggy) command entirely, so fixing the
+      page's own write path doesn't require touching the Python class
+      - but the class should still be fixed too, since other callers
+      may use it.
+    NO VALIDATION ANYWHERE, explicit user decision (kept from an
+      earlier session, re-confirmed here): unlike HV's Demand (which
+      mdev_hv4.cxx clamps at the firmware level), DCDCCrates' own
+      frontend has no equivalent bounds check on Voltage Adjust writes
+      - the page adds no client-side clamp either. The old -9..+21V/
+      step 1.5 bounds from DCDCPowerSupply's class attributes exist in
+      Python but are NOT enforced anywhere on this write path.
+    "Turn on selected" / "Turn off selected": unrelated, separate
+      action - this is the main LV power action already documented
+      above (power_on/target_febs/settle_seconds/... via lv_power.py),
+      doesn't read or depend on Adjust in any way.
+  MOCKUP UPDATED 2026-07-24 to match: custom_page_mockup_v2.html
+    (new file, supersedes custom_page_mockup_colored.html, archived to
+    docs/old/) removes the "Apply adjust selected"/"Read adjust
+    selected" ghost buttons and the tier-block/tier-page wrapper for
+    this control - replaced with one plain toolbar containing Turn
+    on/off, the settle/expected/tolerance param fields, and the single
+    "Set adjust for selected" control. No JS behaviour changed beyond
+    that (the 2 removed buttons had no click handler wired in either
+    version - safe, mechanical removal). Readout and Calibration's own
+    PAGE/HARDWARE tier blocks are UNCHANGED - this simplification is
+    specific to Power's Adjust/Demand controls, not a reversal of the
+    tier concept generally.
+
+2.3) HV power
+  MOCKUP-VS-BACKEND DRIFT, found 2026-07-24: custom_page_mockup_
+  colored.html already has a full "Sel." column, per-row checkboxes,
+  and "Turn on selected"/"Turn off selected" buttons for HV - but this
+  is pure local JS simulation (no real ODB call anywhere in the
+  mockup, same as every other tab), previewing the FUTURE design.
+  custom_page.txt 3.1 is still accurate about what's real TODAY:
+  detector/hv.py's ScifiHv has no turn_on_channel()/turn_off_channel(),
+  only a bulk turn_on()/turn_off() loop over every discovered channel
+  - so per-channel Output-On selection genuinely CANNOT be wired to a
+  real script yet, regardless of what the mockup already shows. See
+  the two actions below - they have different readiness for exactly
+  this reason.
+
+  Main row columns (read-only unless noted, ODB-LIVE):
+    channel name (as-is, e.g. "US Top SciFi CH3")
+      INPUT: ODB-LIVE - HV/Settings/Names[i]
+    index
+      INPUT: ODB-LIVE (array position i)
+    "FEB (once mapped)"
+      INPUT: HARDCODED placeholder, left empty - populated only once
+        the ordered HV-channel-to-SMB list is confirmed (topology.txt
+        4c, still open; Marius said not important to chase, 2026-07-23
+        call)
+    Output On, Enabled
+      INPUT: ODB-LIVE - HV/Settings/{"Output On", Enabled}[ch] - real
+        flags, color-codable directly
+    Demand (editable, see action below)
+      INPUT: ODB-LIVE - HV/Variables/Demand[ch]
+    Current, Voltage
+      INPUT: ODB-LIVE - HV/Variables/{Current, Voltage}[ch] - raw
+        numbers only, no color-coding (same UNVERIFIED-threshold rule
+        as everywhere else on this page)
+    OUTPUT (all of the above): NONE (display)
+  No click-to-expand detail panel documented for HV (unlike FEB/LV) -
+  check_status() only reads current/voltage/Enabled, all already shown
+  as main columns.
+
+  Grouping: 4 groups - US Top / US Bottom / DS Top / DS Bottom
+  (confirmed real physical HV crates, Mu3eSpecBook.pdf 3.5.2). CAVEAT:
+  raw ODB array is 32 channels, only 24 are real (8 unconfirmed
+  spares) - group summaries use live counts only ("N enabled, N on"),
+  never a fixed denominator. Rows sorted by ODB index ascending, not
+  by name, so row order stays stable once the FEB-mapping column above
+  is eventually filled in.
+
+  Action A - bulk, REAL AND BUILDABLE TODAY: "HV ON all" / "HV OFF
+  all" (mirrors hv_power.py's actual current behaviour - acts on
+  every discovered "SciFi CH" channel, no selection concept exists in
+  the script)
+    INPUT:  demand_voltage (default 56.0V - client-side should
+      warn/clamp at 60V for UX, but the real refusal is enforced
+      server-side by ScifiHv.MAX_DEMAND_VOLTAGE regardless of the JS),
+      settle_seconds (default 10s), expected_current_ua (default
+      1.5uA, UNVERIFIED), current_tolerance_ua (default 1.0uA,
+      UNVERIFIED)
+    OUTPUT: PYSEQ -> hv_power.py, params: power_on, demand_voltage,
+      settle_seconds, expected_current_ua, current_tolerance_ua,
+      is_odb_available/can_send_commands_to_odb always True. No
+      target/selection param - genuinely bulk, no CODE TODO blocking
+      this one (unlike FEB/LV's target_febs, which is a real gap).
+    FEEDBACK / GATING / CONCURRENCY: same rules as FEB/LV power (2.1,
+      2.2) - poll State/{Running,Finished,Message,Error}, show the
+      script's own text; power_on=True gated on Service Status (1.3),
+      power_off never gated (verified unconditional/instant in
+      hv_power.py); buttons disable while State/Running is true.
+
+  Action B - per-row + bulk Demand write - RE-CORRECTED 2026-07-24,
+  SIMPLIFIED (same reversal as LV's Adjust, 2.2 above - the 2-step
+  PAGE-then-HARDWARE model written earlier the same day is SUPERSEDED,
+  not kept as a trail note, for the identical reasoning: one number,
+  one write, nothing to stage - see 2.2's own reasoning paragraph, it
+  applies here unchanged). Reverted to a SINGLE action:
+    Per-row Demand input, or the bulk field + ONE button ("Set demand
+    for selected")
+      INPUT:  selection (PAGE-LOCAL) + typed value
+      OUTPUT: ODB-DIRECT (OPTION A, unchanged) - HV/Variables/
+        Demand[ch], written immediately per selected row, no
+        intermediate staged state, no separate Read/Apply buttons.
+        Not blocked by the turn_on_channel()/turn_off_channel() gap
+        above, since writing Demand doesn't require Output On to
+        change. The main table's own ODB-LIVE polling (2.3 above)
+        keeps the displayed value in sync otherwise.
+    REAL HARDWARE SAFETY NET, confirmed both in mdev_hv4.cxx source and
+      now in the live ODB dump (docs/old/odb_220726_121718.json,
+      HV/Settings has a real "Voltage limit" key, parallel to the
+      already-confirmed "Current limit"): the frontend clamps any
+      Demand write against HV/Settings/"Voltage limit"[ch] itself,
+      regardless of who writes it - f = m_voltage_limit[i] if exceeded.
+      This is a genuine firmware-level clamp, unlike LV's Adjust (which
+      has none) - the page does not need to duplicate this validation,
+      only needs a UX-level warn/clamp at the known MAX_DEMAND_VOLTAGE
+      (60V) for a faster user-facing signal. Unlike LV's Adjust, there
+      is no active bug blocking this write path (HVBoxNPowerSupply's
+      set_voltage() already targets the correct Variables/Demand[ch]).
+    "Turn on selected"/"Turn off selected" (per-channel Output On,
+      shown in the mockup, also HARDWARE tier): NOT buildable until the
+      CODE TODO above (turn_on_channel()/turn_off_channel()) closes -
+      listed here only so the gap is explicit next to the action it
+      blocks, not a 3rd real action today. The only REAL power action
+      today is Action A above (bulk "HV ON all"/"HV OFF all").
+      GOTCHA, found 2026-07-24 while tracing the end-to-end workflow:
+      once Action A ("HV ON all") is triggered, hv_power.py's
+      ScifiHv.turn_on(demand_voltage) OVERWRITES every channel's Demand
+      with that single script param value, uniformly - so any per-row
+      Demand values just staged+applied via Action B are silently
+      lost the moment "HV ON all" runs. This is correct/expected
+      behaviour for today's bulk-only script (not a bug), but a real
+      trap for an operator who doesn't know it: setting 3 different
+      per-row Demand values, applying them, then clicking "HV ON all"
+      erases that customization back to one uniform value. Only once
+      turn_on_channel() exists (and "HV ON selected" only flips Output
+      On + verifies readback, per custom_page.txt 3.1's own resolution)
+      would per-row Demand values actually survive a turn-on action.
+      Worth a visible warning/note near Action A in the real page, not
+      just in this reference doc.
+  MOCKUP UPDATED 2026-07-24 to match: same custom_page_mockup_v2.html
+    (2.2 above) removes the "Apply demand selected"/"Read demand
+    selected" ghost buttons and tier-block/tier-page wrapper here too -
+    one plain toolbar with Turn on/off, the settle/expected/tolerance
+    fields, and the single "Set demand for selected" control. No JS
+    behaviour changed (both removed buttons were unwired in the prior
+    version too).
+
+2.4) DCDC crate block
+  8-row table, 2 groups (US = DCDC_C_1..4, DS = DCDC_C_5..8) - confirmed
+  real via crate/channel hosting (each crate's hosted LV channels are
+  entirely one side or the other). Field values confirmed against the
+  live ODB dump (docs/old/odb_220726_121718.json): DCDCCrates/Settings/
+  {Device Names, Enabled, Crate On, Reset, Clear Fault} are all real
+  8-element (crate-level) arrays, distinct from the 128-element
+  per-channel arrays used everywhere else in the LV tab (2.2).
+
+  Main row columns (read-only, ODB-LIVE):
+    Crate name (DCDC_C_1..8)
+      INPUT: ODB-LIVE - DCDCCrates/Settings/"Device Names"[crate]
+    Enabled
+      INPUT: ODB-LIVE - DCDCCrates/Settings/Enabled[crate]
+    Crate On
+      INPUT: ODB-LIVE - DCDCCrates/Settings/"Crate On"[crate] - real
+        flag, color-codable directly. This is the exact field behind
+        the DCDC_C_3 anomaly flagged 2026-07-17 (Enabled=True, Crate
+        On=False) - that crate hosts 2 real SciFi FEBs' LV channels
+        (SMB_US_8-9, SMB_US_6-7), so this row makes a previously
+        pixel-side-looking finding visible on the SciFi page directly.
+    hosts (which LV channels / Febs this crate contains)
+      INPUT: COMPUTED - crate_index = lv_channel_index // 16
+        (16 confirmed via DCDCCrates/Settings/"Channels per device"),
+        no new ODB read, purely derived from data already read
+        elsewhere on the LV tab (2.2)
+    OUTPUT (all of the above): NONE (display)
+
+  Selection: "Sel." checkbox column + select-all -> PAGE-LOCAL, same
+  shape as FEB/LV/HV.
+
+  Action: Reset / Clear Fault - BOTH per-row inline buttons AND
+  Sel.+batch ("Reset selected" / "Clear Fault selected")
+    DECIDED 2026-07-24 (two open architecture questions, resolved):
+    (1) Python-side representation: OPTION (c) chosen - skip
+      DCDCPowerSupply entirely for this (it's indexed per-channel,
+      0-127, a different index space than crate-level 0-7); read/write
+      the crate-level fields directly, mirroring how FEBCrates' own
+      crate/slot handling already works elsewhere in this codebase.
+      Rejected: (a) a new separate crate-level class (unnecessary
+      ceremony for 3 booleans), (b) bolting crate-level commands onto
+      the existing per-channel DCDCPowerSupply class (would mix two
+      index spaces inside one class).
+    (2) Action mechanism: OPTION A chosen, same as LV Adjust (2.2) and
+      HV Demand (2.3) - Reset/Clear Fault are simple boolean triggers
+      on the crate controller's own registers, no validation/
+      calculation involved, same category as Adjust/Demand. No new
+      script needed (supersedes custom_page.txt's older text
+      envisioning "a small new script/action" for this).
+    OUTPUT: ODB-DIRECT - the page writes DCDCCrates/Settings/
+      Reset[crate]=1 / DCDCCrates/Settings/"Clear Fault"[crate]=1
+      straight from JS, per-row (existing inline buttons) or in bulk
+      (new Sel.+batch pair) - no PySequencer round-trip.
+    NOT WIRED ANYWHERE TODAY (CODE TODO, Python side): confirmed these
+      2 fields aren't in DCDCPowerSupply's command dict at all (only
+      turn_on/turn_off/set_voltage/is_on/the 4 read_*/the 7 fault-flag
+      checks exist there) - moot now that (1) above routes around
+      DCDCPowerSupply anyway, but the crate-level read/write helper
+      itself still needs to be written somewhere (e.g. alongside
+      FEBCrates' own direct-read pattern) before this action works for
+      real.
+
+Power (section 2) is now fully mapped: FEB (2.1), LV (2.2), HV (2.3),
+DCDC crate block (2.4).
+
+CROSS-CUTTING GAP, found 2026-07-24, DECIDED NOT TO FIX: every
+geometric group on this page (FEB/LV US-DS, HV's 4 crates, DCDC
+crate's US-DS, Readout's US-DS modules) is grouped in the mockup by
+plain array position (JS .slice(0,6)/.slice(6,12) etc.), not by
+reading each row's own side/location field live from ODB (e.g.
+parsing "US"/"DS" out of FEBName, or the location prefix out of an HV
+channel name). This works in the mockup only because the demo data
+happens to be pre-sorted that way - a real ODB array has no such
+ordering guarantee, so a real implementation copying this exact
+.slice() logic would silently mis-group rows the moment the live
+array order ever differed from the assumed layout. RAISED to the user,
+who chose to keep the hardcoded/positional grouping as-is rather than
+have the real page derive it live from each row's own name field -
+instead, mitigated with a cheap real-data sanity indicator: LV's new
+"present" column (2.2) surfaces exactly this kind of mismatch/absence
+at the row level, without needing to fix the grouping logic itself.
+Not extended to FEB/HV/DCDC crate/Readout groupings, and not fixed at
+the root (deriving group from each row's own field) - a known,
+accepted simplification, not an oversight.
+
+
+3) READOUT (custom_page.txt 3.5's Readout mega-section)
+--------------------------------------------------------------------
+Rows are MODULES (SMB, 4 ASICs x 32 channels = 128 channels), not FEBs
+directly - 24 total (12 US + 12 DS, 2 modules per FEB). Expanding a
+module row goes straight to a 4-row (one per ASIC) x 32-column grid -
+no separate ASIC-then-channel drill-down, per custom_page.txt 3.5's
+own STRUCTURE FINALIZED note (grounded in Mu3eSpecBook Fig 6.1/6.2).
+UPDATED 2026-07-24: all 24 modules are now wired to their own real
+interactive grid in the mockup (previously only "US SM 2 · Mod 0" was,
+the other 23 were static placeholder rows - superseded, every module
+now gets its own per-module ASIC/channel data, generated client-side
+the same way the Geometry view's per-module data is). LinkStatus
+Fault/Unknown now cascade-mask/disable a module's ASICs exactly like
+Disabled does (2026-07-24 fix, matching the GATE HIERARCHY note below:
+acting on a module with a bad link is meaningless regardless of which
+of the three non-OK states it's in). Not to be confused with the
+"link" column below, which IS about real hardware connectivity.
+UPDATED AGAIN 2026-07-24 (fresh ODB dump, docs/odb_240726_162931.json):
+the one module with real-looking VBR/customized calibration params was
+"US SM 2 · Mod 0" - not grounded in anything, just an arbitrary pick.
+Live data shows the actually-commissioned FEBs are "US SM 0" (7/8
+ASICs) and "US SM 1" (8/8 ASICs) - febs table and vbrByModule updated
+to "US SM 1 · Mod 0" accordingly, "US SM 2" now correctly shown
+Disabled like every other non-commissioned FEB. Full detail + the
+feb_index/link_feb confirmation this same dump also settled:
+custom_page.txt section 3's FRESH ODB DUMP CHECK note.
+
+3.1) Module / ASIC / channel grid - read-only fields
+  Module row (collapsed)
+    link status - ADDED 2026-07-24 (user asked whether a presence/
+      connection check exists for modules/ASICs/channels in Readout,
+      the way LV just got one, 2.2)
+      INPUT: ODB-LIVE - LinksFibre/Variables/LinkStatus[link], a REAL
+        enum, not an arbitrary bitmask (confirmed via online/common/
+        include/link_constants.h and switching_pc/slowcontrol/
+        MuFEB.cpp, read directly - not from the possibly-stale local
+        online/ clone's assumption alone, but this file's content
+        happened to be sufficient this time): Disabled=0, OK=1,
+        Unknown=2, Fault=3. Per-FEB, NOT per-module - both modules of
+        a FEB share the same value (mirrors LinkFEB's own indexing).
+        INDEXING CONFIRMED 2026-07-24 (fresh ODB dump, docs/
+        odb_240726_162931.json): LinksFibre/Variables/LinkStatus has
+        array length 12, same as FEBType/LinkFEB/FEBName/NumASICsMax/
+        ASICMask in the same equipment tree - it CANNOT be link_feb-
+        indexed (global IDs run 144-155, would need length >=156), so
+        it's feb_index (local, 0-11), same as every other array in
+        this equipment prefix. Different from FEBCrate[]/FEBSlot[] in
+        the SEPARATE FEBCrates equipment tree, which topology.txt
+        section 4b already proved IS link_feb-indexed - two different
+        equipment trees, two different (now both confirmed) answers,
+        not a contradiction.
+      OUTPUT: NONE (display) - dot color: OK->green, Fault->red,
+        Disabled/Unknown->grey.
+      NOT PURSUED FURTHER: "FEB datapath status"'s 5 sub-fields (PLL
+        locked, Buffer full, Frame desync, DPA locked, RX ready) -
+        also real ODB fields (switching_pc/midas_fe/switch_fe.cpp
+        creates them), but the function that actually populates them
+        (Mutrig_FEB::ReadBackDatapathStatus()) is declared in the
+        local online/ checkout's header but NOT IMPLEMENTED there
+        (missing .cpp body - the local clone is known-stale, per
+        project convention, and this confirms it again). Their exact
+        per-bit meaning is unconfirmed - user accepted stopping at
+        LinkStatus for now rather than chasing this over SSH.
+    "<N>/4 ASIC active", "<N>/128 channels unmasked"
+      INPUT: COMPUTED - from ASIC/channel data already read for this
+        module, no separate ODB read
+    VBR
+      INPUT: NOT ODB-LIVE - FLAGGED 2026-07-24 (user catch): VBR is
+        found per HV channel by calibrations/vbr_scan.py's ScanVbr, and
+        1 HV channel = 1 module (confirmed 1:1), so conceptually every
+        channel in a module shares one VBR value, shown once per module
+        row, not repeated per ASIC/channel - BUT the found value has no
+        real ODB field to land in (checked, not present), so this entry
+        was wrong to assume it could be read live from ODB. Will have
+        to come from somewhere else - most likely another entry in the
+        same fake-ODB JSON mechanism already designed for IV scan
+        per-module parameters (4.3), just flowing the other direction
+        (a scan RESULT surfacing back to the page, not a request going
+        out to vbr_run.py) - that result-side counterpart isn't
+        designed yet. Revisit alongside 4.3/4.4 when this becomes real
+        code work, not before.
+  ASIC row (grid row header, once expanded)
+    enabled (ASICMask bit)
+      INPUT: ODB-LIVE - LinksFibre/Settings/ASICMask[feb_index], one
+        bit per ASIC (Asic.is_enabled())
+    "<N>/32 unmasked", avg FCCR rate
+      INPUT: ODB-LIVE/COMPUTED - avg of the 32 channels' own
+        SciFiFibre/Variables/FCCR values already read for the cells
+  Channel cell (hover detail)
+    tthresh, tthresh_offset
+      INPUT: ODB-LIVE - SciFiFibre/Settings/ASICs/Channels/
+        {tthresh, tthresh_offset}[global_channel_index]
+    FCCR (live per-channel rate)
+      INPUT: ODB-LIVE - SciFiFibre/Variables/FCCR[global_channel_index]
+  EXCLUDED FIELDS (checked against the real ODB tree, not assumed -
+    custom_page.txt 3.5's own list): ASICs/Global/* (confirmed scalar,
+    not per-ASIC despite the path name), ASICs/TDCs/* and the rest of
+    the channel config array (pole, ampcom, ebias, ...) - expert-only
+    analog/DAC config, not status fields an operator reads; sipm
+    (identity, not status); cml (real field, undocumented meaning).
+  OUTPUT (all of the above): NONE (display)
+  NOT CONFIRMED: whether the ODB's own flat Asic/Channel index order
+    matches this grid's assumed physical layout 1:1 - open in
+    topology.txt 132-135, carried forward from before this session.
+    The grid renders using ODB-native indices either way; cells are
+    labelled by ODB index, not asserted to be true physical position.
+
+  Selection (3 ways to build the same set - necessary, stays exactly
+  as-is, this is not the part being simplified below):
+    row header click -> selects the whole ASIC (32 channels)
+    column header click -> selects that channel position across all 4
+      ASICs of the module (a real physical cross-section)
+    single cell click -> just that channel
+    INPUT/OUTPUT: PAGE-LOCAL - selection only, feeds the actions below,
+      no ODB read/write of its own. "Clear selection" just empties it.
+
+3.2) Actions - SIMPLIFIED 2026-07-24 (same reasoning as Power's Adjust/
+  Demand, 2.2/2.3: the earlier 2-step PAGE-then-HARDWARE model - stage
+  mask/enable locally, commit later via a separate "Apply selected" -
+  is SUPERSEDED here too, not kept as a trail note. Both actions below
+  are now single, immediate clicks) - BUT with a real difference from
+  Power in the write mechanism, found while discussing this with the
+  user 2026-07-24:
+
+  GATE HIERARCHY, CLOSED 2026-07-24 (final form, after several
+  reversals the same day - this supersedes every earlier "GATING"
+  paragraph drafted before it): two DIFFERENT gates exist, at two
+  different scopes, and they don't apply to the same actions:
+    (1) LinkStatus (module-level, 3.1 above) - "can this module be
+        reached at all" - a data-path check, not a power check. Not
+        confirmed by Marius, the user's own design, but logically
+        load-bearing: acting on a module whose FEB reports Fault/
+        Disabled/Unknown LinkStatus is meaningless (no real data path
+        exists), unlike the generic shared-equipment check below.
+    (2) check_shared_equipment() (service/hardware-level, 1.3/2.1-2.3)
+        - TDK + DCDCCrates health - CONFIRMED REQUIRED by Marius, but
+        ONLY for ASICMask writes specifically (his own answer was
+        about ASIC enable/disable, not channel masking).
+  User's own framing for why these differ (2026-07-24): "check
+  shared_equipment è solo per asics perché è hardware, il check su
+  linkstatus è più generale, mi dice se posso accedere o meno al
+  modulo" - LinkStatus gates ACCESS to the module itself, shared-
+  equipment gates the specific HARDWARE-facing action (ASICMask) within
+  it. Conceptual chain: LinkStatus -> module reachable -> (if touching
+  ASICMask) shared-equipment healthy -> ASIC/channel action proceeds.
+
+  Action: "Mask ch" / "Unmask ch" (channel-level, acts on the current
+  cell/row/column selection above)
+    INPUT:  selection (PAGE-LOCAL) + which button (mask=True/False)
+    OUTPUT: PYSEQ -> NEW script, scripts/readout_mask.py (CODE TODO,
+      not built yet), mode="mask_channels":
+        target_channels (array of global channel indices - the
+          selection, same array-param mechanism as FEB/LV's
+          target_febs, 2.1)
+        masked (bool)
+        is_odb_available/can_send_commands_to_odb always True
+      Writes SciFiFibre/Settings/ASICs/Channels/mask[] - only the
+        target indices, via SciFiDetector.write_channel_field_bulk()
+        (already exists, built 2026-07-21 - allows different values at
+        different indices in one write).
+    GATING, FINAL 2026-07-24: LinkStatus of the target channels' own
+      FEB(s) must be OK, checked ONLY when masked=False (unmasking =
+      the risky/reactivating direction) - masking (de-escalation) is
+      NEVER gated, same on/off asymmetry as everywhere else on this
+      page. check_shared_equipment() does NOT apply here at all - this
+      is channel-level config, not the ASICMask write Marius's answer
+      was actually about; the earlier draft that gated this on shared-
+      equipment health (a same-day, later-reverted idea) is superseded.
+
+  Action: "Enable selected ASICs" / "Disable selected ASICs"
+  (ASIC-level, acts on the ASIC-row-header selection, cascades to mask
+  every channel on that ASIC)
+    INPUT:  selection (PAGE-LOCAL, ASIC rows only) + which button
+      (enabled=True/False)
+    OUTPUT: PYSEQ -> the SAME new script, scripts/readout_mask.py,
+      mode="enable_asics":
+        target_asics (array of (feb_index, position_in_feb) pairs)
+        enabled (bool)
+        is_odb_available/can_send_commands_to_odb always True
+      Writes LinksFibre/Settings/ASICMask[feb_index] - read-modify-
+        write per targeted ASIC, via Feb.set_asic_mask_bit() (already
+        exists, built 2026-07-23).
+    GATING, FINAL 2026-07-24: BOTH gates apply, only when enabled=True
+      (never when disabling, same asymmetry): LinkStatus of the
+      targeted ASIC's own FEB must be OK (module-level access check),
+      AND check_shared_equipment() must pass (the hardware/service
+      check CONFIRMED REQUIRED by Marius, 2026-07-23 call, custom_
+      page.txt 3.5's SIGNED OFF note - "ASICMask writes must pass
+      through check_shared_equipment(), same as power-on"). This is
+      the one case on this page where an action is gated by two
+      independent checks stacked together, not just one.
+    WHY THIS CAN'T BE ODB-DIRECT (unlike Power's Adjust/Demand),
+      discussed at length 2026-07-24: check_shared_equipment() exists
+      only in Python, only ever called from inside a script's own
+      sequence() - there is no ODB-published "is it safe" flag to read
+      instead (same underlying fact already established for Service
+      Status, 1.3). For the gate to be REAL rather than cosmetic, the
+      check and the write must happen in the same place, atomically -
+      a JS-side pre-check (even one reusing Service Status's own
+      already-computed flags) cannot substitute for this: it reads a
+      possibly-stale, polled value, has no atomicity with the
+      subsequent write, and - fundamentally - runs on a client that
+      isn't trusted (trivially bypassable from devtools regardless of
+      what the JS logic says). A JS-side mirror is still worth having
+      as UX (disable/warn the button early, matching Power's own
+      Service-Status-mirror convention, 2.1-2.3) - but the authoritative
+      refusal must happen inside scripts/readout_mask.py itself. Same
+      reasoning applies to the LinkStatus gate above - it too must be
+      re-checked server-side inside the script, not just trusted from
+      whatever the page displayed at click-time.
+    NOT USED: a more surgical, per-Feb-scoped alternative to shared-
+      equipment health exists (Feb.check_lv_status()/
+      check_lv_over_current(), scoped to just the targeted Feb rather
+      than the whole detector) - Marius asked for the SAME check_
+      shared_equipment() reused as-is, not a scoped variant, so this
+      was not built. Flagged as a possible future question for him,
+      not decided to pursue.
+
+MOCKUP UPDATED 2026-07-24 to match: custom_page_mockup_v2.html removes
+Readout's "Apply selected"/"Read selected" ghost buttons and the
+tier-block/tier-page wrapper around "Enable/Disable selected ASICs"
+(same mechanical removal as Power's - no click handler was ever wired
+to the 2 removed buttons). "Mask ch"/"Unmask ch" needed no structural
+HTML change (they were already single immediate-acting buttons in the
+mockup's own local-state model) - only an updated hint string noting
+the future gate asymmetry and the not-yet-built script they'll call.
+UPDATED AGAIN 2026-07-24 (same day, after the gate hierarchy above was
+finalized): both hint strings (Readout's grid toolbar and the top-level
+Enable/Disable toolbar) rewritten to say LinkStatus-only for Unmask vs
+LinkStatus+Service-Status for Enable, replacing the earlier draft text
+that only mentioned Service Status for both.
+
+
+4) CALIBRATION (custom_page.txt 3.5's Calibration mega-section)
+--------------------------------------------------------------------
+STARTED 2026-07-24. IV scan tab only so far - Thr scan PENDING.
+
+4.0) THE CENTRAL PROBLEM, found while starting this section: the
+mockup's "Per-module parameters" table lets an operator stage
+DIFFERENT values (all 7 scan params) for DIFFERENT modules before
+starting one scan - but thr_run.py/vbr_run.py, as they exist TODAY,
+take ONE flat set of parameters and apply it UNIFORMLY to every
+channel/module they touch (confirmed via the 2026-07-22 audit already
+in scripts_io_reference.txt: ScanThr writes across the whole 512-
+channel array, ScanVbr sweeps every discovered HV channel, neither
+has any per-target parameter variation). This is NOT a small gap like
+FEB/LV's missing target_febs param (an index-list param is a small
+script change) - real per-module heterogeneous parameters would need
+new architecture inside ScanThr/ScanVbr (something closer to N
+independent per-module sub-scans instead of one uniform pass). NOT
+resolved in this section yet - being worked through with the user
+piece by piece, starting with a narrower, more tractable sub-problem
+below before returning to the big one.
+
+4.1) Module list source, CONFIRMED 2026-07-24 (user's own question,
+  answered by reading the code, not by assumption): Calibration's
+  per-module target table does NOT keep its own separate module list -
+  it reuses the exact same readoutModules array Readout's own table
+  is built from (single source, built once from live FEB data), not a
+  second copy that could drift out of sync. Confirmed in the mockup by
+  inspection (buildIvTargetTable() takes readoutModules.slice(0,12)/
+  .slice(12,24), same array object Readout's own buildModuleTargetTable
+  uses) - already correct, nothing to fix here.
+
+4.2) IV SCAN ELIGIBILITY, DECIDED 2026-07-24 (user's own idea, narrower
+  than 4.0 - doesn't solve the per-module-parameters problem, addresses
+  a separate, smaller question: which modules should even be proposed
+  as scan targets): a module counts as "IV eligible" when its
+  corresponding HV channel has HV/Settings/Enabled[ch] == True. NOT
+  LinkStatus (3.1) - IV/VBR scan only ever touches HV equipment
+  (Demand/Current via ScifiHv), never the SciFiFibre data path, so a
+  module's fibre LinkStatus is irrelevant to whether an IV sweep on its
+  HV channel makes sense. (Contrast with Thr scan, PENDING 4.x below,
+  which DOES read FCCR over the fibre link - LinkStatus is far more
+  likely relevant there, not yet decided.)
+  REAL BLOCKER when implementing this for real: computing "IV eligible"
+  for a SPECIFIC module requires knowing WHICH HV channel belongs to
+  that module - the same never-confirmed ordered mapping already
+  flagged repeatedly (topology.txt 4c, the HV table's own "FEB (once
+  mapped)" placeholder column, 2.3). Only the total count (24 modules =
+  24 HV channels) is confirmed 1:1, not the order.
+  MOCKUP DEMO BUILT 2026-07-24 (user's explicit choice: show ALL 24
+  modules always, never hide any - just make eligibility visible):
+  new "IV eligible" column in the per-module IV target table, a dot +
+  label (green "eligible" / grey "HV disabled") derived from HV's own
+  Enabled flag via a POSITIONAL PLACEHOLDER pairing (module index N
+  paired with the Nth HV mock row) - explicitly NOT the real mapping,
+  a visible table-note says so. Row selection (the "Sel." checkbox)
+  stays enabled regardless of eligibility - ineligible modules can
+  still be checked/staged, mirroring this page's general convention
+  that the page informs, the real skip/refusal logic belongs server-
+  side (once the real mapping and any enforcement exist). Group
+  summaries gained an "N/12 IV eligible" count. 2 HV mock channels
+  set to Enabled=False (previously all hardcoded True) to make the
+  new column demonstrate something real instead of showing "eligible"
+  unconditionally.
+  NOT DECIDED YET: whether "IV eligible" should also factor into the
+  actual Start-scan behaviour once target_febs-style per-channel
+  targeting exists for vbr_run.py (today's script sweeps every
+  discovered channel regardless, per 4.0's own gap) - this column is
+  currently informational only, consistent with the "page displays,
+  script enforces" principle used everywhere else on this doc.
+
+  CONSIDERED AND REJECTED, same day: also folding HV/Settings/
+  "Output On"[ch] into this indicator (or showing it as a 2nd column) -
+  built briefly in the mockup, then removed after re-examining what
+  ScanVbr actually depends on. Re-confirmed via the 2026-07-22 audit
+  (already in scripts_io_reference.txt/todo.txt): ScanVbr checks
+  NEITHER Enabled NOR Output On before sweeping a discovered channel -
+  it assumes Output On is already true (turn_on() done beforehand, not
+  re-verified per step) but doesn't refuse to run if it isn't. The
+  distinction that matters: Enabled is closer to a STRUCTURAL property
+  of the channel (real hardware vs an unused/spare board, rarely
+  changes) - Output On is a transient OPERATIONAL state the operator
+  sets deliberately, immediately before starting a scan, as part of
+  the normal Power-tab-then-Calibration-tab workflow. Showing it as if
+  it were a fixed "eligibility" trait alongside Enabled would be
+  misleading - an off channel isn't disqualified, it's just "not yet
+  turned on for this run", the operator's very next step. "IV eligible"
+  stays single-parameter: Enabled only.
+
+4.3) PER-MODULE PARAMETERS - THE TRANSPORT MECHANISM, DECIDED 2026-07-24
+  (user's own idea, closes half of 4.0): the per-module parameter
+  dictionary already being built client-side (ivModuleParams in the
+  mockup - one {iv_start, iv_end, iv_step, settle_seconds, fit_window_v,
+  min_peak_prominence, current_limit_ua, run_vbr_finding} object per
+  module, built via "Set to selected" bulk or per-row edits) gets
+  serialized to JSON and sent as ONE PySequencer param, e.g.
+  module_params_json, registered with a string default_value (unlike
+  target_febs/target_channels' native ODB INT ARRAY approach, 2.1/3.2 -
+  this data is structured/nested per-module, not a flat list, so a
+  JSON-encoded string is the right ODB type here, not an array).
+  vbr_run.py/thr_run.py would do json.loads(seq.get_param(
+  "module_params_json")) to get the dict back. This transport mechanism
+  is settled and considered solid - CONFIRMED this only solves HOW the
+  data reaches Python, not HOW ScanVbr/ScanThr actually run a scan with
+  per-module-varying parameters once they have it (that's 4.4 below,
+  the harder half of 4.0, and the reason 4.0 isn't closed by this alone).
+
+4.4) PER-MODULE PARAMETERS - THE SCAN LOOP ITSELF, DESIGNED 2026-07-24
+  for ScanVbr/IV scan specifically (Thr scan's own equivalent is a
+  DIFFERENT, not-yet-designed problem - see note at the end). Today's
+  ScanVbr sweeps every channel together on ONE shared voltage axis (one
+  Demand value, written to every channel, per step) - per-module
+  iv_start/iv_end/iv_step breaks this, since different channels would
+  need different voltage sequences with different step counts. Proposed
+  design, NOT YET BUILT (revisit when this becomes real code work, not
+  before):
+    1. PRECOMPUTE, once at prepare(): for every targeted HV channel,
+       build its own voltage sequence from that channel's own
+       iv_start/iv_end/iv_step (read from the per-module dict, 4.3) -
+       no longer one shared sequence for everyone.
+    2. PAD to a common length: the shortest sequences are extended by
+       holding their own final value, so every channel has the same
+       total tick count (the max across all targeted channels) - lets
+       the scan still use ONE shared tick loop instead of N independent
+       ones running at different paces.
+    3. PER-TICK WRITE: at each tick, write each channel's OWN value for
+       that tick - requires extending ScifiHv.set_demand_channels()
+       (today: one shared voltage written to a list of channels) to
+       accept a {channel: voltage} mapping instead of one voltage for
+       many channels - a real, but small, code change to that method.
+    4. SETTLE TIME: if settle_seconds differs per module, use the MAX
+       settle_seconds among the channels still actively stepping at
+       that tick (never wait less than any channel individually needs)
+       - accepts some wasted wait time on faster-settling channels
+       rather than under-waiting any of them.
+    5. current_limit_ua / fit_window_v / min_peak_prominence /
+       run_vbr_finding: already evaluated PER-CHANNEL in the existing
+       code (the over-current check and VBR-finding both already loop
+       channel-by-channel) - these just need to read their value from
+       each channel's own dict entry instead of one shared scalar/
+       constructor default. Smaller change than the voltage-axis
+       problem above, mostly a lookup-source swap.
+  NOT DESIGNED YET: Thr scan's own equivalent. Different axis entirely
+  (offset x threshold grid, not a single voltage sweep) - whether the
+  same "precompute per-target, pad to common length, shared tick loop"
+  shape even applies, or whether Thr's 2D grid needs a different
+  approach, is an open question for whenever this section is revisited.
+  DEFERRED, per user's own call 2026-07-24 ("ci penseremo quando dovremo
+  sviluppare il codice"): none of 4.3/4.4 is built this session - this
+  is a design placeholder to pick up later, not a code TODO to start
+  immediately.
+  ALSO NOT DESIGNED YET, flagged same day: a RESULT-side counterpart to
+  this whole transport mechanism. 4.3/4.4 only cover the REQUEST
+  direction (per-module params -> module_params_json -> vbr_run.py).
+  Readout's module-row VBR display (3.1) needs the opposite direction -
+  ScanVbr's found breakdown voltage flowing back OUT to the page, with
+  no real ODB field to carry it (checked, confirmed absent). Likely
+  another key in a JSON blob, this time written by vbr_run.py and read
+  by the page - exact shape not designed.
+
+4.5) BUTTON MODEL SIMPLIFIED 2026-07-24 (same PAGE/HARDWARE removal as
+  Power 2.2/2.3 and Readout 3.2, now extended to Calibration - user's
+  own framing: the per-module dict (4.3) already acts as IV's own
+  "ODB" and updates in real time on every edit, exactly like the
+  ODB-DIRECT writes already used for HV Demand/LV Adjust/ASIC enable -
+  so there is no separate "stage now, commit to ODB later" step to
+  preserve here either. Both tabs (IV, Thr) reduced from 5 buttons
+  (Set to selected [Page] / Apply selected [Hardware, ghost] / Read
+  selected [Hardware, ghost] / Start scan selected [Hardware, real] /
+  Stop scan [Hardware, ghost]) down to 3:
+    "Apply to selected" (was "Set to selected") - writes the current
+      form values directly into ivModuleParams/thrModuleParams for
+      every selected module. This IS the commit - there's nothing
+      further to "Apply" afterward.
+    "Start scan selected" - unchanged, real: serializes the whole
+      per-module dict to JSON (4.3) and launches the script.
+    "Stop scan (selected)" - unchanged placeholder, no interrupt
+      mechanism exists in vbr_run.py/thr_run.py today.
+  "Read selected" is GONE ENTIRELY, not just unwired - there is no ODB
+  write ahead of Start scan to read back, so a "Read" action has
+  nothing to read. This differs from Power's own simplification (2.2/
+  2.3), which removed the stage/apply split but kept each control as
+  ONE single action; Calibration keeps its 2 real actions (Apply to
+  selected for building the target config, Start scan for executing
+  it) because - unlike Power's Adjust/Demand - there IS a genuine
+  multi-module, multi-parameter configuration being built up before
+  the expensive real action runs (the original justification for
+  Calibration/Readout ever having a PAGE/HARDWARE split at all, custom_
+  page.txt 3.5) - what's removed is only the now-pointless ODB-round-
+  trip layer in between, not the config-then-execute shape itself.
+  MOCKUP UPDATED to match: both tab-panels' tier-block/tier-page/
+  tier-hw wrapper divs removed (2 wrapper divs + their 2 inner
+  calib-actions divs per tab, replaced by 1 flat calib-actions div per
+  tab - 6 fewer divs total, verified by direct count), same mechanical
+  removal as before (none of the 4 removed buttons - iv/thr-hw-apply-
+  btn, iv/thr-hw-read-btn - had a JS click handler in either version).
+  iv-apply-selected/thr-apply-selected kept their existing element ids
+  (only the visible button label changed) so no JS reference updates
+  were needed.
+
+4.6) THR SCAN - STARTED 2026-07-24. Transport mechanism (4.3) and
+  button model (4.5) are IDENTICAL to IV - not re-derived here, the
+  same reasoning applies unchanged (thrModuleParams is Thr's own
+  per-module dict, serialized the same way; same 3-button model).
+  Only new piece: eligibility.
+
+  THR SCAN ELIGIBILITY, DECIDED 2026-07-24: a module counts as "Thr
+  eligible" when its own FEB's LinkStatus (3.1) is OK - NOT HV Enabled
+  (4.2, IV's own criterion). Reasoning mirrors 4.2's own contrast
+  note: Thr scan reads SciFiFibre/Variables/FCCR over the fibre
+  datapath every step (unlike IV/VBR, which only ever touches HV
+  equipment) - so whether the module's FEB link is actually up is the
+  directly relevant precondition here, not HV's Enabled/On state
+  (irrelevant to Thr scan - it never touches HV equipment at all).
+  REAL ADVANTAGE over IV's own eligibility column (4.2): NO placeholder-
+  mapping problem here. LinkStatus is already correctly associated
+  per-module via that module's own FEB (readoutModules' own linkStatus
+  field, 3.1) - unlike HV Enabled/On, which needed an unconfirmed
+  positional guess (module-to-HV-channel order, topology.txt 4c) to
+  show at all. This eligibility column reflects a REAL, already-correct
+  per-module mapping, not a demo placeholder.
+  MOCKUP BUILT: new "Thr eligible" column in the per-module Thr target
+  table (buildThrTargetTable()), same dot+label shape as IV's own
+  column (green "eligible" / grey "link <status>", where <status> is
+  Fault/Disabled/Unknown as relevant) - added right after the module
+  column, before the 7 thrParamFields columns. Group summaries gained
+  an "N/12 Thr eligible" count, same shape as IV's "N/12 IV eligible".
+  Row selection stays enabled regardless of eligibility, same
+  page-informs-script-enforces convention as IV (4.2) and everywhere
+  else on this page.
+
+4.7) FIELD-BY-FIELD I/O CLASSIFICATION, ADDED 2026-07-24 (user caught
+  that this section had skipped straight to the "interesting" design
+  questions - 4.0-4.6 - without the base per-field INPUT/OUTPUT pass
+  every other mega-section got, 1-3. Filling that gap surfaced one
+  real, previously-missed nuance - see current_limit_ua below).
+
+  IV scan form (calib-form, 8 fields) + per-module target table:
+    iv_start, iv_end, iv_step, settle_seconds, fit_window_v,
+    min_peak_prominence, run_vbr_finding (7 of 8 fields)
+      INPUT:  PAGE-LOCAL once staged via "Apply to selected" into
+        ivModuleParams (4.3/4.5's own "dict = IV's own fake ODB"
+        framing) - the FORM fields themselves are just the typed
+        values before staging.
+      OUTPUT: PYSEQ - all 7 are genuine vbr_run.py params (confirmed
+        against scripts_io_reference.txt's own vbr_run.py entry),
+        bundled into the module_params_json blob at Start scan (4.3).
+    current_limit_ua (the 8th field) - REAL FINDING from doing this
+      pass properly: this is NOT a vbr_run.py PYSEQ param at all -
+      confirmed by its absence from scripts_io_reference.txt's vbr_
+      run.py param list. It exists to let the operator set the REAL
+      ODB field HV/Settings/"Current limit"[ch] - the one vbr_run.py's
+      own over-current check already reads live from ODB every step
+      (per scripts_io_reference.txt's own vbr_run.py entry: "HV/
+      Settings/'Current limit' (over-current check, every step)").
+      CONSEQUENCE for 4.3/4.4, not previously called out: "Apply to
+      selected" for IV is a HYBRID action - 7 fields get staged into
+      ivModuleParams for the eventual JSON blob, but current_limit_ua
+      needs its own DIRECT per-channel ODB write (mirrors the Option-A
+      pattern already used for HV Demand/LV Adjust, 2.2/2.3) - it is
+      NOT part of module_params_json, because vbr_run.py never reads
+      that param from PySequencer at all, only from live ODB. Whoever
+      builds the real "Apply to selected"/"Start scan" actions needs
+      to route this one field differently from the other 7, not
+      lump it into the same JSON payload.
+    IV eligible dot, module label, Sel. checkbox: already covered in
+      4.1/4.2 - not repeated here.
+
+  Thr scan form (calib-form, 7 fields) + per-module target table:
+    threshold_start, threshold_stop, offset_start, offset_end,
+    noisy_rate_threshold, settle_seconds, run_autofinding (labeled
+    THR_FINDING - all 7 fields)
+      INPUT:  PAGE-LOCAL once staged via "Apply to selected" into
+        thrModuleParams.
+      OUTPUT: PYSEQ - all 7 confirmed as genuine thr_run.py params
+        (scripts_io_reference.txt's own thr_run.py entry) - NO hybrid
+        case here, unlike IV: Thr scan has no equivalent ODB-mirror
+        field (its own safety check, LV over-current, reads a
+        hardware boolean flag - DCDCCrates/Variables/"Over Current" -
+        not a settable numeric limit like HV's Current limit, so
+        there was never a candidate field to add in the first place,
+        confirmed already in the earlier Thr-vs-IV parameter audit).
+      All 7 fields ship together in Thr's own module_params_json, no
+      field needs separate ODB-DIRECT routing.
+    Thr eligible dot, module label, Sel. checkbox: already covered in
+      4.1/4.6 - not repeated here.
+
+
+====================================================================
+ADDENDUM 2026-07-30 - v3 ELEMENTS
+====================================================================
+This file was written against custom_page_mockup_v2.html. The elements
+below exist only in custom_page_mockup_v3.html; v2 is unchanged and
+remains the signed-off baseline. Reasoning for every one of them:
+docs/old/chain_and_monitoring.txt.
+
+SAFETY ZONE - Service status card  (6 rows, scoped to power services)
+  TDK - output          ODB-LIVE  TDKStaging/Settings/Output On[0,1]
+  TDK - interlock       ODB-LIVE  TDKStaging/Settings/Interlock Trigger[]
+                                  TDKStaging/Settings/Fault Register[]
+  DCDC crates           COMPUTED  DCDCCrates/Settings/Enabled[0-7] vs
+                                  DCDCCrates/Settings/"Crate On"[0-7]
+  PowerDist crate mains COMPUTED  PowerDistStaging/Settings/Output On
+                                  [96-99, 112-115]
+  PowerDist SMB/LDO     COMPUTED  ... Output On[0-5, 15, 16-21, 31]
+  PowerDist HV          COMPUTED  ... Output On[102, 103, 118, 119]
+  Backend note: the first two rows are TDKService, the third is
+  DCDCCratesService, the last three have NO service class - a
+  PowerDistService is implied work.
+
+SAFETY ZONE - Watchdog card  (10 rows, all read-only, no output)
+  every row              HARDCODED  no /Watchdog tree exists for SciFi;
+                                    the card states what is unwatched.
+  Rows whose limit is real rather than a placeholder:
+    SiPM chiller window  ODB-LIVE   /Alarms/Alarms/"Min SiPM Chiller
+                                    Temp." and "Max SiPM Chiller Temp."
+                                    conditions -> 15-25 C
+    Max/Warn FEB temp.   ODB-LIVE   the LinksCentral SCTS alarm limits
+                                    (65 / 60 C) shown against
+                                    LinksFibre/Variables/SFTS, which no
+                                    alarm covers
+
+SAFETY ZONE - Alarms card
+  each row               ODB-LIVE   /Alarms/Alarms/<name>/Active,
+                                    /Triggered, /Condition (tooltip)
+
+SAFETY ZONE - SiPM cooling card
+  chiller readings       ODB-LIVE   Liquid Cooling SiPM/Variables/Input
+                                    named by Settings/"Names Input"
+  SciFi manifold rows    ODB-LIVE   Chiller manifolds/Variables/Input
+                                    idx 12, 13 (T, both NoConn),
+                                    15, 17 (P)
+  No output - the chiller's writable Demand / "Set State" were
+  deliberately NOT given controls (chain_and_monitoring.txt 13).
+
+POWER / FEB tab - expanded row, three source-labelled blocks
+  From crate (5 fields)  ODB-LIVE   FEBCrates/Variables/SCFC
+  From FEB (26 fields)   ODB-LIVE   LinksFibre/Variables/SFFE
+                                    6 temperatures, 5 voltages,
+                                    2 Fireflys x (T, V, RX1-4, alarms)
+  Datapath (5 flags)     ODB-LIVE   LinksFibre/Variables/
+                                    "FEB datapath status"/{PLL locked,
+                                    RX ready, DPA locked, Buffer full,
+                                    Frame desync}
+  LOL / error counters   ODB-LIVE   LinksFibre/Variables/SFLE[2i, 2i+1]
+  Firmware (3 words)     ODB-LIVE   LinksFibre/Variables/FEBFirmware/
+                                    {Arria V, Max 10} indexed by
+                                    link_feb, {FEB Version} indexed by
+                                    the LOCAL index - see the pitfall in
+                                    chain_and_monitoring.txt 8a
+  Availability: the crate block reads with the FEB dead; the other two
+  only once it is powered and linked, which is why they are separate.
+
+POWER / LV tab - DCDC crate table
+  hosts                  ODB-LIVE   DCDCCrates/Settings/Names, grouped
+                                    by Device Names (16 ch per crate).
+                                    CORRECTED 2026-07-30 - the previous
+                                    value was wrong on all four DS crates
+  enabled                ODB-LIVE   DCDCCrates/Settings/Enabled[i]
+  crate on               ODB-LIVE   DCDCCrates/Settings/"Crate On"[i]
+  Crate on / off         ODB-DIRECT DCDCCrates/Settings/"Crate On"[i]
+  Enable selected        ODB-DIRECT DCDCCrates/Settings/Enabled[i]
+  Reset / Clear fault    (unchanged, as in v2)
+
+POWER / HV tab
+  FEB column             COMPUTED   from the channel->module map,
+                                    chain_and_monitoring.txt 15; Feb is
+                                    module >> 1. Was a placeholder in v2
+
+POWER / Supply tab - TDK block
+  every column           ODB-LIVE   TDKStaging/Settings/{Output On, Mode,
+                                    Interlock Trigger, Fault Register,
+                                    Current limit} and /Variables/
+                                    {Demand, Voltage, Current}
+  Turn on / off          ODB-DIRECT TDKStaging/Settings/Output On[i]
+  Rows shown: the 4 SciFi channels only; the 2 Pixel ones are omitted
+
+POWER / Supply tab - Power distribution block
+  every column           ODB-LIVE   PowerDistStaging/Settings/{Names,
+                                    Output On, Power good, Fault,
+                                    Current limit} and /Variables/Current
+  role                   COMPUTED   from the channel name
+  US / DS grouping       COMPUTED   from the channel name
+  Turn on / off          ODB-DIRECT PowerDistStaging/Settings/Output On[ch]
+  Presets                PAGE-LOCAL crate mains / 12 SMB pairs /
+                                    HV + weather
+  Rows shown: SciFi channels only; the 7 Tile ones are omitted
+
+NOT SURFACED ANYWHERE IN v3, recorded so it is not assumed present:
+  readout_scifi          would be  ROSWBF / ROSWBC / ROSWBDS
+                                   Settings/readout_scifi (all False)
+  SciFi readout          would be  /Experiment/Run Parameters/
+                                   "SciFi readout" (False)
+  Both were shown by the chain-ladder card and then by a Service status
+  row; both were removed. Section 1's "invisible bottleneck" case has
+  no representation on the page today.

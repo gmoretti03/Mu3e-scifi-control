@@ -1,0 +1,216 @@
+SCRIPTS/ I/O REFERENCE
+====================================================================
+NEW DOC 2026-07-22. Per-script input/output reference for all 5 current
+scripts/ PySequencer entry points (feb_power.py, lv_power.py, hv_power.py,
+thr_run.py, vbr_run.py). User's own reasoning for wanting this written
+down: knowing exactly what each script takes in and puts out makes it
+easy to (a) reason about calibration/action GRANULARITY (which params
+would need to become per-Feb/per-crate/per-channel instead of bulk -
+see calibrations_plan.txt sections 1/2/3 and docs/page/custom_page.txt
+section 3.1's own granularity discussion) and (b) ask Marius directly
+which of these parameters he actually wants exposed - both for the
+scripts themselves and for any future custom-page parameter (see
+docs/page/custom_page.txt section 3.5 - custom_page_spec.txt was
+archived to docs/old/ 2026-07-23, its content folded into custom_page.txt).
+This file
+is the single source of truth for both questions - update it whenever a
+script's params/outputs change, rather than letting calibrations_plan.txt/
+custom_page.txt each keep their own copy.
+
+Legend for INPUT sources:
+  PYSEQ     = seq.register_param()/seq.get_param() - operator-facing,
+              shows up in the PySequencer param form (and is what a
+              future custom-page action would ultimately write to
+              /PySequencer/Param/Value/<name> before triggering the
+              script)
+  HARDCODED = a Python constant in the script/class, not exposed as a
+              param at all today
+  ODB       = read directly from ODB by the script/detector layer as
+              detector STATE (topology, live readbacks, health flags),
+              not as an operator-chosen parameter
+
+
+1) feb_power.py
+--------------------------------------------------------------------
+INPUT (PYSEQ):
+  power_on (bool, default True)
+  is_odb_available (bool, default True)
+  can_send_commands_to_odb (bool, default True)
+INPUT (ODB, detector state - not parameters):
+  LinksFibre: FEBType, LinkFEB, NumASICsMax, ASICMask, FEBName
+  FEBCrates: FEBCrate[], FEBSlot[], CrateControllerConnected/Enabled/MSCB
+  TDK + DCDCCrates health (services.check_shared_equipment() - gated
+    ONLY when power_on=True, since 2026-07-22's on/off refinement)
+OUTPUT (ODB writes):
+  FEBCrates/Settings/FEBPower[crate*15+slot]
+OUTPUT (messages via seq.msg()):
+  "Power on/off: X/Y SciFi FEB(s) switched (...)"
+  "Skipped N FEB(s): {...}" (is_error=True if any)
+  "Feb X monitoring: {...}" (informational, only if power_on and done)
+OUTPUT (return value): none (PySequencer script)
+
+
+2) lv_power.py
+--------------------------------------------------------------------
+INPUT (PYSEQ):
+  power_on (bool, default True)
+  settle_seconds (int, default 5)
+  expected_current_a (float, default 6.5, UNVERIFIED)
+  current_tolerance_a (float, default 3.0, UNVERIFIED)
+  is_odb_available (bool, default True)
+  can_send_commands_to_odb (bool, default True)
+INPUT (HARDCODED - the defaults feeding the PYSEQ params above):
+  DEFAULT_LV_EXPECTED_CURRENT_A = 6.5
+  DEFAULT_LV_CURRENT_TOLERANCE_A = 3.0
+INPUT (ODB, detector state):
+  DCDCCrates/Settings/Names (Feb-name -> LV-channel-name derivation)
+  DCDCCrates/Variables/{Current, Voltage, Vdd MuPix, Temperature, Alert,
+    Power Good, Over Temperature, Vin Under-voltage, Over Current,
+    Vout Over-voltage, Interlock} (check_lv_status())
+  TDK + DCDCCrates health (ONLY when power_on=True)
+OUTPUT (ODB writes):
+  DCDCCrates/Settings/Channel on[ch]
+OUTPUT (messages):
+  "LV power on/off: X/Y Feb(s) switched (...)"
+  "Waiting Ns for current to settle before checking..."
+  "N/M Feb(s) have Current outside X+/-Y A (...)" (is_error=True if any)
+OUTPUT (return value): none
+
+
+3) hv_power.py
+--------------------------------------------------------------------
+INPUT (PYSEQ):
+  power_on (bool, default True)
+  demand_voltage (float, default 56.0)
+  settle_seconds (int, default 10)
+  expected_current_ua (float, default 1.5, UNVERIFIED)
+  current_tolerance_ua (float, default 1.0, UNVERIFIED)
+  is_odb_available (bool, default True)
+  can_send_commands_to_odb (bool, default True)
+INPUT (HARDCODED):
+  DEFAULT_DEMAND_VOLTAGE = 56.0
+  DEFAULT_HV_EXPECTED_CURRENT_UA = 1.5
+  DEFAULT_HV_CURRENT_TOLERANCE_UA = 1.0
+  MAX_DEMAND_VOLTAGE = 60.0 (hard cap - NOT a parameter, always enforced,
+    ScifiHv class constant)
+INPUT (ODB, detector state):
+  HV/Settings/Names (pattern-matched "SciFi CH", not exact-matched)
+  HV/Settings/{Output On, Enabled}
+  HV/Variables/{Current, Voltage}
+  TDK + DCDCCrates health (ONLY when power_on=True)
+OUTPUT (ODB writes):
+  HV/Settings/Output On[ch]
+  HV/Variables/Demand[ch]
+OUTPUT (messages):
+  "HV power on/off: X/Y channel(s) switched ({index: name, ...})"
+  "Skipped N channel(s): {...}" (is_error=True if any)
+  "Waiting Ns for HV to ramp/settle before checking..."
+  "N/M channel(s) have Current outside X+/-Y uA (...)" (is_error=True)
+OUTPUT (return value): none
+
+
+4) thr_run.py (calibrations/thr_scan.py's ScanThr)
+--------------------------------------------------------------------
+INPUT (PYSEQ):
+  threshold_start (int, default 0)
+  threshold_stop (int, default 63)
+  offset_start (int, default 0)
+  offset_end (int, default 2)
+  noisy_rate_threshold (int, default 1_000_000)
+  settle_seconds (int, default 5)
+  run_autofinding (bool, default False)
+  is_odb_available (bool, default True)
+  can_send_commands_to_odb (bool, default True)
+INPUT (HARDCODED, not parametric):
+  PE_BANDS in calibrations/thr_find.py - fixed (min_rate, max_rate) bands
+    for 0.5pe/1.5pe/2.5pe, never exposed as a parameter
+OUTPUT (ODB writes):
+  SwitchingFibre/Commands/{Set Bypass, Set FEBs into idle, Set FEBs into
+    running, Unser Bypass}
+  SciFiFibre/Settings/ASICs/Channels/{mask, tthresh, tthresh_offset}
+    (whole-array bulk writes, every step)
+  SciFiFibre/Commands/MutrigConfig
+INPUT (ODB, detector state - read during the scan itself):
+  LinksFibre topology (FEBType, LinkFEB, NumASICsMax, ASICMask, FEBName)
+  SciFiFibre/Variables/FCCR (per-channel rate readback, every step)
+  DCDCCrates/Variables/Over Current (LV over-current check, every step)
+  TDK + DCDCCrates health (unconditional - no on/off duality here)
+OUTPUT, IN MEMORY ONLY - NOT saved to .root/ODB/CDB (see
+  calibrations_plan.txt section 2/3.3):
+  scan_data[offset][threshold] = rates list
+  calibration_by_feb[feb_index] = threshold-finding rows (if
+    run_autofinding=True)
+  warnings (noisy-channel notes, LV over-current faults, early-abort
+    reason if triggered, threshold-finding low-confidence/skipped notes)
+OUTPUT (messages via seq.msg()):
+  prepare()/execute() failure reasons (always, plus ALL calib.warnings
+    - fixed 2026-07-22 to print unconditionally, not just when
+    run_autofinding=True)
+  "Scan complete: N offset(s), M step(s) total, result=..."
+  "Threshold-finding done: N calibration row(s) across M FEB(s), ..."
+  "NOTE: result saving (.root/ODB/CDB) is not built yet..."
+OUTPUT (return value): none
+
+
+5) vbr_run.py (calibrations/vbr_scan.py's ScanVbr)
+--------------------------------------------------------------------
+INPUT (PYSEQ):
+  iv_start (float, default 54.0)
+  iv_end (float, default 58.0)
+  iv_step (int, default 30)
+  settle_seconds (int, default 5)
+  run_vbr_finding (bool, default False)
+  fit_window_v (float, default 0.5, UNVERIFIED)
+  min_peak_prominence (float, default 3.0, UNVERIFIED)
+  is_odb_available (bool, default True)
+  can_send_commands_to_odb (bool, default True)
+INPUT (HARDCODED):
+  MAX_DEMAND_VOLTAGE = 60.0 (hard cap, ScifiHv class constant, NOT a
+    parameter, always enforced)
+OUTPUT (ODB writes):
+  SciFiFibre/Settings/ASICs/Global/tx_mode, TDCs/dmon_select,
+    Channels/{cml, cml_sc, tdctest_n, recv_all, mask, tthresh,
+    tthresh_offset} (configure_short_mode(), once at prepare())
+  SciFiFibre/Commands/{TestPulsesTDC, MutrigConfig, MutrigConfigAllOff}
+  HV/Variables/Demand[ch] (every step, per-channel once over-current
+    starts cutting individual channels)
+INPUT (ODB, detector state - read during the scan itself):
+  HV/Settings/Names (pattern-matched "SciFi CH")
+  HV/Variables/Current (every step)
+  HV/Settings/"Current limit" (over-current check, every step)
+  DCDCCrates/Variables/Power Good (LV pre-sweep gate, at prepare() only)
+  TDK + DCDCCrates health (unconditional)
+OUTPUT, IN MEMORY ONLY - NOT saved to .root/ODB/CDB (calibrations_plan.txt
+  section 2/3.3):
+  scan_data[channel] = {"voltage": [...], "current": [...]}
+  vbr_results[channel] = breakdown-voltage finding result (if
+    run_vbr_finding=True)
+  warnings (over-current faults incl. NaN, early-abort reason if
+    triggered, LV-not-Power-Good prepare() reasons, VBR-finding
+    low-confidence/skipped notes)
+OUTPUT (messages via seq.msg()):
+  prepare()/execute() failure reasons (always, plus ALL calib.warnings -
+    same 2026-07-22 fix as thr_run.py)
+  "Scan complete: N channel(s), M voltage point(s) each, result=..."
+  "VBR-finding done: N/M channel(s) confident, ..."
+  "NOTE: result saving (.root/ODB/CDB) and plotting are not built yet..."
+OUTPUT (return value): none
+
+
+6) CROSS-CUTTING NOTES
+--------------------------------------------------------------------
+None of the 5 scripts read their own scan/action parameters from ODB
+automatically - always operator-chosen via the PySequencer param form.
+The only ODB-automatic thing is WHICH calibration to run, via
+CalibrationFactory (calibrations/calib_run.py) - and that path isn't
+wired to any of these 5 scripts today (see todo.txt's 2026-07-22
+"si tratta dell'implementazione pagina pyseq?" clarification - separate,
+deprioritized concern).
+
+Every PYSEQ parameter above is a literal candidate for what a future
+custom-page action could expose as a form field / write directly to
+ODB before triggering the script - this is the natural cross-reference
+point between "what granularity should a calibration/action have" and
+"what should the page actually let an operator set". Update this file
+first when either changes, then point docs/page/custom_page.txt
+and calibrations_plan.txt at it instead of duplicating the detail.

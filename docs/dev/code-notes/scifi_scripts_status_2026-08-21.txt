@@ -1,0 +1,212 @@
+SCIFI_SCRIPTS STATUS - 2026-08-21
+====================================================================
+Point-in-time snapshot after today's convergence work (power
+partitions wiring, folder/file rename to match pixel_scripts, common
+promotions, calibration script dedup). Written to answer: what shape
+is scifi_scripts in right now, what's genuinely aligned vs
+deliberately different, what's still open, and where to act next.
+
+Branch: task/scifi_pp (all 3 repos - common_scripts, pixel_scripts,
+scifi_scripts - currently checked out there). All work below is
+uncommitted, staged via `git add`, left for the user to commit.
+
+
+1. CURRENT STRUCTURE
+--------------------------------------------------------------------
+scifi_scripts/
+  core/            - SciFiDetector, Feb, Asic, Channel, ScifiHv
+                     (renamed from detector/ today, matches pixel's
+                     core/ naming)
+  actions/         - poweractions.py (LV+HV bring-up), febactions.py
+                     (FEB-crate bring-up) - split today from a single
+                     bringup_declaration.py, matching pixel's
+                     poweractions.py/febactions.py/daqactions.py
+                     per-family file convention
+  calibrations/    - calib_base.py (CalibrationBase), calib_run.py
+                     (shared equipment check + CalibrationFactory +
+                     new run_calibration_and_save()), pll_scan.py/
+                     thr_scan.py/vbr_scan.py (the 3 real calibrations),
+                     thr_find.py/vbr_find.py (plain algorithm helpers,
+                     no classes)
+  scripts/         - 6 real MIDAS PySequencer entry points:
+                     lv_bringup_run.py, hv_bringup_run.py,
+                     feb_bringup_run.py, thr_run.py, vbr_run.py,
+                     pll_run.py
+  tests/           - 16 files (moved today from Docs/devolpment/code/
+                     tests/, now a real committed folder matching
+                     common_scripts/tests/ exactly), run via
+                     `python3 tests/run_all.py`
+
+3386 lines of code total (actions+calibrations+core+scripts). Zero
+TODO/FIXME/XXX markers left in the codebase.
+
+
+2. WHAT'S NOW GENUINELY ALIGNED WITH PIXEL/COMMON
+--------------------------------------------------------------------
+- Folder names (core/, actions/, calibrations/, scripts/, tests/) -
+  1:1 with pixel_scripts.
+- Power partitions: SciFiPowerPartitionBuilder (common_scripts/power/
+  partition.py) now actually wired into core/scifi.py's
+  self.power_partitions, guarded behind setup.is_odb_available (same
+  pattern as pixel's read_power_partitions_from_odb flag). Reports via
+  get_status_summary() with the exact same shape pixel uses
+  (selected_power_partitions via power_group.selected_group_names()).
+- Real user-selection for LV bring-up: actions/poweractions.py's
+  build_lv_power_groups() uses group.AnySelected(det, predicate)
+  instead of an always-true stub - respects real ODB user_mask when
+  power_partitions exist, falls back to always-selected in dry-run/
+  tests (zero behaviour change there).
+- power/group.py gained 3 promoted-to-common, genuinely generic
+  pieces: AlwaysSelected, AnySelected, build_powerdist_supply(y)/
+  build_shared_powerdist_group - available to pixel too if it ever
+  needs a shared/unselectable PowerGroup, not just scifi.
+- Equipment names, operation outcomes, bringup sequencing
+  (BringUpSequence/Step), FEB-crate power (feb_crate.py),
+  service health-checks (equipment/services.py) - already fully
+  shared with pixel since earlier this session, unaffected by today.
+- CalibrationBase properly extends common's lifecycle.CalibrationBase
+  (execute_all_stages()'s prepare->execute->finalise sequencing,
+  including the 2026-07-22 fix that finalise() always runs even if
+  execute() fails - reused correctly, not reimplemented).
+- calib_run.py's 3 real calibration scripts (thr_run.py/vbr_run.py/
+  pll_run.py) collapsed their ~80 lines of duplicated shared-equipment-
+  check -> det -> nothing-to-run-check -> run -> ROOT-report-save ->
+  optional-CDB-upload logic into one shared function
+  (run_calibration_and_save()), each now a ~20-line thin wrapper.
+
+
+3. WHAT'S DELIBERATELY DIFFERENT FROM PIXEL (verified, not accidental)
+--------------------------------------------------------------------
+- Object model depth: Feb -> Asic -> Channel (3 levels) vs pixel's
+  flat Feb-index -> Chip (2 levels). Confirmed via a dedicated
+  exploration: MuTRiG ASICs have 32 independently-thresholded/
+  maskable SiPM channels each (real hardware need, exercised by
+  thr_scan.py's per-channel bulk writes); Mupix chips have zero
+  sub-channel concept at all (grep confirms "channel" appears nowhere
+  in pixel's chip.py/detector.py). Do NOT flatten this.
+- HV architecture: ScifiHv's shared side-groups (US/DS Top/Bottom,
+  resolved via MSCB host string per HV channel) have no pixel
+  equivalent - pixel does HV per-partition, scifi's HV hardware is
+  wired as 4 shared groups spanning multiple modules each. No common
+  base makes sense here.
+- Calibration-level selection: thr_scan.py/vbr_scan.py select modules/
+  ASICs via an ODB CSV (selected_asics/selected_modules) + regex-
+  parsed folder names, NOT pixel's chip.get_user_selected()/
+  mask_all_chips() boolean-mask model. This was explicitly reviewed
+  and confirmed as SciFi's own valid design in the 2026-07-23 Marius
+  call (page structure + calibration granularity both CONFIRMED) -
+  not an accident, not scheduled to converge.
+- Actions dispatch: scifi's bring-up scripts call actions/
+  poweractions.py & febactions.py functions directly and
+  imperatively - no ActionBase/OperationFactoryBase subclassing at
+  all. Verified this is NOT actually a scifi gap relative to a working
+  pixel pattern: pixel's own ActionBase/actionfactory.py/daqactions.py/
+  febactions.py/poweractions.py machinery has NO real sequencer entry
+  point either (no run_action.py - only exercised by pixel's own
+  test3.py). Chasing this pattern now would mean building unproven
+  architecture on both sides at once - deliberately not done.
+- calib_run.py's CalibrationExecute/CalibrationFactory.
+  perform_calibration() ODB-driven dispatch (by CurrentCalibration
+  value) is fully built and tested but genuinely unused - scifi's 3
+  real calibration buttons each always run one hardcoded calibration,
+  not an ODB-selected one. Left as dead-but-tested code rather than
+  forcing scripts through it, since doing so would silently change
+  which calibration each real page button actually triggers.
+
+
+4. TEST COVERAGE
+--------------------------------------------------------------------
+16 tests in scifi_scripts/tests/, run via `python3 tests/run_all.py`
+(auto-sets PYTHONPATH for common_scripts+scifi_scripts). 15/16 pass.
+
+The one known failure: test_pll_scan.py - a pre-existing, unrelated
+mock-data threshold issue (the synthetic PLL histogram doesn't clear
+the "locked" verdict's peak-to-mean threshold with the current fake
+data shape). Not caused by anything in this session, not yet fixed.
+
+Coverage added/touched today: test_detector_construction.py (asserts
+power_partitions stays {} under the dry-run guard), test_bringup.py
+(repointed to poweractions/febactions), test_feb_power.py (fixed a
+reference to the deleted FEBCRATE_UNMAPPED dead constant), new
+test_run_calibration_and_save.py (3 real gates: shared-equipment
+fail, nothing-to-run-check, happy path incl. an actual ROOT file
+getting written).
+
+
+5. KNOWN OPEN ITEMS / TECHNICAL DEBT (roughly by size)
+--------------------------------------------------------------------
+Small, low-risk, well-scoped (easy next steps):
+  a) RESOLVED (re-checked): build_feb_crate_sequences() has no
+     docstring at all now / no longer references the non-existent
+     build_feb_sequence() - already fixed later the same day per
+     todo.txt's 2026-08-21 entry, this snapshot was just taken before
+     that fix landed.
+  b) core/feb.py's FEC_CRATE_MAINS_NAMES (dict, per-side, used by
+     check_powerdist_fec() for per-Feb health checks) vs actions/
+     febactions.py's FEC_CRATE_MAINS_NAMES (flat list, used for the
+     whole-detector shared bring-up group) - same 8 real names,
+     data-duplicated in two different shapes for two different
+     genuine purposes. Noted today, not touched.
+  c) ~1900 stray ScanThr_N/ScanVbr_N/PllTest_N.ndjson files
+     accumulated in scifi_scripts/output_calibrations/ since
+     2026-08-13 (gitignored, zero git impact, but real disk clutter) -
+     found today while fixing the test that was causing them, not
+     cleaned up (the session's own safety classifier blocked the rm).
+     Harmless to leave, trivial to clean whenever convenient.
+
+Medium, real design decisions still open:
+  d) RESOLVED, later the same session: build_hv_power_groups() now
+     uses group.AnySelected(det, predicate), predicate checking
+     det.hv.group_for_channel(ch) == side_group for each HV channel
+     index of a given partition (power_partitions[pid].
+     get_hv_channel_indices()) - same real-selection pattern
+     build_lv_power_groups() already had, no PowerGroup API change
+     needed after all (the existing get_hv_channel_indices() was
+     enough).
+  e) RESOLVED (re-checked, not actually a gap): the 12-LV-group/
+     4-HV-group shape is the real hardware granularity - one LV SMB
+     rail physically feeds 2 modules together, one HV side-group is
+     wired to multiple modules via a shared MSCB host. There is no
+     finer level to restructure bring-up sequencing to; "module
+     granularity" was never physically buildable here. The only real
+     gap was respecting the user's module-level ODB selection when
+     deciding whether to bring up a given Feb/side-group at all -
+     that's exactly what (d)'s AnySelected() fix (and LV's own,
+     already in place) does. Closed, no further action.
+  f) mu3ebe deployment: the real ODB Setup/Power structure for SciFi
+     (Map_HV_Crate/Map_HV_Channel etc., subsystem "SCF") is designed,
+     built, and populated on a LOCAL TEST MIDAS experiment only
+     (via Docs/devolpment/code/integrate_scf_setup_power.py, confirmed
+     reusable) - never run against the real mu3ebe (hands-off per
+     standing rule). Until that happens, power_partitions will build
+     empty/incomplete against the real system even though the code
+     path itself is fully ready and tested.
+
+Larger, deliberately deferred by explicit user choice (not gaps -
+scoped out on purpose, revisit only if priorities change):
+  g) Calibration-level selection convergence (thr_scan.py/vbr_scan.py's
+     CSV model -> a pixel-style chip/channel user_mask model) - would
+     touch already-reviewed-and-confirmed calibration design, explicit
+     "solo power/bring-up" scope decision this session.
+  h) ActionBase/OperationFactoryBase adoption for scifi's bring-up
+     scripts - not clearly higher-value than the current, working,
+     real imperative scripts, since pixel's own version of this
+     pattern isn't proven against a real sequencer entry point either.
+
+
+6. WHERE TO ACT NEXT (recommended order) - UPDATED, (a)/(d)/(e) closed
+--------------------------------------------------------------------
+1. (f) - mu3ebe deployment is now the ONLY item that actually unlocks
+   power_partitions/LV+HV real-selection mattering on the real system -
+   worth discussing timing with Marius/whoever owns that step, since
+   it's the one item here that isn't purely a code change.
+2. (b)/(c) - trivial cleanup, do whenever convenient, no urgency.
+3. (g), (h) - real architectural decisions, each with a legitimate
+   case for and against; worth a deliberate discussion rather than
+   picking one unprompted, same as today's approach for the
+   calibration/actions scoping calls.
+CDB curated-selection step (was tracked separately in todo.txt, not in
+this list's a-h) - dropped from tracking per explicit user request.
+EquipmentName(Enum) regression on common_scripts main - re-confirmed
+still present, closed as a standing decision ("lascia stare per ora"),
+not a bug to chase.

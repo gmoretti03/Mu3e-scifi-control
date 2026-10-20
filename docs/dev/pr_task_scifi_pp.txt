@@ -1,0 +1,526 @@
+PR task/scifi_pp -> main : riepilogo cambiamenti (common_scripts + pixel_scripts)
+====================================================================
+sequencer_scripts/, submodule common_scripts e pixel_scripts, entrambi
+sul branch task/scifi_pp (34 commit ciascuno sopra main). Rivisto
+insieme in sessione il 2026-08-24, file per file, prima di aprire la PR.
+scifi_scripts (terzo submodule, stesso branch) NON e' incluso in questa
+PR - alcuni file di common_scripts sono comunque gia' consumati da
+scifi_scripts, indicato dove rilevante.
+
+Tema di fondo: common_scripts viene "flattato" (common/xxx/ -> xxx/ in
+root, setup+folders in config/) e generalizzato da codice pixel-only a
+codice condiviso pixel/scifi. pixel_scripts viene poi migrato per usare
+queste classi condivise al posto delle sue implementazioni locali,
+duplicate, che vengono rimosse.
+
+NOTA (aggiunta dopo, stesso giorno): le sezioni COMMON_SCRIPTS e
+PIXEL_SCRIPTS qui sotto descrivono lo stato SUBITO DOPO la migrazione
+iniziale (common_scripts contiene ancora le classi PixelX/SciFiX).
+Un rework successivo, descritto nella sezione finale "DIFFERENZIAZIONE
+CLASSI PIXEL/SCIFI", ha spostato quelle classi FUORI da common_scripts
+e dentro pixel_scripts/scifi_scripts rispettivamente - quindi frasi
+come "PixelSetup in common/config/setup.py" o "operation/lifecycle.py"
+sotto sono storiche, non lo stato attuale. Leggere l'ultima sezione per
+la struttura vera e propria oggi.
+
+
+====================================================================
+COMMON_SCRIPTS
+====================================================================
+
+config/setup.py (nuovo, ex common/setup.py)
+--------------------------------------------
+- Setup diventa una classe base con i campi comuni ai due sottosistemi
+  (odb_entry_path, equipment names LV/HV/power-dist, station,
+  required_programs/alarms, ...), PixelSetup la popola con valori reali.
+- Aggiunta in sessione: SciFiSetup(Setup), con valori presi da
+  scifi_scripts stesso (non inventati): station="Fibre" (da
+  core/feb.py:Feb.STATION), required_programs/required_alarms presi da
+  calibrations/calibrationfactory.py (SCIFI_REQUIRED_PROGRAMS/
+  SCIFI_ALARM_NAMES, poi rimossi da li' e ricollegati a questa classe -
+  vedi sezione scifi sotto), read_febs_from_odb/read_power_partitions_
+  from_odb=True (scifi non ha mai un config.json di fallback).
+  configuration_file_name lasciato NON definito: scifi non ha alcun
+  file di config JSON equivalente a pixel_scripts/config/detector.json,
+  quindi non c'e' un valore reale da mettere.
+- Typo corretto: commento "#Ww should change..." -> "# We should change...".
+
+config/folders.py (nuovo, ex common/folders.py)
+--------------------------------------------
+- Folders base class + PixelFolders/SciFiFolders concrete, entrambe gia'
+  presenti prima di questa sessione.
+
+operation/lifecycle.py (nuovo, fonde common/operation/base.py +
+action_base.py + calibration_base.py)
+--------------------------------------------
+- OperationResult rinominato OperationOutcome ovunque (coerente col
+  rename result.py -> outcome.py).
+- Logica di OperationBase/ActionBase/CalibrationBase (prepare->execute->
+  finalise, run() che salva sempre il risultato finale) portata 1:1.
+- Macchinari nuovi, generalizzati da pixel a common: append_step_result_
+  and_check(), run_sequence_for_items()/run_sequence_for_selected_
+  partitions(), check_current_jump()/evaluate_current_jump(), tutto il
+  sistema di restrizioni per-power-partition (check_readables_against_
+  restrictions, loop_over_power_partitions, set_all_done).
+- Nuove classi: PixelOperationBase (mixin _add_extra_step_stats/LVDS),
+  PixelActionBase/PixelCalibrationBase, SciFiActionBase/SciFiCalibrationBase.
+- Asimmetria attesa: SciFiActionBase non imposta operational_parameters
+  (PixelActionBase si') perche' in scifi_scripts non esiste alcun
+  concetto equivalente a operation/operation_parameters.py (nessun
+  target_hv/HV_STEP/target_VDD in scifi_scripts) - non e' un buco da
+  colmare ora, e' lavoro futuro genuino.
+- Limite noto (non bloccante): check_readables_against_restrictions()
+  controlla solo "max_hv_current" dentro self.restrictions, anche se la
+  classe e' pensata per restrizioni generiche.
+
+power/partition.py (nuovo)
+--------------------------------------------
+- PowerPartitionBuilder astratta (build() legge Setup/Power dall'ODB,
+  filtra per subsystem_code, chiama assign_supplies() per subclass) +
+  PixelPowerPartitionBuilder (portata 1:1 da pixel_scripts/core/
+  power_partition.py) + nuova SciFiPowerPartitionBuilder (regex
+  SCF_<side>_SM<n>_M<n>, mapping HV board/channel via
+  SCIFI_HV_BOARD_BASE_INDEX - verificato dall'utente).
+- FIX in sessione: build() ora fa print(warning) + quit() se
+  assign_supplies() fallisce per una partizione, invece di skippare
+  silenziosamente e continuare. Ripristina il comportamento originale
+  di pixel_scripts/core/detector.py (che chiamava quit() su fallimento
+  di assegnazione supply). NB: build() e' condiviso tra Pixel e SciFi,
+  quindi ora anche un fallimento SciFi termina l'intero processo - non
+  c'era un comportamento "vecchio" da preservare per scifi (codice
+  nuovo), applicata la stessa policy per coerenza. Il branch
+  "partition assegnata ma non is_initialized()" resta invece uno skip
+  senza quit(), fedele al vecchio codice pixel (che nemmeno li'
+  chiamava quit()).
+
+power/group.py (rinominato da common/power/group.py, ~60 righe cambiate)
+--------------------------------------------
+- Logica di PowerGroup (assign_*/turn_on/off/read_all_readables) portata
+  1:1 da pixel. Aggiunte: AlwaysSelected/AnySelected, assign_lv_supply_
+  initialised(), get_hv_channel_indices(), emergency_off_all(),
+  build_shared_powerdist_group() - tutte usate da scifi_scripts, non da
+  pixel_scripts (non e' codice morto, solo non ancora consumato da
+  questo repo).
+- Nota non bloccante: get_all_readables() legge solo
+  self.__hv_supplies[0]/self.__power_distributions[0] anche se
+  l'architettura permette liste con piu' elementi - oggi sempre 1
+  elemento in pratica in entrambi i builder, quindi non e' un bug live.
+
+power/supply.py (rinominato da common/power/supply.py)
+--------------------------------------------
+- str(equipment_name) per accettare sia EquipmentName enum che stringhe
+  plain. Fix typo intialise_commands -> initialise_commands.
+- Nuovo initialise_by_channel_index() per le HV supply SciFi (path
+  channel-index invece che by-partition-name).
+- BUG TROVATO E FIXATO in sessione: initialise_by_channel_index() non
+  salvava self.__partition_name (restava None dall'__init__), mentre il
+  nuovo messaggio di warning in read_all() lo stampa
+  ("... (partition ", self.__partition_name, ") ..."). Risultato:
+  ogni warning di lettura fallita su una HV supply SciFi stampava
+  sempre "(partition None)". Fix: initialise_by_channel_index() accetta
+  ora un partition_name opzionale e lo salva; SciFiPowerPartitionBuilder.
+  assign_supplies() (power/partition.py) passa partition.get_id().
+
+power/feb_crate.py (rinominato da common/power/feb_crate.py)
+--------------------------------------------
+- SETTINGS_PATH/VARIABLES_PATH ora costruiti da equipment_names.
+  EquipmentName.FEB_CRATES invece di stringa hardcoded.
+- build_feb_bringup_sequence() cambia firma: da (feb_id, client,
+  link_feb, equipment_name, feb_index, ...) a (feb, ...) - prende
+  direttamente l'oggetto Feb e chiama feb.get_link_feb()/get_station()/
+  get_id()/get_number(). Nuova perform_feb_power_action(action,
+  action_name, bring_up) - helper condiviso usato identicamente da
+  pixel_scripts/actions/febactions.py e scifi_scripts/actions/
+  febactions.py.
+
+equipment/services.py (nuovo)
+--------------------------------------------
+- TDKService/PowerDistService/DCDCCratesService/ProgramService/
+  AlarmsService, tutti read-only by design (equipaggiamento condiviso
+  tra piu' power partition, non si spegne/accende da qui).
+  check_shared_equipment()/check_shared_equipment_or_print() li
+  incapsulano. Nessun problema trovato.
+
+results/saver.py (rinominato da common/results/saver.py, ~383 righe)
+--------------------------------------------
+- ResultSaverLocal/ODB/ROOT/Plot/CDB/Multiple. Nuova ResultSaverPlot
+  (un PNG per entry dentro una cartella per run) per il salvataggio
+  plot SciFi. Nessun bug trovato; nota UX minore: ResultSaverPlot.
+  folder_name_for_run(None) produce una cartella "..._None" se il
+  report non ha Meta.run - non e' un crash.
+
+results/interpretation.py (rinominato da common/results/interpretation.py)
+--------------------------------------------
+- get_last_measurement/get_last_lv_current/compare_read_outputs ecc.
+  Lasciato cosi' su richiesta esplicita: contiene un blocco di commenti
+  scratch/debug ("# lista = [1,2,3,4]...") e un blocco
+  if __name__ == "__main__": con import saver (path relativo, diverso
+  dalla convenzione import results.saver usata nel resto del repo) e
+  dati di test hardcoded per Pixel. Innocuo a runtime (guardato da
+  __main__), ma da pulire in futuro se si vuole.
+
+daq/control.py (nuovo, 244 righe)
+--------------------------------------------
+- DAQBase/DAQSCReads/DAQSCReadsArray, PixelDAQControl (porting fedele
+  di logica gia' esistente), nuova SciFiDAQControl (configure/
+  configure_alloff, prepare_switching/restore_switching - usata da
+  scifi_scripts/calibrations/pll_scan.py e thr_scan.py, non toccate da
+  questa PR). Nessuna anomalia evidente.
+
+equipment/names.py, odb/commands.py, odb/mixin.py
+--------------------------------------------
+- Solo rename/flatten da common/equipment/names.py, common/odb/*.py,
+  nessun cambio di logica sostanziale.
+
+tests/ (nuovo: run_all.py + 10 file)
+--------------------------------------------
+- Prima non esisteva nessuna suite di test automatica per common_scripts.
+  Rieseguita a fine sessione: 11/11 pass.
+
+
+====================================================================
+PIXEL_SCRIPTS
+====================================================================
+
+core/feb.py (294 righe cambiate)
+--------------------------------------------
+- Classe FEB rinominata PixelFeb.
+- BUG PREESISTENTE GIA' FIXATO (dal team, non in questa sessione):
+  __get_chip_selection_mask_from_odb() prima leggeva sempre da
+  odb.odb_read_test() con un commento "#TODO implement!", ignorando
+  setup.is_odb_available - ora controlla davvero il flag e legge da
+  self.client.odb_get() quando disponibile.
+- Aggiunto get_link_feb()/__get_link_feb_from_odb() (legge
+  LinkFEB[num] dall'ODB), necessario per il nuovo
+  power/feb_crate.py:build_feb_bringup_sequence(feb).
+
+core/detector.py (113 righe cambiate)
+--------------------------------------------
+- self.configuration_file_name e self.station ora letti da
+  PixelSetup (config/setup.py) invece che hardcoded qui.
+- create_partitions_from_odb(): ~100 righe di logica manuale (assign
+  power-dist/LV/HV supply, costruzione chip da VTX_Map) sostituite da
+  una chiamata a common's PixelPowerPartitionBuilder.build().
+- CAMBIO DI COMPORTAMENTO NOTATO IN SESSIONE, lasciato cosi' su
+  richiesta esplicita dell'utente (verra' segnalato a parte) - poi
+  RISOLTO cambiando common_scripts/power/partition.py (vedi sopra):
+  in origine il vecchio create_partitions_from_odb() chiamava quit()
+  su fallimento di assegnazione supply; nel refactor iniziale era
+  diventato uno skip-and-continue silenzioso; ripristinato il quit()
+  nel builder condiviso.
+- read_all_power() ora delega a power_group.read_all_readables().
+  Aggiunto get_status_summary(). compare_read_outputs() rimosso da qui
+  (esiste gia' equivalente in common's results/interpretation.py).
+
+actions/poweractions.py (184 righe, riscritto)
+--------------------------------------------
+- ActionPowerOn/ActionPowerOff non implementano piu' a mano il loop
+  set-min-voltage -> turn-on-LV -> check -> set-HV-10V -> turn-on-HV ->
+  check: ora delegano interamente a common's operation/bringup.py
+  (build_power_group_bringup_sequence), via run_sequence_for_selected_
+  partitions().
+- Verificato common_scripts/operation/bringup.py in dettaglio (vedi
+  sopra) per assicurarsi che la logica critica LV/HV non fosse persa
+  nel refactor: rampa HV converge correttamente al target
+  (min(demand+step, target)), si ferma in sicurezza se LV/power-dist
+  cadono a meta' rampa, nessun loop infinito. E' stato AGGIUNTO un
+  check di salute nuovo (power_good dall'ODB) nello step lv_on, assente
+  nel vecchio codice - miglioramento, non regressione.
+- set_minimum_lv_voltage: il vecchio codice aveva un ramo condizionale
+  (default target_VDD-0.2 se non is_lv_voltage_adjustable(), altrimenti
+  get_minimum_lv_voltage_adjust()); ora e' sempre get_minimum_lv_
+  voltage_adjust(). Nessuna differenza in pratica: l'unico tipo di LV
+  supply esistente (DCDCPowerSupply) e' sempre adjustable, quindi il
+  vecchio ramo "else" non veniva mai eseguito.
+
+actions/actionbase.py (nuovo) / actions/actions.py (rimosso, -114)
+--------------------------------------------
+- ActionBase e' ora un thin subclass di common's PixelActionBase
+  (operation/lifecycle.py). ActionExecute enum invariato, con
+  EMERGENCY_OFF ora effettivamente gestito (prima esisteva nell'enum ma
+  non era mai dispatchato da nessuna parte).
+
+actions/actionfactory.py (61 righe cambiate)
+--------------------------------------------
+- Dispatch manuale a base di if/elif sostituito da common's
+  OperationFactoryBase, con action_map che ora include anche TURN_OFF/
+  FEB_POWER_ON/FEB_POWER_OFF (prima gestiva solo TURN_ON e
+  RESET_BIAS_BLOCK, tutto il resto tornava NOT_IMPLEMENTED).
+- get_action_to_perform_from_odb() resta uno stub hardcoded
+  (return "Turn_On", TODO leggere da ODB) - preesistente, non toccato
+  da questa PR.
+
+actions/febactions.py (nuovo, +18)
+--------------------------------------------
+- ActionFebPowerOn/Off, entrambi one-liner che chiamano
+  feb_crate.perform_feb_power_action(self, ..., bring_up=...).
+
+actions/daqactions.py (15 righe cambiate)
+--------------------------------------------
+- Solo fix import path (core.daq -> daq.control), nessun cambio di
+  logica.
+
+calibrations/calibrationbase.py (nuovo) / calibrations/calibration.py
+(rimosso, -195)
+--------------------------------------------
+- CalibrationBase e' ora un thin subclass di common's
+  PixelCalibrationBase. self.restrictions["max_hv_current"] = 150*0.9
+  (safety factor sotto il limite del watchdog) e
+  loop_over_chips_in_power_partitions() (parallelizzazione su power
+  partition/chip) portati 1:1.
+
+calibrations/calibrationfactory.py (70 righe cambiate)
+--------------------------------------------
+- Dispatch manuale sostituito da OperationFactoryBase (stesso pattern
+  di actionfactory.py). check_shared_equipment() locale (solo TDK+
+  DCDCCrates) rimosso: ora il check gira dentro OperationFactoryBase
+  usando anche ProgramService/AlarmsService (globals_setup.required_
+  programs/required_alarms) - copertura piu' ampia di prima.
+- BUG FIX (nel refactor): il vecchio perform_calibration() faceva
+  return execution immediatamente se execution != SUCCESS, SALTANDO
+  completamente calib.finalise() in quel caso. La nuova CalibrationBase.
+  execute_all_stages() (common's operation/lifecycle.py) chiama sempre
+  finalise(), anche se execute() e' fallito, per il cleanup hardware -
+  comportamento corretto, prima non lo era.
+
+calibrations/ivscan.py (11 righe) / calibrations/smoketest.py (25 righe)
+--------------------------------------------
+- Solo adattamento a OperationOutcome/import path, nessun cambio di
+  logica di calibrazione osservato.
+
+core/chip.py (4 righe)
+--------------------------------------------
+- Adattamento minore di import path.
+
+core/daq.py, core/power_partition.py, calibrations/calibration.py,
+actions/actions.py, core/power_supply.py, globals/* (tutti rimossi)
+--------------------------------------------
+- Duplicati resi ridondanti dalla migrazione a common_scripts. globals/
+  folders.py/operation_parameters.py/setup.py rimossi perche' a zero
+  logica propria (pure rename verso common, confermato nei commit).
+
+scripts/run_calibration.py (25 righe) / test1.py..test6.py (6-9 righe
+ciascuno)
+--------------------------------------------
+- Adattamento a import path/nomi nuovi. pixel_scripts non ha una suite
+  di test automatica equivalente a common_scripts/tests o
+  scifi_scripts/tests - solo questi script manuali.
+
+
+====================================================================
+RIEPILOGO AZIONI FATTE IN SESSIONE (non solo review, anche modifiche)
+====================================================================
+1. common_scripts/config/setup.py: aggiunta classe SciFiSetup (valori
+   reali da scifi_scripts), typo corretto.
+2. scifi_scripts/calibrations/calibrationfactory.py +
+   scifi_scripts/tests/test_calibration_factory.py: rimosse
+   SCIFI_REQUIRED_PROGRAMS/SCIFI_ALARM_NAMES locali, ricollegate a
+   SciFiSetup.required_programs/required_alarms.
+3. common_scripts/power/supply.py + power/partition.py: fix bug
+   partition_name mai settato in initialise_by_channel_index().
+4. common_scripts/power/partition.py: ripristinato warning+quit() su
+   fallimento assign_supplies() in PowerPartitionBuilder.build()
+   (comportamento condiviso Pixel+SciFi).
+
+Test rieseguiti dopo ogni modifica: common_scripts 11/11 pass,
+scifi_scripts 8/8 pass. pixel_scripts non ha suite automatica.
+
+
+====================================================================
+COME FUNZIONANO I SALVATAGGI (SCIFI) - discusso il 2026-08-24
+====================================================================
+Tre canali di salvataggio distinti e indipendenti, attivati in momenti
+diversi. Vale per common_scripts/results/saver.py +
+scifi_scripts/calibrations/calibrationfactory.py.
+
+1. Step-log dell'operazione (sempre attivo, solo locale)
+--------------------------------------------
+- Ogni Action/Calibration (OperationBase.__init__ in
+  operation/lifecycle.py) crea un ResultSaverMultiple con solo
+  has_local_result=True (niente ODB, niente ROOT/CDB a questo livello).
+- Ad ogni append_step_result_and_check() durante prepare()/execute()/
+  finalise() (stato power, letture, Final_Result finale) viene scritta
+  una riga JSON in append su un file .ndjson locale:
+    Action      -> scifi_scripts/output_actions/<NomeAction>_<N>.ndjson
+    Calibration -> scifi_scripts/output_calibrations/<NomeCalib>_<N>.ndjson
+  <N> e' un numero progressivo (ResultSaverLocal.
+  get_last_execution_number() scandisce la cartella e prende il max+1).
+- E' il "diario" tecnico di ogni singola esecuzione, sempre scritto
+  indipendentemente da tutto il resto.
+
+2. Risultato fisico della calibrazione (opt-in via ODB)
+--------------------------------------------
+- Solo per le calibrazioni vere e proprie (ScanThr, ScanVbr, PllTest),
+  invocate dagli script del sequencer (scripts/thr_run.py, vbr_run.py,
+  pll_run.py) tramite CalibrationFactory.run_calibration_and_save().
+- Dopo che calib.run() ha prodotto lo step-log del punto 1, questa
+  funzione legge dall'ODB due flag sotto il CAL_ODB_BASE della
+  calibrazione (es. /CosmicRun/Calibration/SciFi/ScanThr/save_to_root,
+  .../make_plots):
+    save_to_root=True -> calib.build_root_report() scritto come file
+      ROOT (uproot) in
+      scifi_scripts/output_root/<report_name>_<run_number>.root.
+      Se il file per quel run esiste gia', merge riga per riga
+      (row_keys per calibrazione, upsert per chiave) invece di
+      sovrascrivere - run incrementali.
+    make_plots=True -> calib.build_plots() produce figure matplotlib
+      salvate come PNG, una cartella per run, in
+      scifi_scripts/output_plot/<report_name>_<run_number>/<entry>.png.
+    save_to_cdb (parametro pySequencer, non ODB) True E save_to_root
+      True -> il .root appena salvato viene caricato via HTTP al
+      server CDB (http://mu3edb0/detcal, ResultSaverCDB). Se
+      save_to_cdb e' richiesto ma save_to_root e' spento, non c'e'
+      nulla da caricare e viene segnalato come errore in sequenza.
+
+3. Stato/risultati live in ODB (indipendente da ResultSaver)
+--------------------------------------------
+- Ogni calibrazione (Thr/Vbr/Pll) scrive anche direttamente in ODB,
+  ad-hoc (non passa da ResultSaver), i propri risultati/stato sotto il
+  suo CAL_ODB_BASE (es. .../ScanThr/<folder>/ThrResult, .../Warnings,
+  status Running/Done/Aborted).
+- E' il canale che la pagina di controllo/monitoring legge in tempo
+  reale, separato dai file ndjson/ROOT.
+
+NOTA: esistono due strade di invocazione per le calibrazioni.
+CalibrationFactory.perform_calibration() (dispatch da ODB
+/CosmicRun/Calibration/SciFi/CurrentCalibration) fa SOLO il canale 1
+(step-log locale) - non passa mai da run_calibration_and_save, quindi
+non produce ROOT/plot/CDB. Le due strade coesistono nel codice attuale;
+se sia voluto o se andrebbe unificato e' una domanda aperta, non
+approfondita in questa sessione.
+
+
+====================================================================
+DIFFERENZIAZIONE CLASSI PIXEL/SCIFI - rework fatto lo stesso giorno,
+DOPO tutto quanto sopra (stato ATTUALE della struttura)
+====================================================================
+Motivazione (utente): common_scripts conteneva sia le classi generiche
+sia le loro sottoclassi PixelX/SciFiX - le seconde non c'entrano niente
+con "common" e vanno nei rispettivi repo. Inoltre, dentro pixel_scripts
+e scifi_scripts stessi, diverse classi/funzioni avevano nomi identici
+tra i due repo (non e' un conflitto Python reale, i due repo non stanno
+mai sullo stesso sys.path insieme, ma e' comunque confuso da leggere) -
+richiesto di differenziarle con prefisso Pixel/SciFi ovunque avesse
+senso. scifi_scripts e' quindi entrato a pieno titolo nello scope di
+questo lavoro, anche se resta formalmente una PR separata.
+
+1. Split common_scripts -> pixel_scripts/scifi_scripts
+--------------------------------------------
+Tutte le classi PixelX/SciFiX che stavano in common_scripts sono state
+spostate nei rispettivi repo. common_scripts oggi contiene SOLO le
+classi generiche (Setup, Folders, OperationBase/ActionBase/
+CalibrationBase, DAQBase/DAQSCReads/DAQSCReadsArray, PowerPartitionBuilder,
+OperationParameters). Verificato con grep: "^class Pixel\|^class SciFi"
+su common_scripts -> zero risultati.
+
+- operation/lifecycle.py rinominato operation/operation_base.py (come
+  richiesto esplicitamente) - contiene solo OperationBase/ActionBase/
+  CalibrationBase, senza le sottoclassi Pixel/SciFi.
+- config/setup.py: PixelSetup/SciFiSetup rimossi, resta solo Setup.
+- config/folders.py: PixelFolders/SciFiFolders rimossi, resta Folders
+  + gli helper subsystem_root()/make_output_folder().
+- daq/control.py: tutte le PixelDAQ*/SciFiDAQControl rimosse, resta
+  DAQBase/DAQSCReads/DAQSCReadsArray.
+- operation/operation_parameters.py: PixelOperationParameters rimossa,
+  resta OperationParameters.
+- power/partition.py: PixelPowerPartition(Builder)/SciFiPowerPartition
+  Builder rimosse, resta PowerPartitionBuilder.
+- Test di common_scripts (test_config.py, test_daq.py, test_operation.py,
+  test_partition.py) riscritti per testare solo la parte generica.
+
+2. pixel_scripts - nuovi file, alla stessa posizione che avevano prima
+di tutta questa migrazione (evita collisioni sys.path con common_scripts,
+che ha gia' i suoi config/daq/operation/power)
+--------------------------------------------
+- globals/setup.py (PixelSetup), globals/folders.py (PixelFolders),
+  globals/operation_parameters.py (PixelOperationParameters)
+- core/daq.py (tutte le PixelDAQ*), core/power_partition.py
+  (PixelPowerPartition/PixelPowerPartitionBuilder), core/operation_base.py
+  (mixin PixelOperationBase con _add_extra_step_stats/LVDS)
+- actions/actionbase.py e calibrations/calibrationbase.py: la classe
+  locale (che prima era un thin subclass di common's PixelActionBase/
+  PixelCalibrationBase) e' stata FUSA con quella di common in un'unica
+  classe, ora interamente locale.
+- Import aggiornati in tutti i consumer.
+
+3. pixel_scripts - classi/funzioni rinominate per differenziarle da
+scifi_scripts (nessuna collisione tecnica, solo chiarezza)
+--------------------------------------------
+- Detector -> PixelDetector (core/detector.py) - asimmetria con
+  SciFiDetector, che aveva gia' il prefisso.
+- ActionFactory -> PixelActionFactory
+- CalibrationFactory -> PixelCalibrationFactory
+- ActionExecute -> PixelActionExecute
+- CalibrationExecute -> PixelCalibrationExecute
+- ActionPowerOn/ActionPowerOff -> PixelActionPowerOn/PixelActionPowerOff
+- ActionFebPowerOn/ActionFebPowerOff -> PixelActionFebPowerOn/
+  PixelActionFebPowerOff
+- ActionBaseSingleDAQMethod -> PixelActionBaseSingleDAQMethod
+- ActionResetBiasBlock -> PixelActionResetBiasBlock
+Tutti i call-site (actionfactory.py, test1-6.py, scripts/run_calibration.py,
+ecc.) aggiornati di conseguenza. Rinomina fatta con perl -pi -e su tutti
+i file *.py del repo (via find -print0 | xargs -0, necessario perche'
+zsh non fa word-splitting su una variabile con $FILES multi-riga come fa
+bash - prima prova fallita silenziosamente per questo).
+
+4. scifi_scripts - nuovi file (mai avuti prima, stessa logica del
+punto 2 - qui non erano thin-subclass locali, common aveva la logica
+completa)
+--------------------------------------------
+- globals/setup.py (SciFiSetup), globals/folders.py (SciFiFolders)
+- core/daq.py (SciFiDAQControl), core/power_partition.py
+  (SciFiPowerPartitionBuilder)
+- actions/actionbase.py/calibrations/calibrationbase.py: stessa fusione
+  del punto 2, -> SciFiActionBase/SciFiCalibrationBase locali.
+
+5. scifi_scripts - classi/funzioni rinominate (stesso schema del punto 3)
+--------------------------------------------
+- ActionFactory -> SciFiActionFactory
+- CalibrationFactory -> SciFiCalibrationFactory
+- ActionExecute -> SciFiActionExecute
+- CalibrationExecute -> SciFiCalibrationExecute
+- ActionPowerOn/ActionPowerOff -> SciFiActionPowerOn/SciFiActionPowerOff
+- ActionFebPowerOn/ActionFebPowerOff -> SciFiActionFebPowerOn/
+  SciFiActionFebPowerOff
+- Feb -> SciFiFeb (core/feb.py) - asimmetria con pixel, che aveva gia'
+  PixelFeb. Fatto A MANO file per file (non con un replace globale):
+  la parola "Feb" ricorre moltissimo come testo normale nei messaggi di
+  log (es. f"Feb {self.__name}: ...", "per-Feb", "Feb(s)") e nel formato
+  ID delle FEB (f"Feb{self.__feb_index}" -> "Feb0", "Feb1", ...) - un
+  replace cieco avrebbe rotto quei messaggi/ID. Rinominati solo i
+  riferimenti di codice reali (class Feb:, Feb.STATION, feb.Feb(...),
+  espressioni dentro f-string tipo f"{Feb.LINKS_SETTINGS_PATH}/...").
+- ScifiHv -> SciFiHv (core/hv.py) - fix di casing (era gia'
+  "prefissata" ma con la f minuscola, inconsistente col resto).
+
+6. Collisione di FUNZIONE trovata e sistemata (non solo classi)
+--------------------------------------------
+build_feb_bringup_sequence esisteva sia in common_scripts/power/
+feb_crate.py (generica: sequenza di bring-up per UN SINGOLO FEB) sia in
+scifi_scripts/actions/febactions.py (specifica: sequenza CONDIVISA per
+le mains del crate FEC di tutto il detector) - stesso nome, scopi
+diversi, e la seconda chiamava la prima al suo interno. Rinominata la
+versione scifi in build_shared_feb_bringup_sequence (coerente col resto
+del file, che usa gia' "shared" per lo stesso concetto in
+build_shared_powerdist_group). 2 call site aggiornati
+(scripts/feb_bringup_run.py, tests/test_bringup.py).
+Verificato che non ce ne fossero altre: intersezione tra tutte le
+funzioni a livello di modulo di pixel_scripts e scifi_scripts (esclusa
+la coppia define_params/sequence, convenzione obbligatoria di
+PySequencer presente identica in ogni *_run.py di ogni sottosistema) ->
+vuota.
+
+7. Verifica finale
+--------------------------------------------
+- Classi: estratte tutte le "^class " di pixel_scripts e scifi_scripts,
+  comm -12 (intersezione) tra le due liste -> vuota. Zero nomi in comune.
+- common_scripts: grep "^class Pixel\|^class SciFi" -> vuota.
+- __pycache__ ripulita ovunque e rieseguiti i test da zero (per
+  escludere falsi positivi da bytecode stale):
+  common_scripts 11/11, scifi_scripts 8/8, pixel_scripts test1-6
+  identici al comportamento di baseline pre-rework (stessi limiti noti
+  dell'ODB finto in modalita' offline, nessun nuovo errore).
+- Le modifiche di questo rework (come tutto il resto in questo file)
+  sono STAGED (git add fatto automaticamente dal tool di editing, non
+  da un comando git esplicito) ma NON committate in nessuno dei 3 repo -
+  commit e push restano da fare manualmente.

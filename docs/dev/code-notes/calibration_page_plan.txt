@@ -1,0 +1,449 @@
+SCIFI CUSTOM PAGE - CALIBRATION SECTION PLAN
+====================================================================
+Written 2026-08-07. Companion to calibration_process.txt (the Python-
+side 8-step process) - this doc is the PAGE side: what the custom
+page's new Calibration section needs to do, agreed before writing any
+page code (page before code, per standing convention).
+
+====================================================================
+HOW A CALIBRATION ACTUALLY GETS STARTED - CONFIRMED MECHANISM
+====================================================================
+Verified against the real ODB dump's /PySequencer tree AND the real
+midas/python/midas/sequencer.py source (both local, no mu3ebe read
+needed or done):
+  /PySequencer/State/Path + Filename   - which script is loaded
+  /PySequencer/Command/Load new file   - loads it (True/False)
+  /PySequencer/Command/Start script    - starts it (True/False)
+  /PySequencer/Param/Value/<name>      - PySequencer's OWN generic
+                                          params - confirmed these only
+                                          hold execution-mode flags
+                                          (is_odb_available, etc.), NOT
+                                          calibration selection/settings
+Confirmed real (not just ODB-dump-shaped, but actually consumed) via
+sequencer.py:1597/1607 - `if odb_commands["Start script"]:` / `if
+odb_commands["Load new file"]:` are real polled conditions in the
+engine loop.
+
+CONCLUSION: the page does NOT need to touch PySequencer's generic
+param mechanism at all for calibration selection/settings - it mirrors
+pixel's own existing pattern (get_calibration_to_perform_from_odb())
+of reading a dedicated ODB tree instead. The page only needs to set
+Start script = True (Load new file only if the generic launcher script
+isn't already the one loaded - expected to be the steady state, not
+something the page needs to manage every time).
+
+OPEN ARCHITECTURE QUESTION FOUND 2026-08-07, NOT RESOLVED, FOR THE
+FUTURE SCRIPT REWRITE ONLY (user explicit: "dobbiamo riscrivere tutti
+gli script di scifi ma lo faremo dopo. non li toccare. stiamo creando
+il banco di lavoro ora" - workbench/planning only right now, no script
+work). The "generic launcher script" assumed above does NOT actually
+exist for SciFi. Found in scripts_io_reference.txt: the real, existing
+vbr_run.py (wraps calibrations/vbr_scan.py's ScanVbr) reads ALL its
+parameters via PYSEQ (seq.register_param()/get_param() ->
+/PySequencer/Param/Value/<name>), NOT from any custom ODB tree - and
+that doc's own cross-cutting note says explicitly: "[CalibrationFactory
+via CurrentCalibration] isn't wired to any of these 5 scripts today".
+So today, for real: vbr_run.py/thr_run.py are standalone PySequencer
+entry points with their own PYSEQ-registered params, completely
+independent of /CosmicRun/Calibration/SciFi/CurrentCalibration - the
+CurrentCalibration-based dispatch this page's Start button assumes
+(mirroring pixel's run_calibration.py/CalibrationFactory.
+perform_calibration()) has NO SciFi-side counterpart yet.
+Two options for whoever writes the new script(s) later:
+  (a) Write a new generic launcher (SciFi's own run_calibration.py
+      equivalent) that PySequencer's State/Path points to, reads
+      CurrentCalibration + this page's CosmicRun/Calibration/SciFi/
+      ScanVbr/* tree, dispatches to the right class - keeps this
+      page's design exactly as built.
+  (b) Keep vbr_run.py as the direct PySequencer entry point, have it
+      read from CosmicRun/Calibration/SciFi/ScanVbr/* instead of PYSEQ
+      params - closer to what exists today, but abandons the
+      CurrentCalibration/CalibrationFactory selector pattern entirely.
+Not decided - explicitly deferred to the future full scifi_scripts
+rewrite, not this session.
+
+====================================================================
+ODB TREE - AGREED WITH USER 2026-08-07
+====================================================================
+Mirrors pixel's own /CosmicRun/Calibration/VTX/CurrentCalibration
+pattern; SciFi's own path already established in scifi_scripts/
+calibrations/calib_run.py. Parameter names/defaults taken directly
+from ScanThr/ScanVbr's real constructors (calibrations/thr_scan.py,
+vbr_scan.py) - not invented.
+
+/CosmicRun/Calibration/SciFi/
+    CurrentCalibration = "ScanThr"          (or "ScanVbr")
+
+    ScanThr/
+        threshold_start       = 0
+        threshold_stop        = 63
+        offset_start          = 0
+        offset_end            = 2
+        noisy_rate_threshold  = 1000000
+        settle_seconds        = 5
+        run_autofinding       = False
+
+    ScanVbr/
+        iv_start              = 54.0
+        iv_end                = 58.0
+        iv_step                = 30
+        settle_seconds        = 5
+        run_vbr_finding       = False
+        fit_window_v          = 0.5
+        min_peak_prominence   = 3.0
+
+Two separate per-calibration folders, not one shared one - ScanThr and
+ScanVbr have entirely disjoint parameter sets.
+
+====================================================================
+PAGE SECTION - FOUR PIECES, AGREED SCOPE FOR THIS FIRST PASS
+====================================================================
+1. Calibration selector (ScanThr / ScanVbr) - writes CurrentCalibration.
+2. Parameter form, one per calibration - the fields listed above,
+   editable directly on the page.
+3. "Start Calibration" button - writes the selected calibration's
+   parameters to its ODB folder, then /PySequencer/Command/Start
+   script = True.
+4. A readiness badge before the button, mirroring the same shared-
+   equipment gate already built and verified in common/ this week
+   (TDK/PowerDist/DCDCCrates/required programs/alarms) - so the
+   operator sees red/green BEFORE pressing Start, not after it fails
+   server-side. Same "traffic light" convention already used
+   throughout every other tab of this page.
+
+DELIBERATELY DEFERRED, not part of this first pass: live progress
+feedback while a calibration is running (which step, how far along).
+Requires the calibration SCRIPT itself to write progress somewhere
+pollable in ODB - a two-sided change (script + page), not page-only.
+Decided to ship selector+form+button+readiness-badge first (useful and
+independently verifiable with no script-side changes needed), add
+progress as a second pass once that's working.
+
+====================================================================
+STATUS UPDATE 2026-08-07 - BUILT, see todo.txt for the full entry
+====================================================================
+All four pieces above are implemented (SciFi_page/SciFi_Calibration.js
++ SciFi_main.html/SciFi_main.css). Page location: a new "Calibration"
+collapsible-container section on SciFi_main.html, sibling to Power and
+Readout, with its own IV scan/Thr scan/PLL test (placeholder) mtabs.
+
+IV scan's selection IS per-module after all (matches Thr scan's
+convention) - a real, complete side<->module<->HV-channel mapping
+already exists on the page: HV_BOARDS (SciFi_PowerHV.js), also used by
+geoHvIndexForModule() (SciFi_Geometry.js) for the Geometry tab. Every
+module resolves to exactly one HV channel via this mapping - it's real
+and complete, just not written into the Python side (hv.py) or ODB
+itself, only the JS side of this page. So the IV table is per-module
+rows (same calModules list as Thr), each showing its resolved HV
+channel name + Output On status (or "no HV channel" for the few
+unmapped board slots).
+
+Start resolves the selected modules' real HV channel Names and writes
+CAL_ODB_BASE/ScanVbr/selected_channels (comma-joined) but vbr_scan.py
+does not read it yet - script-side consumption (and porting the
+HV_BOARDS mapping, or an equivalent, into hv.py) is a separate,
+not-yet-started follow-up.
+
+STILL OPEN:
+- Whether Stop/Pause controls belong on this section or stay only on
+  the generic PySequencer status bar.
+- Thr scan's own per-module readiness check (link OK + FEB powered) -
+  not built yet, no live gate beyond the shared-equipment badge.
+
+====================================================================
+IV SCAN (ScanVbr) - NEW SCRIPT CHECK LIST, AGREED 2026-08-07
+====================================================================
+The current vbr_scan.py is being rewritten from scratch. Before writing
+it, agreed the full check list it must run - and confirmed with the
+user the scope rule for ALL of them: every check applies ONLY to the
+selected modules the scan will actually run on, never whole-detector
+(supersedes the old script's whole-detector LV gate, which was only
+that broad because the channel<->module mapping wasn't known at the
+time - it's known now, via HV_BOARDS).
+
+PRE-FLIGHT (block Start if any fails, scoped to selected modules only):
+1. Parameters valid: 0 <= iv_start <= iv_end <= 60V (MAX_DEMAND_VOLTAGE),
+   iv_step >= 1. Pure validation, no hardware state needed.
+2. Every selected module has a mapped HV channel (already enforced on
+   the page - unmapped modules can't be checked/selected).
+3. HV Output On set on the selected modules' channels.
+4. LV Power Good on the selected modules' Febs.
+5. Feb connected/powered for the selected modules.
+6. Shared equipment (TDK/PowerDist) healthy for the side/zone of the
+   selected modules.
+7. Required Programs alive (HV Frontend, DCDC Frontend, Febcrate
+   Frontend).
+8. No active alarm relevant to the selected modules.
+
+RUNTIME (during the sweep, selected channels only, not pre-showable):
+9. Over-current per channel (Current > Settings/"Current limit") - cut
+   that channel's Demand to 0, keep sweeping the rest. Same behaviour
+   as the old script's __check_over_current().
+
+POST (always runs, success or failure):
+10. Hardware cleanup (readout config reset).
+
+PAGE STATUS vs this list, as of today: checks 3 (HV dot), 4 (LV dot),
+5 (FEB dot) already have their live status shown per-module row in the
+IV table (2026-08-07 dot columns). NOT yet shown/enforced anywhere on
+the page: 1 (param validation), 6 (shared equipment), 7 (only 3 of the
+Programs are surfaced, in the message row, not gating), 8 (alarms) -
+and none of 1/3/4/5/6/7/8 currently BLOCK Start, they're informational
+only.
+
+BLOCK vs INFORMATIONAL DECISION, agreed 2026-08-07:
+  BLOCKS Start (deterministic/confirmed-critical, scoped to selected
+  modules only):
+    1. Parameter validation - pure client-side, no ambiguity.
+    3. HV Output On - script assumes it's already set, doesn't turn it
+       on itself; running with it off produces meaningless data.
+    4. LV Power Good - confirmed real safety gate in the actual old
+       prepare() (don't bias SiPMs near unready readout electronics).
+    6. Shared equipment (TDK/PowerDist) for the selected modules' zone
+       - PowerDist feeds the HV crate itself (see hvPowerDistHealth()
+       in SciFi_PowerHV.js) - same criticality as Programs being down.
+    7. Required Programs alive.
+  INFORMATIONAL ONLY (dot/message, does not block Start):
+    8. Alarms - too broad/noisy to hard-block on automatically; shown,
+       left to operator judgement unless a reliable per-module alarm
+       filter is found later.
+  Check 2 (module has a mapped HV channel) is already structurally
+  enforced - unmapped modules' checkboxes are disabled, can't even be
+  selected.
+
+  CHECK 5 REMOVED ENTIRELY, 2026-08-07 (user asked, confirmed by
+  re-reading the code): the Feb datapath/link/crate chain has NO
+  bearing on an IV scan at all - the measurement is HV Current/Voltage
+  read directly from the HV supply, never touches the Feb's digital
+  readout. Cross-checked against pixel: IVScan.prepare() ->
+  check_all_pp_on() -> PowerGroup.is_on() only checks PowerDistribution
+  + LV + HV, never chip/readout state either - no precedent there for
+  a Feb-equivalent check on an IV-style scan. Removed the FEB dot
+  column from the IV table entirely (kept on Thr scan's table, where
+  the datapath genuinely matters - it reads ASIC channel data) and
+  dropped Febcrate Frontend from item 7's Program list for IV scan
+  specifically (item 7 for IV scan is now just HV Frontend + DCDC
+  Frontend).
+
+FINAL BLOCKING SET for IV scan: 1 (params), 3 (HV Output On), 4 (LV
+Power Good), 6 (shared equipment), 7 (HV Frontend + DCDC Frontend
+Programs only, no Febcrate Frontend). INFORMATIONAL: 8 (alarms).
+
+IMPLEMENTED 2026-08-07: calIvBlockingReasons() in SciFi_Calibration.js
+computes all 5 (params via calIvParamErrors(), HV Output On + LV Power
+Good per selected module via calGeoModuleFor()+geoHvStatusFor()/
+geoSmLvStatus(), shared equipment via calIvZoneForModule()+HV_BOARDS+
+hvPowerDistHealthByGroup, required Programs via hvProgramDown/
+lvProgramDown) - scoped to ivSelectedModules only, per the agreed rule.
+Computed on every renderIvTable() tick (feeds the live message row -
+"why can't I start" visible before pressing Start) AND recomputed at
+Start click time as the actual gate (combineTableMessages + early
+return, no ODB write/PySequencer trigger if any reason exists). User's
+explicit constraint: this must NEVER disable anything else on the page
+(checkboxes/form/Apply to selected) - only Start itself is blocked.
+Also fixed calStart()'s old blanket calSharedEquipmentBlocked check
+(all 5 Programs incl. Febcrate Frontend) to skip ScanVbr entirely -
+would have contradicted the Febcrate-Frontend-removed decision above;
+still applies to ScanThr, which has no refined check list yet.
+
+GAP FOUND AND CLOSED, 2026-08-07 (user: "non controlli TDK?"): shared
+equipment check 6 only covered PowerDist - TDK was never checked at all
+for HV. Found via the real ODB dump that TDKStaging/Settings/Names has
+6 channels: "SciFi & Tile US"/"SciFi & Tile DS" (mains feed for the
+whole SciFi+Tile subsystem) at [0]/[1], "FE Crates US"/"FE Crates DS"
+at [2]/[3] (the only ones checkSharedEquipmentHealth actually checks,
+for LV/FEB), "Pixel US"/"Pixel DS" at [4]/[5]. "SciFi & Tile <side>"
+was checked NOWHERE on the page. Added calIvTdkErrors(sides) - same
+Fault Register/Interlock Trigger/Output On logic as
+checkSharedEquipmentHealth (SciFi_Utils.js), same hexTrue() decode, but
+matching the "SciFi & Tile" name prefix instead of "FE Crates" (kept
+separate rather than editing the shared function, to not change LV/FEB
+tab behaviour) - scoped to the side(s) of the selected modules. Now 6
+checks total for IV scan.
+
+SECOND GAP FOUND AND CLOSED, 2026-08-07 (user: "controlli anche
+DCDCCrates?"): the LV check (item 4) only ever looked at per-channel
+state (Present/Channel On/fault flags via geoSmLvStatus) - never at
+DCDCCrates' own crate-level Settings/Enabled + Settings/"Crate On",
+which Geometry.js already fetches onto every lv object (crateEnabled/
+crateOn/crateName) but nothing checked. Confirmed live: "Crate On" is
+"n" for all 8 crates in the local ODB right now - an active gap, not
+theoretical. Added a dedup'd per-crate check in calIvBlockingReasons()
+(no new RPC needed, data was already there) - same shape as PowerDist's
+own device-level Enabled/Device-on gate, just the missing counterpart
+on the LV side.
+
+PHILOSOPHY CORRECTED, 2026-08-07 (user, explicit): "in calibration
+seguendo la filosofia della pagina, nulla deve essere bloccante, si
+puo' fare tutto, ma se questo non passa il check prima un messaggio
+informativo. I veri gate bloccanti saranno nei .py" - matches how the
+rest of the page already behaves (most actions stay clickable with a
+warning, not hard-disabled). REVERSED the "5/6 blocking checks" design
+from earlier today: calIvBlockingReasons() renamed calIvWarnings(),
+Start's early-return removed - Start ALWAYS writes ODB + triggers
+PySequencer regardless of what the checks say, the checks only feed
+the informational message row (before AND after pressing Start - a
+"started" confirmation would otherwise stomp the warning text, fixed
+by only showing "started" when there are zero warnings). Programs and
+Alarms explicitly EXCLUDED from Calibration's messages entirely (user:
+"allarmi e programs non mostrarli come messaggi in calibration") - so
+calStart()'s old calSharedEquipmentBlocked gate (Programs, ScanThr
+only) was removed outright, and updateCalReadiness()/
+calSharedEquipmentBlocked deleted as dead code (no longer referenced
+anywhere). Real gating is now explicitly deferred to the new
+vbr_scan.py, still to be written from scratch - page-side checks are
+advisory only, matching the "veri gate bloccanti saranno nei .py" line.
+
+SIMPLIFIED FURTHER, same day (user: "per rendere tutto piu' snello...
+elimina i check e i messaggi su power distribution tdk dcdc crate e
+power distribution device. lascia solo quelli sulla selezione dei
+moduli, sui parametri inseriti e quelli riferiti a LV e HV"). Removed
+calIvTdkErrors()/calIvZoneForModule() and the PowerDist/DCDCCrates
+blocks from calIvWarnings() entirely, along with the now-unneeded TDK
+RPC fetch in updateCalibrationTab(). The page's own check now only
+covers: parameters, module selection, and per-module HV Output On.
+PowerDist/TDK/DCDCCrates checks are NOT dropped from the plan - they're
+fully specified in calibration_process.txt's "SCIFI IV SCAN - CONCRETE
+CHECK VALUES" section for the .py script to implement; the page just
+no longer duplicates them.
+
+CORRECTED, 2026-08-24 (re-verified against live code, not just this
+doc): calIvWarnings() (SciFi_Calibration.js) never actually had an LV
+Power Good check for ScanVbr - confirmed via git blame, no such line
+ever existed there, unlike ScanThr's calThrWarnings()-equivalent which
+does have one (geoSmLvStatus check). The "+ LV Power Good" wording
+above was aspirational, never implemented. Asked the user directly:
+confirmed HV-only is the intended, final state for ScanVbr's page-side
+check - not a gap, no LV check needed here. This paragraph supersedes
+the "+ LV Power Good" claim two paragraphs up.
+
+====================================================================
+PAGE <-> ODB RESULTS - IMPLEMENTATION LIST, 2026-08-07
+====================================================================
+Today the page only WRITES to ODB (params + selected_channels) and
+fires Start - nothing reads back the ScanVbr/<module>/ results
+structure calibration_process.txt now defines. Full list of what's
+needed, in no particular priority order yet - to be picked up one at a
+time:
+
+1. STATUS DISPLAY - DONE, 2026-08-07. IV table now fetches the whole
+   ScanVbr subtree in updateCalibrationTab() (one extra
+   mjsonrpc_db_get_values path, CAL_ODB_DEFAULTS_BASE + "/ScanVbr" -
+   directory fetch, confirmed live against the real running mhttpd RPC
+   endpoint that this returns a nested object with LOWER-CASE keys,
+   e.g. data.us_sm0_m0.status), looked up per row via
+   (side+"_SM"+sm+"_M"+realModule).toLowerCase(), shown as a pill
+   (statusPill + new CAL_STATUS_PILL_STATE map) next to the HV/LV dots.
+
+2. "NEVER RUN" STATE - DONE, 2026-08-07, same change as #1. A row with
+   no ivResult (module has no ScanVbr/<module>/ entry, or the whole
+   fetch failed) falls back to displaying "Never run"/neutral pill
+   rather than erroring - handled in the same statusText fallback, not
+   a separate code path.
+
+3. LIVE PLOT - DONE, 2026-08-07 (revised approach). NOT the mplot
+   autoUpdater/source pattern from Scifi-monitor.js (that's built for
+   histogram/rate-style continuous subscriptions, overkill here and
+   tied to an abstraction this page doesn't use elsewhere). Instead:
+   IV table rows became click-to-expand (row-clickable + chevron, same
+   mechanism as the Thr table's per-channel grid), and the detail panel
+   (calBuildIvDetail) builds a plain MPlotGraph(divElement) + one
+   .addPlot({xData: Output/Voltage, yData: Output/Current}) + .draw()
+   call directly - the simple documented API (mplot.js:945). Since
+   renderIvTable() already rebuilds the whole table from scratch every
+   2s tick (same as the rest of this page - no persistent-instance
+   tracking needed), the plot is simply recreated with fresh data each
+   tick, "live" by virtue of the existing polling loop, not a dedicated
+   subscription. Also folded in the user's follow-up ask ("qui dentro
+   si potrebbero inserire le info sulla calibrazione che salviamo in
+   odb no?") - the same detail panel shows HVChannel/Status/Message,
+   ParametersUsed (the real params the saved result was run with, not
+   the page's staged form values), and full VbrResult - i.e. everything
+   ScanVbr/<module>/ holds, not just the plot.
+
+   Found+fixed while building this: row-detail open/closed state
+   (openDetailKeys, toggleRowDetail/restoreRowDetailState in
+   SciFi_Utils.js) depends on tr.dataset.key being set by the caller -
+   the Thr table never actually sets it, so its per-channel detail
+   state has silently never persisted across the 2s re-render (a
+   pre-existing latent bug, confirmed by reading the code, not
+   guessed). Fixed for the IV table (tr.dataset.key = "iv-"+row.label,
+   needed here since without it the plot would visibly collapse every
+   2s) but did NOT touch Thr's - out of scope for this pass, flagged
+   here instead of silently fixed alongside.
+
+4. FINAL RESULT DISPLAY - DONE, 2026-08-07. calIvVbrSummary() shows "-"
+   until Status="Done", then "<VBreakdownFit> V" (+ "(low conf.)" if
+   not vbrresult.confident), or "not found" if vbrresult.found is
+   false - new IV table column, "Vbr".
+
+5. WARNINGS DISPLAY - DONE, 2026-08-07, revised same day. First cut put
+   the warning text in the Warnings-column pill's tooltip; user
+   corrected this ("togli i warning nel tooltip. li stamperemo nei
+   messaggi. i tooltip con i messaggi sono solo per gestire la pagina")
+   - tooltips on this page are for page-management hints only (e.g.
+   "no HV channel mapped to this module"), not for surfacing
+   calibration data. Fixed: the Warnings column is now just a count
+   pill with no tooltip; the actual text goes into the message row via
+   a new calIvResultWarnings() (labelled per module, e.g. "US SM 0 ·
+   Module 0: <warning text>"), concatenated with the existing pre-Start
+   calIvWarnings() in the same combineTableMessages call - one combined
+   message row, not a second one, so pre-Start checks and last-result
+   warnings don't fight for space. Same reasoning removed the Status
+   pill's ivResult.message tooltip too (moved into the detail panel
+   instead, see item 3 - not lost, just relocated off a tooltip).
+   Still handles both a scalar string and a real array defensively
+   (calIvWarningsList) since the seed data currently has Warnings as an
+   empty STRING, not an array - the real future vbr_run.py write will
+   decide the actual ODB type.
+
+6. OVERWRITE PROTECTION - DONE 2026-08-07. calIvWarnings() now warns
+   per selected module already at Status=Running ("already Running -
+   starting again will overwrite the in-progress result") -
+   informational only, same as everything else, doesn't block Start.
+
+7. RESULT AGE - DONE 2026-08-07. No dedicated Timestamp field needed in
+   the end - mjsonrpc_db_get_values already returns a "<field>/
+   last_written" sibling (unix seconds) for every key by default, no
+   extra fetch/option needed. New calFormatAge() formats it ("Xm/h/d
+   ago"), shown in the detail panel as "Last updated" next to Status.
+
+8. CROSS-CHECK WITH PYSEQUENCER'S OWN STATE - DONE 2026-08-07. Both
+   gaps closed: (a) calIvWarnings() warns "PySequencer is busy running
+   <filename>" whenever /PySequencer/State/Running is true, regardless
+   of selection; (b) "ghost Running" - any module with Status=Running
+   while PySequencer/State/Running is false gets its own warning
+   ("likely stale"), checked across ALL modules, not just selected
+   ones, since it's a data-integrity signal independent of what you're
+   about to do next.
+
+9. STOP/PAUSE CONTROL - DONE 2026-08-07, resolved as new dedicated
+   buttons (not the Start-button-becomes-Stop idea floated earlier) -
+   "Stop"/"Pause" next to Start IV scan, write /PySequencer/Command/
+   "Stop immediately" / "Pause script" (or "Resume script" if already
+   paused). Disabled (not warned-and-clickable) when PySequencer/State/
+   Running is false - clicking then would be a genuine no-op, not a
+   risky action being discouraged, so a plain disable fits better than
+   the page's usual "everything stays clickable" pattern. New
+   calUpdatePySeqControls() also shows a small "PySequencer: running
+   <file>/idle" text next to the buttons. Verified live: both the
+   State/Running/Paused/Filename read and a Command/"Pause script"
+   write tested against the real running mhttpd before wiring the JS.
+
+10. SELECTION vs AVAILABLE-RESULTS DISTINCTION - CONFIRMED ALREADY
+    RESOLVED 2026-08-07, no new code needed: the checkbox
+    (ivSelectedModules) and the Status/Vbr/Warnings pills (ivResult,
+    read independently from ODB) were already fully decoupled by the
+    earlier Status-display work (item 1 above) - a module can show
+    Status=Done while unchecked, or be checked while Status=Never run,
+    with no conflation anywhere in the code. The gap this item
+    described predates that work; verified it no longer exists rather
+    than building something redundant.
+
+Items 1-10 ALL DONE 2026-08-07 (SciFi_Calibration.js v16->v19,
+SciFi_main.css v75->v77/SciFi_main.html - IV table gained Status/Vbr/
+Warnings columns, a click-to-expand detail panel per module with live
+plot + full saved result + result age, PySequencer cross-check
+warnings, and Stop/Pause controls). This punch list is now closed -
+IV scan's page side is done; the next open work is Thr scan and
+Geometry (see calibration_open_items.txt's ROADMAP section).

@@ -1,0 +1,1744 @@
+COMMON_SCRIPTS MIGRATION - FINAL PLAN (before any code)
+====================================================================
+Written 2026-08-06, planning-only session, updated same day after two
+audit passes. Consolidates: docs/code/pixel_bringup_sequence.txt
+(bring-up as data, 2 gaps found), docs/code/calibration_startup_
+procedure.txt (calibration entry chain, 2 more gaps + 2 duplications
+found), the action/saver/power_partition comparison done at the start
+of this session, and two later capillary re-checks against the real
+code (see AUDIT sections at the end).
+
+GOAL: build a stable, shared structure in common_scripts implementing
+the bring-up sequence + calibration-startup procedure once, instead of
+per-subsystem duplicated/diverging logic.
+
+SCOPE: PIXEL FIRST. Every step below is built and wired into
+pixel_scripts. SciFi's own adaptation is explicit FUTURE work - nothing
+here touches scifi_scripts.
+
+STILL PLANNING ONLY as of this doc - the next step after this is
+writing actual code, starting at (1).
+
+====================================================================
+ORDER OF WORK (renumbered after audit pass 1 - see below for why)
+====================================================================
+
+(1) UNIFY THE RESULT ENUM, DROP EMPTY MESSAGE SUBCLASSES - DONE 2026-08-06
+--------------------------------------------------------------------
+Today: ActionResult (pixel) and CalibrationResult (pixel) and
+CalibrationResult (scifi, a third, smaller copy) are three near-
+identical enums - confirmed 88 usages of "ActionResult."/
+"CalibrationResult." across both subsystems (grep), so this is a
+rename/consolidation, not a logic change, but touches real breadth.
+ActionMessage/CalibrationMessage are StatusMessage subclasses that only
+override a default odb_location and add nothing else.
+DECIDED: one Result enum in common (superset of members: NOTHING,
+SUCCESS, FAIL, WARNING, NOT_IMPLEMENTED, NOT_POSSIBLE, NOT_READY,
+RUNNING, POWER_FAIL, SOME_FAIL). Delete ActionMessage/CalibrationMessage,
+call StatusMessage(odb_location, client) directly wherever they were
+used. Lowest-risk step, do it first so everything after speaks the same
+vocabulary.
+IMPLEMENTED: common_scripts/common/operation_result.py (OperationResult
+enum, exact member set above). ActionResult/CalibrationResult classes
+and the ActionMessage/CalibrationMessage subclasses deleted from
+actions/actions.py and calibrations/calibration.py; every call site in
+actions/{actions,actionfactory,daqactions,poweractions}.py and
+calibrations/{calibration,calibrationfactory,ivscan,smoketest}.py
+switched to operation_result.OperationResult - including two call
+sites the initial grep missed (scripts/run_calibration.py and the
+scratch test4.py, both did calibration.CalibrationResult(result) as a
+constructor call, not caught by a plain ".CalibrationResult." search).
+Verified: py_compile on all touched files, then two real dry-run
+executions (test3.py through ActionFactory, test4.py through
+CalibrationFactory, both with is_odb_available=False) - both complete
+end to end and print OperationResult.POWER_FAIL (expected: the stub
+ODB reader returns a truthy 1 for every field, which correctly trips
+the TDK shared-equipment check).
+
+(2) DECOUPLE ResultSaver FROM core.detector/core.daq - DONE 2026-08-06
+--------------------------------------------------------------------
+Today: common/results.py imports core.detector/core.daq (pixel-only)
+and ResultSaver.get_detector_status() reads det.power_partitions/
+pp.is_selected()/chip.get_positional_id() directly - concepts that
+don't exist in scifi_scripts. This is the reason SciFi's CalibrationBase
+has no result saver at all today. CONFIRMED SCOPE (grep): exactly 4
+files touch result_saver in pixel_scripts - core/operation_base.py,
+actions/actions.py, calibrations/calibration.py, calibrations/
+smoketest.py - a contained blast radius.
+DECIDED: ResultSaver calls det.get_status_summary() (and
+daqc.get_status_summary()) instead of reaching into detector internals.
+Each Detector-like class implements its own. Pixel's Detector.
+get_status_summary() returns exactly what get_detector_status() returns
+today (selected_power_partitions, selected_chips) - NO behaviour change
+for pixel. common/results.py drops the core.detector/core.daq imports
+entirely (they were only ever used for type hints). SciFiDetector gets
+its own get_status_summary() later, when scifi's turn comes - not now.
+Interface used by callers (record_initial_status/append_step_result/
+save_final/save_step_results/get_last_step_result) stays exactly as-is
+- no reason to change it, nothing calling it needs to change.
+FOLDED IN FROM AUDIT PASS 1: fix CalibrationBase.__init__ passing
+folders.action_output_folder instead of the already-existing
+folders.calibration_output_folder (operation_base.py's own docstring
+already flags this as pre-existing, never fixed) - same code being
+touched here, natural to fix in the same pass. Also move Detector.
+compare_read_outputs (pixel-only static method, used by
+evaluate_current_jump - compares two same-shaped readouts field by
+field via a callback) into common/result_interpretation.py - the
+algorithm itself is generic, it just currently lives in the wrong file.
+IMPLEMENTED: common/results.py's get_detector_status()/get_daq_status()
+now call det.get_status_summary()/daqc.get_status_summary() instead of
+reaching into detector internals; the core.detector/core.daq imports
+(only ever used for type hints) are gone. Detector.get_status_summary()
+and the new DAQControl.get_status_summary() (returns {}, same as the
+old empty get_daq_status() body) added to pixel_scripts. compare_read_
+outputs() moved to common/result_interpretation.py, actions.py updated
+to call it from there. CalibrationBase now passes folders.calibration_
+output_folder (the stale comment describing the old wrong behaviour as
+deliberately preserved was removed, since it no longer describes what
+the code does). Verified end to end with a throwaway script
+(scratchpad, not committed): built a real Detector+DAQControl in dry-
+run mode, constructed both IVScan and ActionPowerOn directly - both
+produce IDENTICAL detector_status/daq_status content to before
+(selected_power_partitions/selected_chips, {}), and IVScan's ndjson now
+correctly lands in output_calibrations/ instead of output_actions/.
+
+(3) EXTRACT PowerGroup FROM PowerPartition (moved up from 5th to 3rd,
+    audit pass 1) - DONE 2026-08-06
+--------------------------------------------------------------------
+REORDERED: this used to be last; it needs to happen BEFORE (4), because
+(4)'s bring-up steps bind directly to PowerPartition/PowerGroup methods
+(turn_on_lv, set_hv_voltage, is_on...). Doing (4) first against today's
+monolithic PowerPartition and then refactoring PowerGroup out from under
+it in a later step would touch the same call sites twice.
+Split core/power_partition.py's PowerPartition: the power-supply-group
+half (is_on/turn_on_lv/turn_on_hv/set_lv_voltage/read_all_readables/...)
+becomes a common PowerGroup; the chip-management half (mask_all_chips/
+set_dac_to_all_chips/get_user_selected_chips) stays pixel-only, composed
+with/extending PowerGroup. Requires making hv_supply/power_distribution
+genuinely optional (is_on() today calls self.__hv_supply.is_on()
+unconditionally - would break for an LV-only group).
+IMPLEMENTED: common/power_group.py's PowerGroup holds group id/number/
+selection, the three optional power-supply slots, assign_*, is_on/
+is_lv_on/is_hv_on/is_power_distribution_on, turn_on_*/turn_off_*/
+turn_off_immediately, set_lv_voltage/set_hv_voltage, get_all_readables/
+read_all_readables, and the LV-adjust getters. LV stays required
+(no known use case needs an LV-less group); hv_supply and power_
+distribution are now null-guarded everywhere a blanket status/read
+call could hit them (is_on, is_hv_on, get_all_readables, read_all_
+readables) - imperative "do X" calls (set_hv_voltage, turn_on_hv) are
+deliberately left unguarded, since calling them on a group that was
+never assigned that supply is a real caller error worth raising, not
+something to fail silently. core/power_partition.py's PowerPartition
+now extends PowerGroup and keeps only add_chip/add_chips/is_initialized
+(overridden to also require chips)/the chip-masking and DAC methods -
+type hints on the moved methods used to import core.power_supply
+(pixel's own re-export of common.power_supply) and common.power_supply
+directly; PowerGroup now type-hints against common.power_supply only,
+so no core.* import leaks into common_scripts. core/detector.py's
+assign_chips_to_febs() reaches into partition._PowerPartition__chips
+directly (pre-existing, name-mangled) - untouched and still correct,
+since __chips stays declared inside PowerPartition itself, not moved
+into PowerGroup.
+Verified: py_compile, then three real checks against a dry-run Detector
+built from the ODB-driven construction path (core/detector.py's
+create_partitions_from_odb, the one that actually assigns power
+supplies and chips) - confirmed the MRO is PowerPartition -> PowerGroup
+-> object; is_initialized/is_on/is_lv_on/is_hv_on/read_all_readables()
+(all 4 expected keys: LV, HV, PowerDist, PowerStatus) and turn_on_lv()
+all work through the inherited chain; the chip-management side (get_
+user_selected_chips) still works on the subclass; and test3.py/test4.py
+still run end to end with identical output to before this step.
+
+(4) BRING-UP SEQUENCE ENGINE, APPLIED TO PIXEL - DONE 2026-08-06
+--------------------------------------------------------------------
+Per pixel_bringup_sequence.txt: an engine (run an ordered list of
+{name, kind, scope, precondition, action, verification+timeout,
+shared-flag} steps, stop at first failure, dry-run via the existing
+common.setup.can_send_commands_to_odb flag, power-down = list reversed)
+lives in common_scripts, written against the PowerGroup interface from
+(3). Pixel's own step list (that doc's LV+HV table) is the first real
+declaration it runs.
+OPEN, to decide while building this (not before): whether GAP 1
+(missing power-distribution turn-on) and GAP 2 (missing reach-target-HV
+ramp) get fixed as part of writing the real declaration (they'd have to
+be, for the declaration to be honest/complete) or the declaration
+deliberately documents pixel's CURRENT partial behaviour first and the
+two gaps get closed in a visibly separate step. Leaning towards fixing
+them as part of this step, since a bring-up list that's known-incomplete
+on day one defeats its own purpose - but flagging this as the moment to
+actually decide it, not deciding it here.
+DECIDED (user, 2026-08-06): close both gaps as part of this step.
+IMPLEMENTED: common/bringup.py (StepKind enum, Step - is_satisfied/
+turn_on/turn_off/wait_seconds/max_wait_seconds/shared, BringUpSequence
+- bring_up()/power_down(), stops at first failed step, power_down()
+runs the list reversed) + pixel_scripts/actions/bringup_declaration.py
+(one PowerPartition's real declaration). During implementation, the
+doc's 6-step table collapsed to 4 real Steps - two of the six turned
+out to be safety pre-actions repeated in BOTH directions (trim-to-
+minimum, set-HV-to-10V), not independent reversible conditions - see
+pixel_bringup_sequence.txt's own "REFINEMENT DURING IMPLEMENTATION"
+note for the detail. actions/poweractions.py rewritten to use the
+declaration: ActionPowerOn now runs bring_up() per selected partition
+(GAP 1 and GAP 2 both genuinely exercised, not just declared); NEW
+ActionPowerOff runs power_down() - pixel had ZERO power-off Action
+before this, only the legacy .msl had one. ActionExecute gained
+TURN_OFF, ActionFactory dispatches it. ActionPower (the old base class
+holding check_all_lv_on/check_all_hv_on/set_minimum_lv_voltage/etc.)
+deleted entirely - every one of its methods was only ever called from
+the code just replaced, confirmed by grep before removal.
+REAL BUG FOUND AND FIXED, surfaced only by actually running this new
+code end to end: common/status_message.py's StatusMessage.send()
+regressed in step (1) - it lost the default value for `result` that
+ActionMessage/CalibrationMessage used to supply before their deletion,
+so every existing self.message.send() call-with-no-arguments (e.g.
+ActionBase.perform()'s "send nothing") crashed with a TypeError. Not
+caught by step (1)'s own verification because test3.py/test4.py are
+both gated by the shared-equipment check before any perform()/prepare()
+ever runs message.send(). Fixed by giving send() a default of
+operation_result.OperationResult.NOTHING directly (cleaner than the
+old wrapper-subclass-provided default ever was). Also fixed: status_
+message.py's docstring still named the two now-deleted subclasses.
+VERIFIED, in order: py_compile; a scratchpad script driving a real dry-
+run Detector's PowerPartition directly through build_power_partition_
+sequence(pp, 40.0).bring_up() - confirms the three already-satisfied
+steps (stub reads truthy) are correctly skipped, and hv_ramp_to_target
+(not satisfiable against a static stub) genuinely runs, writing Demand
+20.0 -> 30.0 -> 40.0 in order - direct proof GAP 2's ramp executes;
+.power_down() on a fresh sequence confirms the reversed order (starts
+at the ramp, correctly finds nothing to undo, then reaches hv_on_at_10v
+and writes Demand<-10/Output On<-0); a third isolated check with fake
+is_satisfied/turn_on callables (no real ODB) confirms Step.bring_up()
+calls turn_on() exactly when not-yet-satisfied and re-polls correctly -
+proves the engine's own core logic, independent of pixel's wiring.
+Finally re-ran ActionPowerOn/ActionPowerOff through the full factory-
+adjacent path (scratchpad) - no crashes, confirms the status_message
+fix.
+NOT FIXED, noted only: pixel_bringup_sequence.txt's own step 3 called
+for verifying via "Power Good" (a hardware health flag); the real
+is_lv_on() used here (and already used by the pre-existing code before
+this change) verifies the weaker "Channel On" bit instead. Out of
+scope for GAP 1/GAP 2. Also: target_HV is a new hardcoded UNVERIFIED
+placeholder (40.0) in globals/operation_parameters.py - real per-
+partition ODB wiring is the same open, orthogonal "TODO: read from
+ODB" gap already tracked for every other parameter in this codebase.
+
+(5) CALIBRATION-STARTUP COMMON PIECES, APPLIED TO PIXEL - DONE 2026-08-06
+--------------------------------------------------------------------
+Per calibration_startup_procedure.txt. Concretely, for pixel:
+  a) client acquisition: adopt SciFi's own MidasClient + try/finally
+     disconnect convention in run_calibration.py, instead of passing
+     `seq` straight through (GAP 3) - SciFi's convention is the one
+     with a documented reason behind it, pixel's is the one that looks
+     accidental. NOTE (audit pass 1): the claimed interface difference
+     between seq.odb_get/odb_set and MidasClient's is, so far, only
+     ever ASSERTED in a scifi_scripts comment - never empirically
+     confirmed for pixel specifically. Adopting the safer convention
+     does not require confirming this first, but it should not be
+     allowed to quietly harden into "known fact" either - worth an
+     actual check against the real system at some point.
+  b) stop duplicating the shared-equipment check: ActionFactory and
+     CalibrationFactory both drop their own copy and call
+     common/services.check_shared_equipment() directly, same as SciFi
+     already does. Cheapest item in the whole plan.
+  c) DECIDED (session discussion, option B): OperationBase gains a
+     run() method that owns the WHOLE lifecycle - opens the result
+     saver, drives perform() (Action) or prepare()/execute()/finalise()
+     (Calibration), and ALWAYS closes it (append final result +
+     save_step_results() + save_final()) in a finally, regardless of
+     which stage failed. ActionFactory/CalibrationFactory call
+     calib.run() / action.run() instead of orchestrating the stages
+     themselves. This is what makes GAP 4 (calibrations never calling
+     save_final()) structurally impossible to repeat, instead of just
+     patching the one missing call site. Requires reconciling Action's
+     perform()/post_perform() shape and Calibration's prepare()/
+     execute()/finalise() shape under one run() - the actual reconciled
+     signature is a coding-time decision, not fixed here.
+  d) FOLDED IN FROM AUDIT PASS 1: append_step_result_and_check() is
+     ALSO duplicated - ActionBase's (actions.py:61-71) and
+     CalibrationBase's (calibration.py:130-147) versions differ in
+     THREE real ways: Calibration's filters to is_selected() power
+     partitions only, Action's checks all of them; Calibration's nests
+     the step data under {"Power": readables}, Action's does not nest
+     at all - i.e. TODAY ACTION AND CALIBRATION STEP RESULTS ALREADY
+     USE TWO DIFFERENT SCHEMAS for the same kind of data; Calibration's
+     has an optional LVDS-stats merge, Action's has none. This must be
+     resolved (not just moved) as part of unifying under OperationBase -
+     pick one schema, one selection-filtering rule, and fold LVDS-merge
+     in as an optional argument available to both. This is real design
+     work, not a mechanical merge.
+  DESIGN QUESTION SURFACED BY (d), not yet answered: should Actions and
+  Calibrations write to the same output stream/folder at all, or
+  genuinely separate ones? Today's folder bug (see (2)) accidentally
+  merges calibration results into the action folder - is that actually
+  wrong, or is a unified stream secretly what's wanted once schemas
+  agree? Needs an actual answer when (5c)/(5d) are implemented, not an
+  assumption either way.
+  NOT decided here, stays open: whether calibration parameters keep
+  being hardcoded-with-a-TODO or actually get read from ODB now - out
+  of scope for this plan, orthogonal to the saver/lifecycle work.
+
+DECISIONS TAKEN on the two open questions from audit pass 1, both
+implemented (not just decided):
+  - (d)'s schema: unified onto CALIBRATION's convention - nested under
+    {step_name: {"Power": readables}}, filtered to is_selected()
+    partitions only (Action's old "check every partition regardless of
+    selection" was a real latent bug: an unselected, faulting partition
+    could fail an action that never touched it), LVDS merge stays an
+    optional add_lvds_link_stats argument available to both. The one
+    unified method now lives on OperationBase itself, deleted from both
+    ActionBase and CalibrationBase.
+  - output folders: kept SEPARATE (action_output_folder vs
+    calibration_output_folder, per step (2)'s fix) - nothing suggested
+    the old accidental merge was ever wanted, and folders.py's own two
+    distinct constants show separation was always the intent.
+
+IMPLEMENTED:
+  (a) scripts/run_calibration.py now creates its own midas.client.
+      MidasClient (try/finally disconnect), instead of passing `seq`
+      itself into CalibrationFactory.perform_calibration(). REAL BUG
+      FOUND AND FIXED in the same file while touching it: it set
+      common.setup.read_febs_from_odb, but Detector.__init__ actually
+      reads globals.setup.read_febs_from_odb (a different, pixel-only
+      module) - the "read_febs_from_odb" PySequencer param was silently
+      never taking effect. Also switched print() to seq.msg() (print()
+      never reaches the PySequencer's own log) and dropped an unused
+      numpy import and a dead, do-nothing __main__ block.
+  (b) ActionFactory.check_shared_equipment()/CalibrationFactory.
+      check_shared_equipment() both now delegate to common/services.py's
+      canonical check_shared_equipment() instead of each keeping its own
+      copy of the same two-service loop.
+  (c) OperationBase gained execute_all_stages() (abstract - ActionBase
+      implements it as `return self.perform()`; CalibrationBase implements
+      it as the prepare/execute/finalise orchestration, MOVED here from
+      where it used to live inline in CalibrationFactory.perform_
+      calibration()) and run(), which calls execute_all_stages() in a
+      try/finally that ALWAYS appends+saves the final result - success,
+      non-SUCCESS, or an exception propagating out (verified: the
+      exception still re-raises to the caller afterwards, matching the
+      existing run_calibration.py try/except convention - run() does not
+      swallow errors, it just guarantees the saver closes first).
+      ActionBase.post_perform() deleted (fully replaced by run()'s
+      finally). ActionFactory.perform_action()/CalibrationFactory.
+      perform_calibration() now just call action.run()/calib.run().
+      ALSO FIXED while unifying this exact logic (matches scifi_scripts'
+      own already-correct convention): CalibrationBase.execute_all_stages()
+      now calls finalise() regardless of execute()'s outcome (pixel's old
+      inline version returned early on a failed execute(), skipping
+      finalise()'s hardware cleanup entirely - no observable effect today
+      since IVScan/SmokeTest's finalise() are both no-ops, but a real
+      latent bug for whenever they aren't); prepare() returning NOTHING
+      (the CalibrationBase default) is no longer treated as a failure,
+      matching scifi's own more lenient check.
+  (d) append_step_result_and_check() unified onto OperationBase (see
+      DECISIONS TAKEN above), deleted from ActionBase and CalibrationBase.
+  Also removed while in these exact files: two now-provably-unused
+  imports (common.results in actions.py/calibration.py - confirmed dead
+  in step (1) already, common.odb in both - confirmed dead by grep before
+  removal).
+VERIFIED: py_compile; test3.py/test4.py unchanged behaviour end to end;
+a scratchpad script proving the actual GAP 4 fix - IVScan.run() (dry-run,
+passes its own checks) produces a real ndjson ending in a proper
+{"Final_Result": OperationResult.SUCCESS} line for the first time ever;
+a second scratchpad case with an exploding prepare() (raises RuntimeError)
+confirms run() still appends {"Final_Result": OperationResult.FAIL}
+before the exception re-raises to the caller; a third check confirms
+ActionPowerOn.run() (built in step 4) closes the saver the same way on
+POWER_FAIL.
+
+(6) common_scripts/tests/ - NEW, added audit pass 1
+--------------------------------------------------------------------
+CONFIRMED GAP: pixel_scripts has no real test suite - only
+test1.py..test6.py/test_parallelisation1-3.py at its root, manual
+run-and-print scripts with no assertions (confirmed by reading test1.py:
+constructs a power supply, calls a few methods, prints - nothing
+checked). common_scripts has NO tests directory at all. SciFi_scripts,
+by contrast, already has an 11-file real suite kept green. Since
+common_scripts is about to become the SHARED foundation under both
+subsystems, it is now the code where a bug costs the most and is
+tested the least.
+CONVENTION TO REUSE (confirmed by reading scifi_scripts/tests/
+test_calibration_factory.py and test_mock_odb_data.py): no new
+framework needed. SciFi's own pattern is: set common.setup.
+is_odb_available/can_send_commands_to_odb = False, then a small
+test_mock_odb_data.py-style module monkeypatches common.odb.
+odb_read_test with a dict of realistic values (taken from a real ODB
+dump, per feedback_odb_dump_reference - never invented), unhandled
+paths fall back to a visible warning instead of silently wrong data.
+Plain python3 scripts, run directly, not pytest.
+SCOPE for this step: at minimum, cover (1)'s Result enum, (2)'s
+decoupled ResultSaver (with a tiny fake detector implementing
+get_status_summary()), and (5c)'s OperationBase.run() (does it always
+call save_final(), on every failure branch - this is the one thing
+this whole plan exists to guarantee, so it should be the one thing
+proven by a test). (4)'s bring-up engine's stop-at-first-failure/
+dry-run/reversal logic is also cheap to cover the same way.
+
+====================================================================
+SAVE FORMAT - NOT SPECIFIED HERE ON PURPOSE
+====================================================================
+common/samples/SmokeTest_48.ndjson is the OLD format (confirmed: ends
+without a final-result line, i.e. it's a live example of GAP 4, not a
+target to copy). We define our own format for this. The interface
+(record_initial_status/append_step_result/save_final/...) does not
+change regardless of what the format ends up being (point 1's decision) -
+so the actual on-disk schema is deliberately left to be decided WHILE
+writing the real ResultSaverLocal, not speced in advance. Same for the
+"add all useful functions to result_interpretation.py/results.py" ask -
+concrete candidates already spotted (a warnings+dedup helper, an
+"all items faulted" check, a generic value-jump comparison generalising
+check_current_jump()/evaluate_current_jump(), a generic last-measurement
+accessor not hardcoded to LV current, plus compare_read_outputs moved in
+per (2)) but the final list is discovered by porting pixel's real
+calibrations onto the new saver, not decided up front.
+
+====================================================================
+AUDIT PASS 2 (same day) - TWO MORE FINDINGS
+====================================================================
+- ActionFactory IS ALSO ORPHANED, same shape as scifi's calib_run.py
+  CalibrationFactory. CONFIRMED (grep): pixel_scripts/scripts/ contains
+  ONLY run_calibration.py - there is no run_action.py or any other real
+  PySequencer entry point that calls ActionFactory.perform_action().
+  Its only callers are its own "if __name__" self-test block and
+  test3.py (a scratch script, not wired to anything). So BOTH
+  subsystems independently ended up with exactly one Factory that
+  nothing in production actually calls (pixel: ActionFactory; scifi:
+  CalibrationFactory) - not a coincidence worth ignoring. Practical
+  consequence for (5c): building/fixing OperationBase.run() lifecycle
+  logic and wiring it into ActionFactory makes that code CORRECT but
+  still UNEXERCISED in real operation until a real run_action.py-style
+  entry script exists - which is not currently in scope of this plan
+  and should be flagged as a gap of its own, not assumed to exist.
+
+- action.perform() EXCEPTIONS SKIP post_perform() TOO - a second, wider
+  version of GAP 4. ActionFactory.perform_action() (actionfactory.py:
+  44-46) calls `res = action.perform(); action.post_perform(res)` with
+  NO try/finally - if perform() raises partway through (a real
+  possibility: it does live ODB reads/writes, wait-for-condition loops
+  with timeouts, etc.), post_perform() - the ONLY place that currently
+  calls save_final() for anything - never runs. So the "does the saver
+  always get closed" problem (5c) exists to solve is not just "GAP 4 in
+  calibrations", it is "success-path-only closing in general" - it
+  affects the ActionFactory path today too, on any exception, not only
+  on a clean-but-unsuccessful return. This makes the case for (5c)'s
+  try/finally stronger, not just tidier.
+
+====================================================================
+AUDIT PASS 3 (same day) - core/chip.py + core/feb.py read in full
+====================================================================
+Read for the first time (previously skipped as "correctly out of
+scope"). CONFIRMS the (3) PowerGroup/chip split is the right cut - chip.py/
+feb.py hold zero power-supply concepts (only DAC/mask/link management),
+nothing here needs to move into PowerGroup or common.
+Two minor, genuinely out-of-scope findings, noted for the record only:
+  - core/feb.py:97-100/110-113: __get_chip_selection_mask_from_odb()
+    and __get_link_mask_from_odb() call odb.odb_read_test() (the stub)
+    UNCONDITIONALLY, unlike their own write counterparts right below
+    them which correctly check is_odb_available first - so a FEB's
+    initial chip/link mask is always the stub value, even on a real
+    system. Already marked "#TODO implement!" by whoever wrote it - a
+    known-incomplete stub, not a hidden bug. Does not affect this plan
+    (no result_saver/enum/power_partition involvement) - not actioned.
+  - core/chip.py's ChipDAC has its own pending "vectorise as Marius
+    requested" TODO (one ODB path per DAC, never batched). The pattern
+    that would satisfy it - read the whole array, apply {index: value}
+    overrides in memory, write once - already exists and is proven in
+    SciFi's SciFiDetector.write_channel_field_bulk(). Good precedent
+    for whenever that work happens; not part of this plan.
+No further findings from this pass - audit is converging (diminishing
+returns from further passes at this point).
+
+====================================================================
+IDEAS PROPOSED - STATUS 2026-08-06
+====================================================================
+- DONE: common/bringup.py got a self-contained __main__ example (two
+  fake toggles, no real ODB/detector needed - stays a plain
+  common_scripts file) demonstrating bring_up(), idempotent re-run, and
+  power_down() round-tripping back to the initial state. Run via
+  `python3 -m common.bringup` from common_scripts/. No equivalent added
+  to operation_base.py - OperationBase is abstract (execute_all_stages()
+  raises), a standalone example there would need a real subsystem
+  Detector, which would reintroduce the exact leak (2) just removed.
+- RESOLVED 2026-08-06, via primary source instead of a live-system test:
+  midas/python/midas/sequencer.py:33, `class SequenceClient(midas.client.
+  MidasClient):` - no odb_get/odb_set override anywhere in the class body,
+  and the class's own docstring says so explicitly ("you have access to
+  all of the functions in midas.client.MidasClient, such as odb_set()
+  and odb_get()"). GAP 3's premise (and the scifi_scripts comment it was
+  copied from) was FALSE: `seq` already IS a real MidasClient. REVERTED:
+  scripts/run_calibration.py no longer creates a separate MidasClient -
+  back to passing `seq` straight into CalibrationFactory.perform_
+  calibration(), with no client.disconnect() (seq's connection belongs
+  to the sequencer, not to this script). The (5a) "fix" is now correctly
+  understood as unnecessary complexity built on an unverified assumption,
+  not a real bug fix - reverted rather than left in place. NOTE: this
+  finding also undermines the SAME justification in scifi_scripts' own
+  feb_power.py/hv_power.py/thr_run.py/vbr_run.py comments - not touched
+  here (scifi's turn hasn't come), but worth knowing before treating that
+  convention as settled when scifi's own migration starts.
+
+====================================================================
+MINOR / TRIVIAL - STATUS 2026-08-06
+====================================================================
+- DONE: pixel_scripts/utils/ removed (was empty except stale
+  __pycache__).
+- DONE (verification only, nothing to fix): re-ran the config.json-
+  driven construction path (create_febs_from_config/create_partitions_
+  from_config) after all five prior steps - still builds correctly,
+  PowerPartition/PowerGroup construction, is_initialized(), is_on() all
+  work through it unchanged. Confirms (3)'s PowerGroup extraction didn't
+  regress the less-exercised of Detector's two construction paths.
+- DONE: bring-up declaration's lv_on step now verifies "Power Good"
+  (real hardware health readback) in addition to "Channel On" (was
+  flagged as a known, deliberately-out-of-scope weaker check when GAP 1/
+  GAP 2 were closed in step (4) - closed now). is_lv_on() AND Power
+  Good=="OK" is the new is_satisfied for that step, both directions
+  (power-down's "is it off" correctly follows from is_lv_on() alone
+  going False). Verified via the same scratchpad bring_up()/power_down()
+  check used for step (4) - no behavioural change against the dry-run
+  stub (still skips as already-satisfied), logic confirmed correct by
+  inspection + compile + run.
+- PARTIALLY RESOLVED 2026-08-06: the ODB PATH for target_HV was findable
+  without a live dump - traced VTX_HV_target through basic_functions.
+  msl's own path_operation=/CosmicRun and path_operation_variables=
+  $path_operation/CurrentVars definitions, giving /CosmicRun/CurrentVars/
+  Power/VTX_HV_target[n] (n = pp.get_number()) - consistent with globals/
+  setup.py's existing odb_entry_path="/CosmicRun". The local ODB checked
+  earlier this session has no /CosmicRun tree at all (only scifi-related
+  Equipment/Alarms were ever seeded into it), so the real NUMBER stays
+  unverified - but the mechanism no longer needs it to be a placeholder.
+  IMPLEMENTED: globals/operation_parameters.py's OperationParameters now
+  takes a client and exposes get_target_hv(pp_number) - reads the real
+  ODB path when common.setup.is_odb_available, falls back to the same
+  40.0 UNVERIFIED placeholder on dry-run or a KeyError/any exception
+  (path not created yet). target_HV removed from the old shared
+  unique_pars dict (it was never actually partition-independent - the
+  legacy script's own VTX_HV_target[$1] indexing proves that; unique_pars
+  correctly keeps only target_VDD/target_VDD_tolerance, which really are
+  shared). actions/poweractions.py's ActionPowerOn/ActionPowerOff now
+  call get_target_hv(pp.get_number()) per partition inside the loop,
+  instead of reading one shared value before it. Verified: dry-run
+  fallback still returns 40.0 (no behaviour change today); a fake-client
+  unit test confirms a real ODB value at the exact derived path is read
+  correctly, and a missing path (KeyError) falls back cleanly. STILL
+  UNVERIFIED: the actual real value(s) - only the path and the read
+  mechanism are confirmed. Calibration parameters (IVScan/SmokeTest's
+  own self.parameters) were not touched - same status, out of scope.
+
+====================================================================
+FULL RE-SWEEP OF pixel_scripts, 2026-08-06 (before writing step 6's
+tests) - one more real move found
+====================================================================
+Went through every remaining file in pixel_scripts/ (core/, actions/,
+calibrations/, globals/, config/, scripts/, the top-level test*.py) with
+fresh eyes, looking for anything still common-worthy.
+
+MOVED: core/power_supply.py's PowerSupplyType enum + PowerSupplyFactory
+had ZERO pixel-specific content - only imports common.power_supply and
+builds common's own DCDCPowerSupply/MPDCPowerSupply/HVBoxNPowerSupply
+from a type string. Only lived in pixel_scripts historically, not
+architecturally. Appended to common/power_supply.py itself (same file
+already holding the concrete classes it builds - no new file needed).
+Along the way, fixed two re-export aliases in the old file
+(LVPowerDistribution = base_ps.LVPowerDistribution, MPDCPowerSupply =
+base_ps.MPDCPowerSupply - the exact "re-exporting types" anti-pattern)
+by pointing both callers (core/detector.py, test1.py) at common.
+power_supply directly instead. core/power_supply.py deleted entirely -
+nothing pixel-specific left in it. Gained a __main__ self-test in
+common/power_supply.py (didn't have one before), ported from the
+deleted file's own.
+VERIFIED: py_compile across all of pixel_scripts + common_scripts;
+`python3 -m common.power_supply`'s new self-test runs; test1.py/test3.py/
+test4.py all unchanged.
+
+EVERYTHING ELSE CHECKED, CONFIRMED CORRECTLY PIXEL-ONLY (no action
+taken): core/chip.py (ChipDAC/Chip - single-DAC-per-ODB-write model,
+fundamentally different from SciFi's bulk channel-array writes),
+core/feb.py (bitmask-per-FEB write to LinksCentral - different enough
+from SciFi's own detector/feb.py ASIC-mask handling that unifying them
+would mean inventing shared abstraction neither side asked for),
+core/daq.py (Mupix/LVDS-specific, no SciFi equivalent at all),
+globals/setup.py (equipment names/paths - the VALUES differ per
+subsystem, no shared logic to extract), config/detector.json (pixel's
+own config schema), scripts/run_calibration.py (the PySequencer glue
+itself).
+
+CORRECTED CRITERION, same session, user's call: "does scifi already have
+this today" is the WRONG test for what belongs in common - the actual
+plan is to build common's foundation now, so that scifi's own migration
+(whenever it starts) has a fixed base to build on, not to wait until
+both sides independently need something before sharing it. Re-did
+globals/folders.py and globals/operation_parameters.py under this
+corrected lens - both turned out to hold real, generic LOGIC (not just
+pixel-specific values) worth moving now even though scifi doesn't call
+it yet:
+  - common/folders.py (NEW): subsystem_root(caller_file, levels_up) +
+    make_output_folder(root, category) - the "compute an output folder
+    relative to the calling subsystem's own root" logic pixel_scripts/
+    globals/folders.py had, generalised. pixel_scripts/globals/folders.py
+    now just calls it with its own root/category names - output paths
+    unchanged (verified). Whenever scifi's own result-saving lands
+    (currently "not wired in" everywhere in scifi_scripts), its own
+    globals/folders.py-equivalent gets this for free.
+  - common/odb.py gained read_odb_value_or_default(client, path, default)
+    - the "dry-run/missing-path falls back to a placeholder" shape that
+    was specific to get_target_hv(), generalised: it's the same shape
+    behind every "TODO: read from ODB" parameter gap in BOTH pixel_
+    scripts (calibration.parameters, target_HV) and scifi_scripts
+    (ScanThr/ScanVbr's own parameters, currently sourced from
+    seq.get_param() only, never ODB). globals/operation_parameters.py's
+    get_target_hv() now just calls it. Verified: dry-run fallback (40.0)
+    and a real-value fake-client read both still work identically.
+
+CORE/ RE-CHECKED under the same corrected lens, same day - the biggest
+finding of this whole migration was sitting in plain sight:
+  - MOVED: OperationBase itself (step (5c)'s __init__/execute_all_
+    stages()/run()) had ZERO pixel-specific content but was still
+    living in pixel_scripts/core/operation_base.py - the single most
+    "common foundation" piece built this session, in the wrong package.
+    Split: common/operation_base.py now holds the fully generic class;
+    pixel_scripts/core/operation_base.py is now a thin subclass adding
+    ONLY append_step_result_and_check() (genuinely pixel-specific -
+    built around power_partitions/chips vocabulary SciFi doesn't have).
+    actions.py/calibration.py need ZERO changes - same import path
+    (core.operation_base), same class name (OperationBase), just a
+    subclass of the common one now. Verified: MRO is IVScan ->
+    CalibrationBase -> OperationBase(pixel) -> OperationBase(common) ->
+    object; run() still always closes the saver; test3.py/test4.py
+    unchanged.
+  - MOVED: Detector.read_all_power() and get_status_summary()'s
+    "selected_power_partitions" list were pure loops over a {name:
+    PowerGroup-like} dict, no chip content. Added common/power_group.py's
+    read_all_readables(groups)/selected_group_names(groups) - free
+    functions over any such dict, not tied to being called "power_
+    partitions". Detector's two methods now just call them; the chip
+    half of get_status_summary() stays pixel-only (chips have no SciFi
+    equivalent). Verified: get_status_summary() output unchanged.
+  EVERYTHING ELSE IN core/ CONFIRMED STILL PIXEL-ONLY under the
+  corrected lens too, not just the old one: chip.py/feb.py/daq.py and
+  PowerPartition's chip-management half - the underlying hardware/data
+  models (per-chip DAC objects and data links vs SciFi's flat bulk-array
+  channels; per-FEB bitmask overwrite vs SciFi's per-bit ASIC mask +
+  separate LV) differ enough that sharing code would mean inventing
+  structure neither side has actually confirmed wanting - the corrected
+  lens says "build common ahead of scifi's need", not "force-unify
+  anything that looks superficially similar".
+
+ONE MORE FOUND on a direct re-challenge from the user ("sei sicuro che
+nulla in globals e core possa essere utilizzato in futuro da scifi?"),
+same day - and this one wasn't speculative, it was REAL DUPLICATION
+ALREADY EXISTING today, missed on the first pass: the equipment tree
+name "DCDCCrates" was hardcoded independently in THREE places at once -
+pixel_scripts/globals/setup.py, common/services.py's own DCDCCratesService
+default arg, and scifi_scripts/detector/feb.py's LV_EQUIPMENT_NAME class
+constant. Same story for "HV" and "TDK". Not a "scifi might want this
+later" case - three copies of the same magic string with no shared
+source of truth, already able to drift silently.
+MOVED: common/equipment_names.py (NEW) - TDK/DCDC_CRATES/HV/
+POWER_DIST_STAGING constants. common/services.py's TDKService/
+DCDCCratesService default args now reference them instead of bare string
+literals. pixel_scripts/globals/setup.py's three equipment_name
+assignments now reference them too. scifi_scripts/detector/feb.py's own
+LV_EQUIPMENT_NAME NOT touched (scifi's turn hasn't come) but now has an
+obvious place to point at when it does.
+Verified: py_compile; pixel's three equipment-name values are byte-
+identical to the old literals; test3.py/test4.py unchanged (TDKService's
+check still correctly targets "/Equipment/TDK/...").
+LESSON: the corrected criterion ("build common ahead of scifi's need")
+still needs a genuine second look, not just restating the first pass's
+conclusions with new wording - this one was sitting in plain sight
+across three files that were each individually reviewed already, just
+never compared against each other.
+
+ACTIONS/ RE-CHECKED same day, same "compare files to each other" lesson
+applied deliberately this time:
+  - DELETED (not moved - genuinely dead): ActionBase.loop_over_power_
+    partitions(), ActionBase.check_all_pp_on(), and the already-flagged-
+    unsure read_all_readables_from_power_partition_and_check(). Looked
+    like duplicates of CalibrationBase's own same-named methods at
+    first glance, but grep confirmed zero callers anywhere in
+    pixel_scripts for the Action versions - poweractions.py explicitly
+    avoids loop_over_power_partitions (its own comment explains why:
+    the enum-truthiness trap), and never needed check_all_pp_on at all
+    once it moved to the bring-up-sequence design in step (4). Correctly
+    deleted rather than unified - there was only ever one real
+    consumer (Calibration), so unifying would have been generalising
+    for a second caller that doesn't exist. check_current_jump/
+    evaluate_current_jump kept - confirmed real caller (daqactions.py's
+    ActionResetBiasBlock).
+  - MOVED: ActionFactory.check_shared_equipment() and CalibrationFactory.
+    check_shared_equipment() (pixel) were BOTH thin "print the failure
+    reason, return bool" wrappers around common/services.py's own
+    check_shared_equipment() - identical 4-line bodies. Same body ALSO
+    found, on comparison, in scifi_scripts/calibrations/calib_run.py's
+    own CalibrationFactory - three independent copies of the same
+    wrapper, not two. common/services.py gained check_shared_equipment_
+    or_print(client); both pixel Factories now call it directly instead
+    of keeping their own staticmethod (deleted, not just delegated to -
+    nothing left for the old method to add). scifi's own copy not
+    touched (not its turn), but has an obvious target now.
+  NOTED, NOT ACTED ON: CalibrationFactory.get_calibration_to_perform_
+  from_odb()'s dry-run branch calls the OLD odb_read_test() stub
+  (prints + returns dummy 1) rather than the NEWER read_odb_value_or_
+  default() pattern this session introduced elsewhere - the two dry-run
+  conventions now coexist in the codebase. Not fixed: picking a real
+  default calibration name to fall back to is a judgement call, not a
+  mechanical dedup - flagged for a real decision, not guessed at here.
+  Verified: py_compile; test3.py/test4.py unchanged; grep confirmed no
+  other caller anywhere referenced the deleted methods before removing
+  them.
+
+CALIBRATIONS/ RE-CHECKED same day:
+  - MOVED: CalibrationBase.check_all_pp_on()/check_all_pp_off() were
+    pure loops over already-common PowerGroup interface (is_on()/
+    is_selected()) - zero chip content, unlike loop_over_power_
+    partitions()/loop_over_chips_in_power_partitions() (both genuinely
+    need power_partition_done/chip vocabulary, stayed pixel-only).
+    common/power_group.py gained all_selected_on(groups)/
+    all_selected_off(groups); CalibrationBase's two methods now just
+    call them. Verified: IVScan.prepare() (which calls check_all_pp_on
+    internally) still returns SUCCESS against the dry-run stub, and
+    check_all_pp_off() correctly returns the opposite (NOT_READY, since
+    the stub reports everything "on").
+  OBSERVED, NOT ACTED ON: loop_over_power_partitions()'s power_
+  partition_done dict (skip an already-finished partition mid-scan) is
+  the SAME underlying idea as ScanThr's __over_current_febs / ScanVbr's
+  __over_current_channels sets in scifi_scripts - "track which items
+  are done/excluded during a multi-step scan, skip them from here on".
+  Independently invented three times (once here, twice in scifi).
+  NOT unified - scifi's two implementations are already written and
+  working; retrofitting them onto a shared abstraction would mean
+  editing scifi_scripts code, which is out of scope until scifi's own
+  migration turn. Worth remembering when that turn comes.
+  ivscan.py/smoketest.py themselves: confirmed still correctly pixel-
+  only (chip DAC power-mode ramps, per-partition HV stepping) - no
+  scifi equivalent shape to share, same as ScanThr/ScanVbr are their
+  own algorithm-specific code with nothing shared either.
+
+CRITERION SHARPENED FURTHER, same day (user's own framing): common
+holds everything a subdetector COULD use, not just what it already
+uses; calibration ALGORITHMS are legitimately allowed to differ between
+pixel and scifi forever - only the POWER steps and the SAVING
+(result-saver) steps must stay aligned. Re-applied this specifically to
+core/operation_base.py's append_step_result_and_check(), which had been
+left as "pixel-only" in the earlier core/ pass because of its LVDS/chip
+half - but its OTHER half (read all power, check every selected group's
+PowerStatus) was still a plain power-step blocked from being common only
+by a direct self.detector.power_partitions[pp_name] lookup instead of
+the already-common power_group.selected_group_names().
+MOVED: common/power_group.py gained check_selected_health(groups) ->
+(all_ok, readables). pixel_scripts/core/operation_base.py's
+append_step_result_and_check() now calls it, keeping only the "Power"-
+key wrapping, the print-for-visibility loop, and the LVDS/chip half
+(genuinely pixel-only) locally.
+Verified: test3.py/test4.py unchanged; a direct call to append_step_
+result_and_check(add_lvds_link_stats=True) against the dry-run stub
+still correctly records the "Power" data, still correctly returns
+POWER_FAIL (stub trips every fault flag, same as every other test this
+session) and still correctly skips attaching LVDS on that failure path
+- same behaviour as before the refactor, just with more of it now
+living in common.
+
+CONCLUSION: with this refinement, the pixel-to-common merge pass is
+DONE for the two categories that must be aligned (power steps: PowerGroup
++ bringup engine + equipment_names + folders; saving steps: ResultSaver +
+OperationBase.run()/append_step_result_and_check's power half +
+operation_result). Calibration algorithms (ivscan.py/smoketest.py) and
+genuinely different hardware models (chip.py/feb.py/daq.py) correctly
+stay pixel-only - not gaps, deliberate boundaries per the user's own
+stated criterion. scripts/ and the top-level test*.py were explicitly
+left unreviewed at the user's instruction ("scripts e test lascia
+stare") - not part of this conclusion.
+
+====================================================================
+common_scripts/common/ REORGANISED INTO TOPIC FOLDERS, same day
+====================================================================
+User's instruction: leave pixel_scripts' own file names as they are;
+reorganise common_scripts/common/'s file NAMES and LAYOUT into
+sensible folders by topic, merging/splitting where it makes files more
+coherent. 14 flat files -> 5 topic subpackages (no __init__.py needed
+anywhere - the whole codebase already relies on implicit namespace
+packages, confirmed by grep before starting: zero __init__.py files
+existed anywhere in sequencer_scripts).
+
+  common/setup.py                    unchanged (foundational, almost
+                                      every other file imports it)
+  common/folders.py                  unchanged (single small utility,
+                                      didn't fit any group cleanly)
+  common/odb/
+    commands.py     (was odb.py)     ODBCommand/ODBCommandType/
+                                      ODBBooleanCommand/ODBSelection,
+                                      dry-run stubs, read_odb_value_or_
+                                      default, find_channel_number_...
+    mixin.py        (was command_mixin.py)   CommandMappable
+  common/equipment/
+    names.py        (was equipment_names.py)   TDK/DCDC_CRATES/HV/
+                                                POWER_DIST_STAGING
+    services.py     (was services.py)   TDKService/DCDCCratesService/
+                                         check_shared_equipment(_or_print)
+  common/power/
+    supply.py       (was power_supply.py)   PowerSupply hierarchy +
+                                             PowerSupplyType/Factory
+    group.py        (was power_group.py)    PowerGroup + free functions
+    bringup.py      (was bringup.py)        Step/StepKind/BringUpSequence
+                                             (kept alongside power/ since
+                                             its only real user today is
+                                             power bring-up, even though
+                                             the classes themselves don't
+                                             name "power" - can move again
+                                             if a non-power use shows up)
+  common/operation/
+    base.py         (was operation_base.py)      OperationBase
+    result.py       (was operation_result.py)    OperationResult enum
+    status_message.py (unchanged name, moved)    StatusMessage
+  common/results/
+    saver.py        (was results.py)             ResultSaver family
+    interpretation.py (was result_interpretation.py)
+    samples/SmokeTest_48.ndjson (moved alongside, content untouched)
+
+Every internal common-to-common import updated to the new dotted paths
+(e.g. common.odb -> common.odb.commands, common.power_supply ->
+common.power.supply). Every pixel_scripts import of a moved module
+updated too (required - not optional, the codebase would not run
+otherwise) - touched actions/, calibrations/, core/, globals/,
+scripts/run_calibration.py, AND the top-level test1.py/test4.py/
+test5.py (import-path fixes only, not a content review - scripts/ and
+test*.py's CONTENT stays explicitly unreviewed per the user's earlier
+"lascia stare").
+
+VERIFIED, in order: py_compile across the ENTIRE pixel_scripts +
+common_scripts tree; all 5 of test1-5.py run with byte-identical
+output to before the move; three common/ self-test __main__ blocks run
+(common.power.supply, common.power.bringup, common.odb.commands); a
+full real-chain check (Detector -> PowerPartition -> IVScan.run() and
+ActionPowerOn.run()) confirms the same MRO and same SUCCESS/POWER_FAIL
+results as every prior verification this session.
+NOT committed - working tree has the renames + new files pending, per
+standing instruction to only commit when explicitly asked.
+
+====================================================================
+ONE MORE REAL MOVE FOUND, prompted by the user asking "why can't
+actions/ move to common?" and then "what about calibration.py/
+calibrationfactory.py specifically?"
+====================================================================
+actions/ and calibrationfactory.py: confirmed correctly pixel-only,
+same reasoning as ivscan.py/smoketest.py - they build pixel's own
+Detector/DAQControl, dispatch pixel-only enums (ActionExecute/
+CalibrationExecute), and (daqactions.py) wrap a Mupix-only concept
+(Reset_Bias_Block) with no SciFi equivalent. Everything that WAS
+generic inside them (the bring-up engine, the shared-equipment check,
+the result-saver lifecycle) was already extracted earlier this session.
+
+calibration.py's CalibrationBase, however, had one more generic piece
+still sitting in pixel: execute_all_stages() (prepare -> execute ->
+always-finalise, tolerating NOTHING at prepare) has ZERO pixel content
+- it is, in fact, IDENTICAL in shape to the orchestration scifi_scripts'
+own calib_run.py already does INLINE (the same "always finalise even if
+execute failed" fix ported from scifi's convention a few steps earlier
+in this session is proof the two are the same logic, just living in
+different places).
+MOVED: common/operation/calibration_base.py (NEW) - CalibrationBase
+(extends common.operation.base.OperationBase) with prepare/execute/
+finalise NOTHING-stubs and the real execute_all_stages() orchestration.
+DESIGN PROBLEM SOLVED: append_step_result_and_check() (pixel-only,
+shared by BOTH Action and Calibration) and this new common Calibration
+orchestration both need to sit "under" CalibrationBase, but neither can
+contain the other - Action doesn't want calibration-only stages, and
+the mixin has no natural place inside the new common CalibrationBase's
+own ancestry. Fixed by turning pixel_scripts/core/operation_base.py's
+OperationBase into a PURE MIXIN (no base class of its own, just the one
+method) and using multiple inheritance: ActionBase(pixel_mixin,
+common.operation.base.OperationBase); CalibrationBase(pixel_mixin,
+common.operation.calibration_base.CalibrationBase). Worked out the C3
+linearization by hand before implementing (both diamond paths converge
+cleanly on common.operation.base.OperationBase with no attribute
+conflicts between the two branches), then verified it EMPIRICALLY
+(never trust hand-worked MRO alone):
+  IVScan MRO: IVScan -> calibration.CalibrationBase(pixel) ->
+    core.operation_base.OperationBase(mixin) ->
+    common.operation.calibration_base.CalibrationBase ->
+    common.operation.base.OperationBase -> object
+  ActionPowerOn MRO: ActionPowerOn -> actions.ActionBase ->
+    core.operation_base.OperationBase(mixin) ->
+    common.operation.base.OperationBase -> object
+Exactly the hand-computed linearization in both cases. IVScan.run()
+still returns SUCCESS with Final_Result correctly saved;
+ActionPowerOn.run() still returns POWER_FAIL as always against the
+dry-run stub; the full test1-5.py suite still byte-identical.
+core/operation_base.py's class kept the name OperationBase (per "leave
+pixel's own names alone") despite no longer extending anything - now
+documented as a pure mixin in its own docstring instead.
+
+USER PUSHED BACK AGAIN ("sicuro per actionfactory actions ecc?") -
+right to: ActionBase.execute_all_stages() (`return self.perform()`,
+with perform()'s own default resetting the message and returning
+NOTHING) is the EXACT SAME KIND of generic piece as CalibrationBase's
+orchestration just moved - only smaller, which is why it was missed the
+first time ("too trivial to bother" was not actually a valid reason,
+just an inconsistent one once CalibrationBase's version - itself not
+much bigger - had already been judged worth moving).
+MOVED: common/operation/action_base.py (NEW) - ActionBase (extends
+common.operation.base.OperationBase) with perform() default (message
+reset + NOTHING) and execute_all_stages() = self.perform(). pixel's
+actions/actions.py's ActionBase now uses the same multiple-inheritance
+shape as CalibrationBase: class ActionBase(pixel_operation_base.
+OperationBase, action_base.ActionBase) - both perform()/execute_all_
+stages() deleted from pixel (inherited), __init__ (subsystem-specific:
+ODB message path, output folder, OperationParameters) and check_
+current_jump/evaluate_current_jump (genuinely pixel-only, "Reset Bias
+Block" wording) stay.
+VERIFIED: ActionPowerOn MRO now mirrors IVScan's shape exactly -
+ActionPowerOn -> actions.ActionBase(pixel) -> core.operation_base.
+OperationBase(mixin) -> common.operation.action_base.ActionBase ->
+common.operation.base.OperationBase -> object. ActionPowerOn.run() and
+ActionResetBiasBlock.run() (which relies on the inherited execute_all_
+stages() correctly resolving to ITS OWN overridden perform(), not the
+common default) both still return their expected results. Full
+test1-5.py suite and a whole-tree py_compile still clean.
+
+At this point actions/ and calibrations/ have been challenged twice
+each by the user and re-verified both times with something real found
+the second pass on calibrations-adjacent code (calibration.py's
+orchestration, then actions.py's smaller mirror of it) - actionfactory.py/
+calibrationfactory.py/daqactions.py/poweractions.py/bringup_declaration.py
+themselves were re-examined again during this pass and still confirmed
+to have nothing left that isn't genuinely pixel-specific (Detector/DAQ
+construction, pixel-only enums, Reset_Bias_Block).
+
+====================================================================
+HARDWARE/ODB VERIFICATION PASS, 2026-08-06 - porting the SciFi Supply
+page's own checks into common/, starting with TDK
+====================================================================
+New phase, separate from the pixel-to-common merge above (that pass is
+DONE - see CONCLUSION). Trigger: with common/ now fixed as the shared
+foundation, user asked to verify it is factually ALIGNED with real
+hardware before any calibration script gets built on top of it - using
+the real ODB dump (odb_300726_112101.json) and the real SciFi custom
+page's own JS source (SciFi_ServiceStatus.js/SciFi_PowerSupply.js) as
+ground truth, since prior sessions already did this research once while
+building that page. Audit found FOUR real misalignments between common/
+and what the real page actually checks:
+  1. TDKService defaulted to "TDK" (the final-installation tree, dark -
+     zero live channels) instead of "TDKStaging" (the tree actually
+     live today - real Output On=True channels, a real interlock trip
+     observed on Pixel channels in the dump).
+  2. TDKService never checked "Output On" at all - the page does.
+  3. MPDCPowerSupply (PowerDistStaging) has no device-level "Device On"
+     check anywhere - the page checks it everywhere it touches
+     PowerDistStaging (Supply, LV's SMB/LDO dependency, HV's HV/weather
+     dependency).
+  4. DCDCPowerSupply.is_present exists as a command but is never called
+     by PowerGroup.turn_on_lv()/pixel's bringup_declaration.py's
+     _lv_turn_on - scifi's own detector/feb.py already correctly checks
+     it.
+USER'S ORDERED IMPLEMENTATION PLAN: port what the page already does in
+Supply to Python, in this order - TDK first, then the power-
+distribution DEVICE level, then the per-channel distributions. Items 3
+and 4 above fold into steps 2/3 of this same ordered plan; not separate
+work.
+
+STEP 1/3 - TDK - DONE 2026-08-06 (fixes findings 1 and 2 above)
+--------------------------------------------------------------------
+common/equipment/names.py: added TDK_STAGING = "TDKStaging" alongside
+the existing (now-secondary) TDK = "TDK", with a docstring recording
+the ODB-dump/page-source evidence for which one is actually live.
+common/equipment/services.py's TDKService:
+  - equipment_name default changed from equipment_names.TDK to
+    equipment_names.TDK_STAGING.
+  - check_status() gained an "Output On" read+check (previously only
+    checked Fault Register and Interlock Trigger) - a channel that's
+    Enabled but not Output On is now correctly flagged, matching the
+    page.
+  - gained a name_filter constructor parameter: restricts the check to
+    channels whose Name contains the given substring (e.g. "Pixel"/
+    "SciFi") - mirrors the real page's own per-subsystem scoping (it
+    only ever looks at its own channels, never at every enabled
+    channel across all subdetectors). None (default) keeps checking
+    every enabled channel, unchanged behaviour for any caller that
+    doesn't pass a filter.
+check_shared_equipment()/check_shared_equipment_or_print() both gained
+a tdk_name_filter passthrough parameter (same None-safe default).
+pixel_scripts' two callers (actions/actionfactory.py, calibrations/
+calibrationfactory.py) now pass tdk_name_filter="Pixel" explicitly -
+first real caller of the new scoping, and the first place pixel's own
+checks stop accidentally gating on SciFi's TDK channels' health too.
+BUG FOUND AND FIXED DURING VERIFICATION: the dry-run stub (odb_
+read_test_array) returns a generic [1,1,1,1] for every field regardless
+of what it represents in reality, so a raw `self.name_filter not in
+names[i]` crashed with TypeError (int not iterable) once names[i] was
+the dummy int 1 instead of a real string. Fixed by comparing against
+str(names[i]) instead - works identically for real string names, and
+degrades gracefully (filters out everything, so the TDK check passes
+vacuously) against the dummy dry-run data.
+VERIFIED: py_compile on all touched files; full test1-5.py suite.
+test1/test2/test5 unchanged. test3 still completes end-to-end
+(POWER_FAIL, now via DCDCCratesService's own dummy-data trip further
+into the check chain, since TDK's check with tdk_name_filter="Pixel"
+now correctly passes against the stub instead of always failing first).
+test4 SURFACED A PRE-EXISTING, UNRELATED STUB GAP: CalibrationFactory.
+get_calibration_to_perform_from_odb()'s dry-run branch returns the
+generic stub int 1, but CalibrationExecute is a string-valued enum
+("SmokeTest"/"IVScan") - raises ValueError("1 is not a valid
+CalibrationExecute"). This was previously invisible because the OLD
+TDK check (no filter, checked every channel including SciFi's,
+unconditionally failed against the dummy data) always short-circuited
+with POWER_FAIL before this line was ever reached. NOT FIXED - out of
+scope per the standing "scripts e test lascia stare" instruction
+(test4.py's own content, not common/'s), flagged here for whenever
+test4.py's content is in scope, or when step (6)'s real test suite
+replaces these scratch scripts.
+
+STEP 2/3 - power distribution DEVICE level - DONE 2026-08-06 (fixes
+finding 3 above)
+--------------------------------------------------------------------
+Confirmed via the real ODB dump before writing any code: PowerDistStaging
+has "Enabled" and "Device on" as 4-entry DEVICE-level arrays ("Device
+Names": SciFi & Tile, FEC, Pixel, Slow Control - "Channels per
+device"=32), separate from "Output On"/"Power good"/"Fault"/"Over
+current" as 128-entry PER-CHANNEL arrays. Confirmed by reading
+PowerGroup.is_power_distribution_on() that the existing code only ever
+calls __power_distribution.is_on() - the per-channel Output On - never
+the device-level Device on: the device-level gate was completely absent
+from the whole PowerGroup/bringup chain, exactly as flagged in finding 3.
+common/equipment/services.py gained PowerDistService (NEW) - same
+read-only shared-equipment shape as TDKService/DCDCCratesService:
+Enabled+Device on convention (mirrors DCDCCratesService's own
+Enabled+Crate On), name_filter scoping against "Device Names" (which
+conveniently already contains "Pixel"/"SciFi" as literal device names,
+same substring-match mechanism as TDKService). Wired into
+check_shared_equipment()'s service list alongside TDKService/
+DCDCCratesService. The filter parameter was renamed from TDK-specific
+tdk_name_filter to generic name_filter on check_shared_equipment()/
+check_shared_equipment_or_print(), now applied to both TDKService and
+PowerDistService (DCDCCratesService has no subsystem-scoped Names field
+to filter on, unaffected). Pixel's two callers unchanged in shape (still
+pass name_filter="Pixel", just the keyword renamed).
+common/power/supply.py's MPDCPowerSupply gained an is_device_on command
+(plain READ, same shape as the pre-existing but never-yet-used
+is_enabled) - Settings/Device on[channel_number // 32], mirroring
+is_enabled's existing device-index arithmetic. Gives any PowerGroup-level
+caller the per-partition convenience read; NOT wired into
+bringup_declaration.py's power_distribution_on step yet (that's a
+bring-up integration decision, deliberately left for later - today's
+scope was building the check capability, same restraint as step 1/3
+where TDKService's fix was wired into the existing check_shared_
+equipment() integration point but not into bringup_declaration.py
+either).
+VERIFIED: py_compile; full test1-5.py suite (test1/2/5 unchanged, test3
+still completes end-to-end with POWER_FAIL, test4 hits the same
+already-documented pre-existing stub gap from step 1, nothing new).
+Additionally verified against REAL ODB dump DATA (not just the dry-run
+stub) via a fake client returning real dump values: PowerDistService
+correctly reports OK (all 4 devices Enabled+Device on=True in the real
+dump, both with no filter and with name_filter="Pixel"); check_shared_
+equipment(name_filter="Pixel") against real data correctly still fails
+at TDKService (the already-documented real interlock trip on Pixel
+US/DS channels, ch4/ch5) - confirms the whole chain behaves correctly
+end to end against real hardware state, not just the synthetic stub;
+MPDCPowerSupply.is_device_on()/is_enabled() for channel 70 (70//32=2 ->
+"Pixel" device) both correctly read True against the real dump.
+
+CORRECTION, same day (user's own re-check, "devices hanno anche
+error"): step 2/3 was NOT actually complete - PowerDistStaging has a
+real device-level fault field, Variables/Error (4-entry, one per
+device), missed because only Settings had been inspected, not
+Variables. Confirmed by reading the full equipment tree: TDKStaging's
+own Variables (Demand/Voltage/Current) has no such field so TDKService
+needed no change; DCDCCrates' Variables are all per-channel (128
+entries, already individually covered by DCDCPowerSupply) so
+DCDCCratesService needed no change either - this gap was specific to
+PowerDistStaging. PowerDistService.check_status() now also reads
+Variables/Error and flags error[i] != 0 as a problem, same convention
+as every other boolean/int fault flag in this file.
+VERIFIED: py_compile; full test1-5.py suite (identical to before, no
+regressions); real-dump fake-client check confirms Error=0 for all 4
+devices today (no change in outcome, just genuinely fuller coverage).
+
+REAL BUG FOUND AND FIXED, 2026-08-06, while scoping step 3/3 - answers
+"is per-channel PowerDist checking a common thing?": YES, it already
+was - MPDCPowerSupply (common/power/supply.py) already has power_good/
+fault/over_current per-channel ODBPowerSupplyReadAndCheckCommand
+entries, executed generically by PowerSupply.read_all() and rolled up
+by PowerGroup.read_all_readables()/check_selected_health() (all
+already common). But common/power/group.py's read_all_readables() had
+a genuine bug: `all_ok = all_ok and self.__hv_supply.read_all()` /
+`... and self.__power_distribution.read_all()` - Python's `and`
+short-circuits, so once LV's read_all() already returned False (a real
+fault), HV's and PowerDist's read_all() were NEVER CALLED AT ALL. Their
+readables stayed at class-default sentinel values (current=-1.0, no
+readables_check entries whatsoever) - exactly when full visibility
+matters most (something already known to be wrong). Reproduced directly
+with a synthetic PowerGroup (DCDC+HVBoxN+MPDC) before fixing: LV fault
+present, HV/PowerDist readables both still class-default, confirming
+they were silently never read.
+FIXED: read_all_readables() now computes lv_ok/hv_ok/pd_ok as three
+independent, always-evaluated calls (no `and`-chaining on the calls
+themselves), only combining them into all_ok at the very end.
+VERIFIED: py_compile; full test1-5.py suite (test3's own printed output
+now shows HV/PowerDist fully populated with real readables_check
+entries instead of the -1.0 defaults - the bug and its fix are both
+directly visible in that one test's output, not just an isolated
+check); a dedicated synthetic-PowerGroup script re-run after the fix
+confirms HV/PowerDist are read even when LV already failed.
+
+STEP 3/3 - per-channel distributions - DONE 2026-08-06
+--------------------------------------------------------------------
+PowerDist's own per-channel checks (Output On via is_on, Power good,
+Fault, Over current) already existed in MPDCPowerSupply, now actually
+reachable after the short-circuit fix above. Compared against the real
+ODB dump's own PowerDistStaging Settings/Display string (the literal
+column list the page renders per channel): "#, Names, Output On, Power
+good, Fault, Over current, Current" - every one of these already has a
+corresponding MPDCPowerSupply command (is_on, power_good, fault,
+over_current, read_current respectively). CONFIRMED COMPLETE - nothing
+missing at PowerDist's per-channel level.
+Cross-checked HV's own Display string too, since HVBoxNPowerSupply has
+zero ReadAndCheckCommand (looked like a possible gap): "#, Names, Board,
+Output On, Demand, Voltage, Voltage limit, Current, Current limit" - no
+fault/health flag exists anywhere in the real /Equipment/HV tree at
+all. CONFIRMED NOT A GAP - a real hardware trait (no Power Good/
+Interlock signal exposed for these HV boxes), not a missing check.
+ADJACENT FINDING, flagged not fixed (LV/DCDCCrates, out of today's
+PowerDist-focused scope): DCDCCrates' Display string includes both
+"Channel On" (a Settings field - the commanded/written value, what
+DCDCPowerSupply.is_on() actually reads) AND a separate "Output On-off"
+(a Variables field - the real hardware readback of whether the output
+is actually on) - confirmed via grep that Output On-off is never read
+anywhere in the codebase. Same "commanded state != actual state"
+category as the Power Good fix already made to the LV bring-up step
+earlier this session - worth revisiting, but LV's own domain, not
+PowerDist's - not actioned now.
+CONCLUSION: all 3 ordered steps of the Supply-page port (TDK, PowerDist
+device level, PowerDist per-channel) are now DONE. QUEUED, 4th item
+(not started): MIDAS required-program liveness check (e.g. is the
+TDK/PowerDist frontend actually running) - a dead frontend leaves the
+ODB frozen, making every check built in this phase report a stale "OK"
+- needs the real /Programs/<name> paths confirmed first, different
+mechanism than the equipment-tree checks done so far.
+
+DCDCCratesService (LV) RE-VERIFIED SAME DAY, same rigor as TDK/
+PowerDist (prompted by "controlla gia' dcdc che nella custom page e'
+in LV power?"): Enabled and Crate On both confirmed TID_BOOL (type=8)
+in the real ODB dump - no Fault-Register-style hex-string risk.
+Searched all of DCDCCrates' Variables for a crate-level Error-equivalent
+(the exact gap found in PowerDist) - none exists, every Variables field
+is per-channel (128 entries) or unrelated (STMP, 32). CONFIRMED COMPLETE,
+no change needed. Real-dump observation (not a bug): today's dump shows
+all 8 crates Enabled=True but Crate On=False - check_status() would
+currently flag all 8 against live data; likely reflects system state at
+dump time (powered down/maintenance), not a logic defect.
+
+CUSTOM PAGE CROSS-CHECK, same day (user: "guarda la custom page cosa
+viene mostrato e controllato", read locally per explicit instruction -
+online/ checkout staleness caveat waived for this one read) - read
+online/mhttpd/custom/SciFi_page/SciFi_PowerFEB.js (+ its
+SciFi_Utils.js/SciFi_ServiceStatus.js helpers) in full, since FEB was
+flagged as a candidate 4th/5th area. Findings:
+  - VALIDATES existing common/ work: the real page's own
+    febPowerDistFecHealth() (SciFi_PowerFEB.js) checks PowerDistStaging
+    exactly as pdEnabled[device] + pdDeviceOn[device] - byte-identical
+    convention to PowerDistService, built earlier today independently
+    from the ODB dump alone. Strong independent confirmation the design
+    is right.
+  - VALIDATES the Fault-Register-hex-string investigation: the page's
+    own hexTrue(v) helper (SciFi_Utils.js) - `typeof v === "string" ?
+    parseInt(v, 16) !== 0 : !!v` - proves the JS side must defensively
+    parse Fault Register as a possible hex string, because the raw
+    JSON-RPC transport really does send WORD-typed fields as hex
+    strings (matching python midas.client's own _convert_dwords_from_odb
+    comment). Python's client auto-converts (confirmed via source
+    earlier), JS's client does not - both sides independently confirm
+    the same underlying wire format. No change needed to TDKService.
+  - NUANCE, not a bug, nothing changed: the real page's own TDK filter
+    for the FEB tab (checkSharedEquipmentHealth in SciFi_Utils.js) is
+    name.indexOf("FE Crates") === 0 && name.endsWith(side) - a
+    prefix+side-suffix match, not a flat substring - because dedicated
+    TDK channels named "FE Crates US"/"FE Crates DS" exist, separate
+    from "Pixel US"/"Pixel DS". TDKService's simpler name_filter
+    (plain substring) can still reproduce this exactly, as long as a
+    future caller passes the full specific string (e.g. "FE Crates
+    US") rather than a bare prefix like "FE Crates" - noted for
+    whenever FEB-tab logic gets ported, not acted on now.
+  - CONFIRMED the real /Programs/<name> path shape for the queued 4th
+    item (program liveness): /Programs/Febcrate Frontend/First failed,
+    read via mjsonrpc_db_get_values, checked as `programFirstFailed !==
+    0`. This is the Febcrate Frontend specifically - TDK's/PowerDist's
+    own required-program names still unconfirmed, but the path
+    convention (/Programs/<program name>/First failed) is now known
+    ground truth for whenever that item is implemented.
+  - FEB CONFIRMED TO BE A GENUINELY LARGER, DIFFERENT-SHAPED DOMAIN,
+    not just "more boolean/flag checks": real analog threshold logic
+    (FEBCRATE_TEMP_WARN_C=60/ALARM_C=65/SWITCHOFF_C=70, the last one
+    documented in the page's own tooltip as the frontend force-powering
+    off every FEB in the crate - a real hardware safety behavior, not
+    just a display threshold); hex-encoded per-FEB datapath status bits
+    (PLL locked, RX ready, DPA locked, Buffer full, Frame desync) needing
+    bit-level interpretation via hexTrue(); firmware version/telemetry
+    display with no pass/fail semantics at all; a separate FEBCrates
+    equipment tree (crate/slot power topology) not touched by anything
+    in common/ so far. Recommendation given to user: treat FEB as its
+    own separate future audit, not folded into LV/HV/Supply's simpler
+    pattern - not started.
+
+LV "Output On-off" GAP CLOSED, 2026-08-06 - the flagged-not-fixed finding
+from the earlier channel-distributions pass (DCDCCrates has a
+"Channel On" Settings field, the commanded value already read by
+DCDCPowerSupply.is_on(), AND a separate "Output On-off" Variables
+field, the actual hardware readback, never read anywhere).
+DECIDED: is_on() keeps reading "Channel On" (still correct for
+idempotency/control-flow guards like turn_on_lv()'s "already on, don't
+re-command" check) - not switched to the actual readback, to avoid a
+wider behaviour change to every is_on() caller. Instead, "Output On-off"
+was added as a THIRD signal alongside the existing Channel-On/Power-Good
+health check, exactly mirroring the precedent already set when Power
+Good was added to the LV bring-up step earlier this session.
+IMPLEMENTED: common/power/supply.py's DCDCPowerSupply gained a
+read_output_on_off command (plain ODBPowerSupplyReadCommand, Variables/
+Output On-off[ch] -> readables["output_on_off"]) - auto-populated by
+read_all() like current/voltage/sense/temperature, no readables_check
+semantics (there's no universal "correct" value independent of whether
+the channel is meant to be on or off, same reasoning that already kept
+Channel On itself out of readables_check). pixel_scripts/actions/
+bringup_declaration.py's _lv_on_and_healthy() now requires all three:
+is_lv_on() (Channel On), Power Good == OK, and output_on_off truthy
+(defaults True via .get() if a future non-DCDC LV type lacks the field).
+VERIFIED: py_compile; full test1-5.py suite (test3's own printed output
+now shows output_on_off in the LV dict; no regressions, test4's
+pre-existing unrelated stub gap unchanged); real-dump fake-client check
+confirms output_on_off reads True (matching the dump) and
+_lv_on_and_healthy() correctly still returns False against today's real
+data (short-circuits on Power Good, which is genuinely False for this
+channel in the dump) - the new check integrates correctly without
+changing the overall real-data verdict.
+
+ARCHITECTURE PRINCIPLE CLARIFIED + channel_indices/device_indices ADDED,
+2026-08-06 - triggered by user's meta-question "siamo allineati con...
+l'idea dietro common?" and a deep re-check of the REAL page's own
+dependency-selection logic (read SciFi_PowerSupply.js + SciFi_
+ServiceStatus.js in full, not just SciFi_PowerFEB.js from earlier).
+FOUND: the real page's per-subsystem dependency model is NOT "filter by
+own name" - SciFi's own Supply tab needs THREE PowerDist devices (0=
+"SciFi & Tile" own, 1="FEC" shared, 3="Slow Control" shared) via
+hand-curated, hardcoded channel-index lists kept in SciFi's OWN JS
+(SciFi_ServiceStatus.js): PD_CRATE_MAINS=[96,97,98,99,112,113,114,115],
+PD_SMB_LDO=[0,1,2,3,4,5,15,16,17,18,19,20,21,31], PD_HV=[102,103,118,
+119], PD_WEATHER=[100,101,116,117], PD_FEC=[32,33,34,35,48,49,50,51] -
+all four non-"SciFi & Tile" groups live on devices that don't carry
+"SciFi" in their name at all. Same story for TDK: the real page's own
+filter is `name.indexOf("SciFi")!==-1 || name.indexOf("FE Crates")===0`
+- a UNION of "my own name" and a specific shared channel, not a single
+substring. TDK Names confirmed in full from the dump: ['SciFi & Tile
+US', 'SciFi & Tile DS', 'FE Crates US', 'FE Crates DS', 'Pixel US',
+'Pixel DS'].
+CROSS-CHECKED whether Pixel might have the same kind of shared
+dependency: LinksCentral (pixel's own link/FEB tree) has an IDENTICAL
+structure to LinksFibre (SciFi's), including its own "FEB datapath
+status"/FEBFirmware Variables - suggesting pixel likely has comparable
+physical FEB hardware. But grep confirmed ZERO references anywhere in
+pixel_scripts to "FEBCrates"/"FE Crates" - pixel's Python code does not
+model this dependency today, one way or the other. NOT GUESSED AT -
+whether pixel genuinely depends on "FE Crates" TDK power or PowerDist
+device 3 ("Slow Control", used by SciFi for HV/weather monitoring - its
+own code comment says "not exclusively SciFi", implying pixel likely
+also uses it) is real hardware knowledge nobody has confirmed yet.
+ARCHITECTURE PRINCIPLE, confirmed with the user (their own framing,
+confirmed correct): common/ should stay a GENERIC MECHANISM (given a
+name_filter or an explicit index list, evaluate Enabled/Fault/
+Interlock/Output On/Device on/Error) - it should NOT try to know what
+any specific subsystem depends on. The CURATED LIST of exactly which
+channels/devices a subsystem depends on (mirroring SciFi's own PD_HV/
+PD_WEATHER/PD_FEC arrays) belongs in that subsystem's OWN code
+(pixel_scripts, later scifi_scripts), never in common - same separation
+of concerns the real page itself already follows (generic per-equipment
+JSON-RPC calls vs. SciFi_ServiceStatus.js's own hardcoded lists).
+IMPLEMENTED: TDKService gained channel_indices (list of int), PowerDist
+Service gained device_indices (list of int) - independent of
+name_filter, when given they restrict the check to EXACTLY those
+indices (bypassing the full-array loop entirely, not just filtering
+within it) - lets a future caller declare a curated list exactly like
+the page's own PD_HV/PD_WEATHER/PD_FEC pattern, with the list itself
+staying in the calling subsystem's code. check_shared_equipment()/
+check_shared_equipment_or_print() gained tdk_channel_indices/
+powerdist_device_indices passthrough parameters. Default None on all
+three preserves EXACTLY today's name_filter-only behaviour - no change
+for existing callers (pixel's own name_filter="Pixel" untouched; its
+real curated list, if one is ever needed, is deliberately left as an
+open TODO - not guessed at without real hardware confirmation).
+VERIFIED: py_compile; full test1-5.py suite (no regressions, identical
+to before); real-dump fake-client check reproduces the exact real-page
+selections - TDKService(channel_indices=[2,3,4,5]) (Pixel + FE Crates
+union) correctly flags only the genuinely-faulted Pixel US/DS channels;
+PowerDistService(device_indices=[3]) (Slow Control) correctly reports
+OK (matches the real dump: Enabled/Device on/Error all healthy for
+that device).
+HONESTY NOTE, found while building this verification's fake client:
+every earlier real-dump fake-client check this session used a client
+that did NOT replicate midas.client's own WORD-type hex-string-to-int
+conversion (confirmed present in the real client source earlier today)
+- meaning Fault Register's real "0x0000" (healthy) values were being
+compared as the STRING "0x0000" against int 0, always producing a
+(cosmetically) false "problem" line in the message text for every
+channel, healthy or not. This NEVER changed any verdict this session
+reached (Interlock Trigger, a real TID_BOOL with no such issue, was
+always the one that correctly and independently proved the real Pixel
+fault) - but the message text in earlier verification snippets was
+noisier than it should have been. This one's fake client was corrected
+to replicate the real WORD/DWORD/QWORD conversion (using the dump's own
+/key type metadata, same TID list midas.client checks) - the cleaner
+output above is the first fully-accurate one; no code or prior
+conclusion needed correcting, only the verification tooling.
+
+FEB-CRATE POWER EXTRACTED TO COMMON, 2026-08-06 - closes the FEB gap
+found earlier today, in the OPPOSITE direction from most of this
+session's extractions: scifi_scripts/detector/feb.py already had a
+real, working FEB-crate power implementation (__set_feb_power/
+turn_on_feb_power/turn_off_feb_power/get_power_monitoring - crate/slot
+lookup, CrateControllerConnected/Enabled/MSCB diagnosis chain, FEBPower
+write+readback, SCFC crate telemetry) - pixel_scripts had NONE, despite
+confirmed sharing the same physical FEBCrates infrastructure.
+NEW: common/power/feb_crate.py's FebCratePower(client, link_feb) - a
+careful, logic-preserving generalisation of scifi's own methods,
+parametrised only by client + link_feb (this FEB's global index into
+FEBCrates' own arrays) - nothing subsystem-specific, since FEBCrates is
+one tree shared across every subdetector's FEBs, not duplicated per
+subsystem. turn_on()/turn_off()/get_power_monitoring() - same shape,
+same diagnosis chain, same behaviour as scifi's original.
+NOT DONE (explicit user decision - scifi_scripts stays untouched until
+its own migration pass "alla fine"): scifi_scripts/detector/feb.py
+itself was NOT changed to call this new class - it keeps its own
+private copy for now. Not wired into pixel_scripts either (pixel's own
+core/feb.py has no link_feb-indexed FEB object to hook this onto yet -
+a separate, real task, not done here without being asked).
+VERIFIED: py_compile; real-dump fake-client check confirms BOTH a real
+pixel FEB (link_feb=0, "L1 US 1-4" -> crate 0, slot 14) and a real
+scifi FEB (link_feb=144, "US SM 1" -> crate 0, slot 11) resolve correct
+crate/slot and read the SAME shared crate-0 telemetry correctly -
+direct proof the class works for both subsystems without modification.
+
+CUSTOM-PAGE-WIDE CHECK AUDIT, 2026-08-06 - user: "guarda nella custom
+page di scifi. quali controlli non sono implementati che sono
+implementati li?" - read every remaining SciFi_page/*.js file not yet
+covered by the earlier Supply/LV/HV/FEB pass (SciFi_Programs.js,
+SciFi_Emergency.js, SciFi_Watchdog.js, SciFi_Alarms.js,
+SciFi_Cooling.js) in full.
+
+1. REQUIRED PROGRAMS (SciFi_Programs.js) - full list, not just the two
+   seen earlier: mhttpd, SW Fibre, DCDC Frontend, HV Frontend, Febcrate
+   Frontend, Powerrack Frontend, Sequencer (7 total) - all checked via
+   /Programs/<name>/First failed == 0. NONE checked anywhere in Python
+   today (pixel or scifi). Several of these (DCDC/HV/Powerrack/Febcrate
+   Frontend) are the SAME shared-infrastructure frontends already
+   established as feeding both subdetectors (e.g. Febcrate Frontend
+   serves the one shared FEBCrates tree). MECHANISM is genuinely common-
+   worthy (mirrors TDKService's shape exactly: "given N program names,
+   check /Programs/<name>/First failed==0 for each"); the CURATED list
+   of which programs a given subsystem actually needs stays per-
+   subsystem, same principle as channel_indices/device_indices.
+
+2. EMERGENCY OFF (SciFi_Emergency.js) - a real, distinct safety
+   capability: scifiEmergencyOffAll()/OffFEB()/OffLV()/OffHV() write
+   False/0 directly to every relevant channel (LV via "SMB_"/"LDO_"
+   name match, HV via "SciFi CH" name match, FEB via crate/slot map) -
+   NO wait, NO readback verification, deliberately bypassing the
+   graceful bring-up/down sequence, since it exists FOR an emergency.
+   CHECKED: common/power/group.py's PowerGroup.turn_off_immediately()
+   (the per-group primitive) already exists and is already used - by
+   pixel_scripts/calibrations/smoketest.py:85, for that one
+   calibration's own cleanup, NOT as a whole-detector emergency
+   shutdown. There is no free function to do this across every group
+   at once (the real page's own scifiEmergencyOffAll() equivalent) -
+   the primitive exists, the aggregate capability doesn't, and nothing
+   wires it to an actual "emergency stop everything now" entry point.
+
+3. MIDAS ALARMS (SciFi_Alarms.js) - a real, DIFFERENT category from
+   every check built so far this session: 10 named alarms, all
+   cooling/environmental, not power-supply related - "Min/Max SiPM
+   Chiller Temp.", "Dew Point", "TDiode", "Max/Average FEB
+   Temperature", "Env RH Top US/DS", "Unichiller Temperature",
+   "Cooling" - checked via /Alarms/Alarms/<name>/Active + /Triggered.
+   Confirmed via grep: ZERO MIDAS-alarm awareness anywhere in
+   pixel_scripts. MECHANISM is common-worthy (same "given N names,
+   check two boolean fields each" shape as TDKService/PowerDistService);
+   curated alarm-name list stays per-subsystem.
+
+4. WATCHDOG (SciFi_Watchdog.js) - NOT a Python/common gap - a separate
+   C++ MIDAS frontend (scifi_watchdog_create_conditions.cpp). Read for
+   completeness: for SciFi, almost every condition is "not implemented,
+   stub only" (TDK, PwrDist per DCDC crate, Enable US/DS, Helium,
+   Temperature/VDD). The two that DO exist (Max_LV_current,
+   Max_HV_current) share the EXACT SAME ODB status key pixel's own
+   watchdog already uses (/Watchdog/Variables/Max_LV_current_status) -
+   a real, page-documented collision risk if SciFi's watchdog were ever
+   enabled. Not actionable from these Python scripts - noted for
+   awareness only, since it means SciFi has effectively no working
+   watchdog safety net today, contrary to what the panel's existence
+   might suggest.
+
+5. COOLING (SciFi_Cooling.js) - informational telemetry only (SiPM
+   chiller/manifold temperatures and pressures), no independent pass/
+   fail logic of its own - the real safety judgement on this data is
+   entirely in the Alarms check above, not here.
+
+CONCLUSION ON WHAT BELONGS IN COMMON: items 1 and 3 (required-programs
+liveness, MIDAS alarms) both have the exact same generic shape already
+proven by TDKService/PowerDistService - read N named boolean-pair
+fields, report problems, let the caller supply its own curated name
+list. Item 2 (emergency off) needs one new free function (aggregate
+"turn every group off immediately" over a {name: PowerGroup} dict,
+mirroring all_selected_on/all_selected_off's existing shape) - the
+per-group primitive is already there. Item 4 is out of scope (not
+Python). NOT YET IMPLEMENTED - planning/audit only so far, no code
+written for items 1-2 this pass.
+
+GEOMETRY TAB READ IN FULL (SciFi_Geometry.js), same day, user: "nel
+menu geometria ci sono molti check, verificali se qualcuno manca" -
+mostly a wiring/visualisation layer (DAB/uTP/Fibre/Ribbon/SMB cabling
+lookup tables, SVG ring rendering, module/ASIC/channel selection) -
+NOT new safety checks. Every actual health signal it displays (LV's 7
+fault flags, DCDC crate Enabled+Crate On, FEBCrate temperature
+thresholds 60/65 deg C) is EXACTLY what earlier passes this session
+already found and covered/flagged - no duplication of effort needed,
+confirms those earlier passes were thorough.
+ONE GENUINELY NEW FINDING: LinkStatus (/Equipment/LinksFibre/
+Variables/LinkStatus, decoded via GEO_LINK_STATUS_LABELS = ["Disabled",
+"OK", "Unknown", "Fault"]) - a single overall per-FEB health enum,
+distinct from the individual "FEB datapath status" bits (PLL locked/
+RX ready/DPA locked/Buffer full/Frame desync) already known. Confirmed
+via grep: zero Python references anywhere. Confirmed LinksCentral
+(pixel) has the identical field in its own Variables tree (from the
+earlier full-tree read) - a shared, common-worthy signal, unchecked for
+either subsystem today.
+
+ALL FIVE FINDINGS IMPLEMENTED, same day (user: "implementa tutto"):
+  1. common/equipment/services.py gained ProgramService(client,
+     program_names) - /Programs/<name>/First failed != 0 = down, same
+     curated-list philosophy as TDKService's name_filter/
+     channel_indices (list stays in the subsystem's own code).
+  2. common/equipment/services.py gained AlarmsService(client,
+     alarm_names) - /Alarms/Alarms/<name>/Active + /Triggered;
+     Triggered=True/>0 is a real problem (ok=False), found-but-not-
+     Active is noted as a warning without failing the check, matching
+     the real page's own red-vs-orange distinction.
+     Both needed a NEW _odb_get_scalar() helper alongside the existing
+     _odb_get() - programs/alarms are single-value ODB entries, not
+     per-channel arrays, and _odb_get()'s dry-run stub
+     (odb_read_test_array) always returns a list, which would silently
+     compare unequal to any scalar - same bug class as the Fault
+     Register hex-string issue found earlier this session, caught
+     before it shipped this time.
+  3. common/power/group.py gained turn_off_all_immediately(groups) -
+     unlike every other free function here, does NOT filter by
+     is_selected() (an emergency stop means everything, not just
+     what's selected for the current operation) - calls each group's
+     existing turn_off_immediately() primitive.
+  4. common/power/feb_crate.py gained LINK_STATUS_LABELS + check_link_
+     status(client, equipment_name, feb_index) - equipment_name is
+     "LinksCentral" or "LinksFibre" (confirmed identical field/encoding
+     on both), feb_index is the LOCAL index into that tree's own
+     arrays - NOT link_feb, FebCratePower's global FEBCrates index; a
+     different tree, a different index space, deliberately not merged
+     into the FebCratePower class. ok=False only for "Fault";
+     "Disabled"/"Unknown" both pass, matching the real page's own
+     colour convention (only Fault is red).
+  5. Program-liveness/MIDAS-required-program item (previously separately
+     queued) is now the same ProgramService as #1 above - not a
+     separate mechanism.
+VERIFIED: py_compile on all touched files; full test1-5.py suite (no
+regressions, test4's pre-existing unrelated stub gap unchanged);
+real-dump fake-client checks (WORD-hex-aware client) against ALL FOUR
+new pieces:
+  - ProgramService correctly flags "Powerrack Frontend" as down (real
+    First failed=1747033952) while correctly clearing mhttpd/Febcrate
+    Frontend/DCDC Frontend (all First failed=0).
+  - AlarmsService correctly reports OK overall for Cooling/Dew Point/
+    Max FEB Temperature (none triggered in this dump) while correctly
+    noting Dew Point as "not active" (a real, found-but-unarmed alarm
+    in the dump).
+  - check_link_status correctly reports Fault for a real LinksFibre
+    entry (feb_index=0, confirmed 0x3 in the dump) and a real
+    LinksCentral entry (feb_index=17, also confirmed 0x3), and
+    correctly reports Disabled (ok=True) for LinksCentral feb_index=0.
+  - turn_off_all_immediately confirmed to call turn_off_immediately()
+    on every group in a synthetic multi-group dict.
+NOT YET DONE: none of these five are wired into any real caller yet
+(pixel_scripts doesn't call ProgramService/AlarmsService/check_link_
+status/turn_off_all_immediately anywhere) - this pass built and
+verified the common/ mechanisms only, same restraint as every other
+piece built this session (capability first, wiring is a separate,
+deliberate step).
+
+PROGRAMSERVICE + ALARMSSERVICE WIRED INTO PIXEL, same day (user:
+"collega ProgramService e AlarmsService a pixel_scripts").
+check_shared_equipment()/check_shared_equipment_or_print() gained
+program_names/alarm_names passthrough params (both default None -
+skip entirely, no behaviour change for any existing caller that
+doesn't pass them).
+Pixel's own curated lists (pixel_scripts/globals/setup.py, NEW
+required_programs/required_alarms) - evidence-based, not guessed:
+required_programs = mhttpd, Sequencer (universal) + DCDC Frontend, HV
+Frontend, Powerrack Frontend (the exact Frontends serving TDKStaging/
+DCDCCrates/HV - the same equipment trees the gate already checks).
+Deliberately EXCLUDED: "Febcrate Frontend"/"SW Fibre" - pixel's real
+dependency on the shared FEBCrates chain is still an open, unconfirmed
+question (see the FEB-crate findings earlier), not assumed here.
+required_alarms = the 8 "FEB Crate 0-7 Temperature" alarms - direct
+evidence pixel's own FEBs are mapped into several of those same
+physical crates (confirmed earlier this session). Deliberately
+EXCLUDED: SiPM Chiller/Dew Point/Env RH/Unichiller (SciFi cooling
+hardware, not pixel's) and "Max/Average FEB Temperature" (likely
+computed only from SciFi's own onboard SFFE telemetry - no evidence
+they aggregate pixel's FEBs too).
+pixel_scripts/actions/actionfactory.py and calibrations/
+calibrationfactory.py's check_shared_equipment_or_print() calls now
+pass program_names=globals_setup.required_programs, alarm_names=
+globals_setup.required_alarms alongside the existing name_filter=
+"Pixel".
+VERIFIED: py_compile; full test1-5.py suite (no regressions - test3/
+test4 now correctly stop at ProgramService instead of TDKService under
+dry-run, since the stub's dummy nonzero "First failed" value makes
+every check "look unhealthy" and ProgramService is earlier in the
+check order - expected dry-run behaviour, not a bug, same pattern seen
+throughout this session); real-dump fake-client checks confirm: the
+full aggregate gate correctly still fails at TDKService (real Pixel
+interlock, unchanged); ProgramService in ISOLATION against pixel's
+real curated list correctly flags Sequencer/HV Frontend/Powerrack
+Frontend as genuinely down in the real dump (First failed all nonzero,
+matching the exact values found earlier this session) while correctly
+clearing mhttpd/DCDC Frontend (First failed=0); AlarmsService in
+isolation correctly reports overall OK while noting 4 of the 8 FEB
+Crate alarms as "not active" in the real dump - a real, legitimate
+finding (not a bug), consistent with the rest of the system's
+currently-powered-down state seen throughout today's audits.
+CROSS-CHECKED remaining unread SciFi_page/*.js files (PowerLV.js,
+PowerHV.js, Readout.js) for any additional check/alarm/threshold
+pattern missed - found only each tab's own required-program check
+(DCDC/HV Frontend, SW Fibre - all already in the 7-program list,
+already covered by ProgramService's generic mechanism). No new
+findings - confirms the earlier audit passes were thorough.
+
+MIDAS MESSAGES VS PAGE BANNERS - NOTED FOR THE FUTURE, 2026-08-06.
+User: "questa questione dei messaggi midas sequencer e' da tenere a
+mente per un futuro. anche per quanto riguarda la pagina" - not
+investigated further now, just tracked.
+CONFIRMED (SciFi_Utils.js): combineTableMessages()/showTableMessage()/
+clearTableMessage() are pure DOM writes (textContent + CSS class on a
+table row) - no cm_msg/RPC involved, never touch the real MIDAS
+message log, purely ephemeral (recomputed every 2s poll, gone on
+refresh). Every "X is not running"/"check failed" banner seen
+throughout this whole session's page audits is this kind of message,
+NOT a real MIDAS message.
+The only real MIDAS message sender found anywhere on the page is
+SciFi_Message.js's MidasMessanger.send_message() (uses cm_msg1 - a
+real RPC, actually logged).
+Same distinction applies to everything built in common/ today
+(ProgramService/AlarmsService/etc. return (bool, str) - page-banner-
+style, not a real MIDAS message).
+TWO OPEN QUESTIONS FOR LATER, not answered here:
+  - Does pixel's own seq.msg() (scripts/run_calibration.py) actually
+    reach the real MIDAS message log, or stay sequencer-local only?
+    Unverified.
+  - Should a future calibration's real problems (shared-equipment gate
+    failures, etc.) be upgraded from "printed/returned" to an actual
+    logged MIDAS message (client.msg() or equivalent)? Same question
+    applies to whether the custom page's own banners should ever become
+    real logged messages instead of ephemeral DOM text - a page-design
+    question, not decided here.
+
+FEB BRING-UP CLOSED, 2026-08-06 (user: "Chiudiamo prima il bring-up
+FEB, i test non sono necessari puoi dimenticarli" - common_scripts/
+tests/ dropped from the plan per this explicit instruction, no longer
+tracked as an open item).
+
+REAL ENGINE GAP FOUND AND FIXED while designing this: common/power/
+bringup.py's Step.bring_up() gave VERIFY_VALUE/VERIFY_PROGRAM steps NO
+wait/retry at all - is_satisfied() was checked exactly once, with
+wait_seconds/max_wait_seconds silently ignored (only WRITE_VERIFY's
+turn_on()-then-poll path ever consulted them). This is wrong for a
+condition that becomes true on its own after a NEIGHBOURING step's
+write (exactly FEB link status after crate power-on) - the real use
+case that surfaced it. CONFIRMED SAFE TO CHANGE: grep showed VERIFY_
+VALUE/VERIFY_PROGRAM were not used ANYWHERE yet (defined in the enum,
+never instantiated) - zero risk to existing behaviour.
+FIXED: bring_up() now polls (via the existing _poll_until()) for
+VERIFY_VALUE/VERIFY_PROGRAM too, just without ever calling turn_on()
+(there's nothing to write) - only fails after max_wait_seconds if the
+condition never becomes true on its own. power_down() needed no change
+- it already correctly no-ops these kinds (turn_off is None).
+VERIFIED in isolation (5 scenarios, synthetic Step objects): (1)
+VERIFY_VALUE becoming true mid-wait -> SUCCESS; (2) VERIFY_VALUE never
+becoming true -> FAIL after exactly max_wait_seconds; (3) already-
+satisfied -> immediate SUCCESS, no polling; (4) power_down() on a
+VERIFY_VALUE step -> correct no-op SUCCESS; (5) existing WRITE_VERIFY
+behaviour confirmed byte-for-byte unchanged.
+
+IMPLEMENTED: common/power/feb_crate.py gained:
+  - FebCratePower.is_on() - read-only FEBPower[power_index] check (no
+    write), needed as a bring-up Step's is_satisfied() - turn_on()/
+    turn_off() both already did write+read internally but had no
+    read-only-only counterpart before this.
+  - build_feb_bringup_sequence(feb_id, client, link_feb, equipment_name,
+    feb_index, ...) - TWO steps: "feb_crate_power_on" (WRITE_VERIFY,
+    FebCratePower.is_on/turn_on/turn_off) then "link_status_ok"
+    (VERIFY_VALUE, check_link_status()[0] - nothing to write, the link
+    coming up is a consequence of the previous step, verified via the
+    engine fix above). Genuinely GENERIC, unlike LV/HV bring-up
+    declarations (which need a subsystem's own PowerGroup assembly
+    first) - every identifying value (link_feb/equipment_name/
+    feb_index) is caller-supplied, so this ONE declaration lives in
+    common/ itself and serves both pixel and scifi directly, no per-
+    subsystem duplication needed - confirmed correct for both in the
+    FEB-crate-sharing findings earlier today.
+  Wait-time defaults (5s/10s crate power, 5s/15s link status) are
+  UNVERIFIED placeholders, same honesty convention as every other
+  timing constant in this codebase (e.g. pixel's own target_HV).
+VERIFIED: py_compile; a dry-run run of the full sequence (bring_up()
+succeeds twice - confirms idempotency - power_down() correctly times
+out on the crate-power step, matching the exact same "dry-run stub
+always reads truthy, can't simulate a real off state" limitation
+already seen throughout this session, not a new bug); full pixel
+test1-5.py suite re-run after modifying the shared bringup.py engine -
+zero regressions, zero tracebacks anywhere (test4 no longer even
+reaches its own known, pre-existing, unrelated stub gap, since
+ProgramService - wired in earlier today - now correctly stops the
+check_shared_equipment gate before that code path is ever reached).
+NOT YET DONE: build_feb_bringup_sequence() is not called by any real
+Action/script yet in either pixel_scripts or scifi_scripts - the
+declaration exists and is verified, wiring it to a real per-FEB loop
+(mirroring pixel's own ActionPowerOn iterating its power_partitions)
+is a separate, deliberate next step.
+
+PIXEL WIRED TO THE FEB BRING-UP, 2026-08-06 (user: "tutto quello che è
+in common è collegato a pixel, c'è qualcosa che manca" - grep
+confirmed feb_crate.py/turn_off_all_immediately had ZERO pixel_scripts
+references; pixel's own core/feb.py has no crate/power concept at all
+today despite pixel's real FEBs confirmed physically sharing FEBCrates
+with SciFi - a real, sizeable gap, not just a missing function call).
+IMPLEMENTED: core/feb.py's FEB gained __link_feb (read from ODB's
+LinkFEB[num] during __init__, correctly is_odb_available-gated - unlike
+its neighbouring __get_chip_selection_mask_from_odb(), a pre-existing,
+separately-flagged, unfixed bug not touched here) + get_link_feb()
+getter. DELIBERATELY DISTINCT from get_number() - confirmed via the
+real dump that LinkFEB[num] != num for several real FEBs (not just an
+alias). actions/bringup_declaration.py gained build_feb_sequence(feb) -
+a thin wrapper supplying pixel's own client/link_feb/"Links"+station/
+number to the fully generic common declaration, same shape as
+build_power_partition_sequence.
+VERIFIED: py_compile; full pixel test1-5.py suite (zero regressions,
+test2's own FEB-construction path - now also reading LinkFEB during
+init - still completes correctly); real-dump fake-client checks (this
+one needed odb_set support added to the fake client, since bring_up()
+genuinely needs to write - previous verifications this session were
+read-only): FEB num=0 correctly resolves link_feb=0 (matches "L1 US
+1-4"); FEB num=30 correctly resolves link_feb=16 (matches "Central DS
+Layer 3 1"); a FULL bring_up() run against real dump data for FEB
+num=30 correctly resolved crate=5/slot=5 -> power_index=80, correctly
+wrote FEBPower[80]=1 (the real dump shows it as currently off),
+correctly verified the write took effect, and correctly verified
+link_status_ok - end-to-end SUCCESS against real data, not just a
+dry-run stub.
+BOTH GAPS CLOSED, same day (user: "fai entrambi dobbiamo allineare
+tutto").
+
+FEB ACTIONS: actions/actions.py's ActionExecute gained FEB_POWER_ON/
+FEB_POWER_OFF. NEW actions/febactions.py - ActionFebPowerOn/
+ActionFebPowerOff, mirroring poweractions.py's ActionPowerOn/Off shape
+exactly, iterating self.detector.febs.items() and calling bringup_
+declaration.build_feb_sequence(feb).bring_up()/power_down() per FEB.
+NOTE: no per-FEB is_selected() concept exists today (unlike power
+partitions) - every FEB in the detector is acted on, documented
+explicitly in the code rather than silently assumed. Wired into
+ActionFactory.perform_action()'s normal dispatch (goes through the
+shared-equipment gate like TURN_ON/TURN_OFF).
+
+EMERGENCY OFF: NEW actions/emergency.py - emergency_off_all(det), a
+one-line call to common/power/group.py's turn_off_all_immediately()
+over det.power_partitions - the pixel-side equivalent of the real
+SciFi page's own scifiEmergencyOffAll(). ActionExecute gained
+EMERGENCY_OFF. WIRED DELIBERATELY DIFFERENTLY in ActionFactory.
+perform_action(): special-cased BEFORE the shared-equipment gate check,
+not after - an emergency stop must still work when shared equipment
+(TDK/PowerDist/DCDCCrates/required programs/alarms) is faulted, which
+is exactly the situation it exists for; routing it through the normal
+gate like every other action would have defeated its entire purpose.
+
+VERIFIED: py_compile on all touched/new files; full pixel test1-5.py
+suite (zero regressions); all three new ActionExecute values actually
+run end to end through ActionFactory.perform_action() in dry-run:
+EMERGENCY_OFF correctly bypasses the gate entirely (no TDK/Program/
+Alarms check output at all before it starts writing) and goes straight
+to writing Output On/Channel On = 0 on both real power partitions,
+returning SUCCESS - direct proof it remains callable exactly when the
+gate would otherwise block everything (dry-run's stub always reports
+unhealthy, same as a real fault would); FEB_POWER_ON/FEB_POWER_OFF both
+correctly go through the normal gate first and cleanly return
+POWER_FAIL at ProgramService (same already-understood dry-run
+behaviour), no crash.
+Full common/ -> pixel_scripts wiring status as of this point: every
+common/ capability built today (TDK/PowerDist/DCDCCrates/Program/
+Alarms services, FebCratePower/check_link_status/build_feb_bringup_
+sequence, turn_off_all_immediately) now has at least one real pixel_
+scripts caller. Grep-confirmed before starting this pass that FEB/
+emergency-off had zero callers; none remain unconnected now.
+
+====================================================================
+CARRIED FORWARD, NOT PART OF THIS PLAN
+====================================================================
+- GAP 3's root cause (does `seq` actually misbehave as a client) -
+  addressed as a side effect of (5a)'s convention change, not
+  separately investigated (see the proposed idea above).
+- scifi_scripts' orphaned calib_run.py CalibrationFactory - untouched,
+  scifi's turn comes later.
+- Whether calibration parameters get wired to ODB - untouched, orthogonal.
+
+====================================================================
+PHASE 2 GOAL - 2026-08-20, NAMING/GENERALITY AUDIT OF common_scripts
+====================================================================
+With the pixel-first migration above complete (common/ flattened to
+common_scripts' root, no more common/common/ nesting), this phase is a
+systematic, file-by-file walkthrough of every common_scripts folder
+(config/, equipment/, odb/, operation/, power/, daq/, results/) doing
+three things at once:
+
+1. NAMING CONSISTENCY - every subsystem-specific class follows one
+   pattern: a generic base (Setup, Folders, OperationParameters,
+   OperationBase/ActionBase/CalibrationBase, DAQBase, PowerPartitionBuilder,
+   Folders) with a Pixel* subclass supplying only the actual values/
+   subsystem-specific behaviour. Where a Pixel*-named function turned out
+   to have ZERO subsystem-specific content in its body (e.g. feb_crate.py's
+   feb-object bring-up adapter), the "Pixel" prefix was dropped entirely
+   instead of kept for symmetry.
+
+2. DEDUPLICATION - real literal/logic duplication found and fixed
+   independent of scifi's current state (e.g. SciFiPowerPartitionBuilder
+   hardcoding "DCDCCrates"/"PowerDistStaging"/"HV" instead of using the
+   EquipmentName enum already built for exactly this; two byte-identical
+   extract_assignment_scheme_from_odb() overrides in daq/control.py moved
+   up into their shared base, exactly as their own TODO comment asked).
+
+3. PREMATURE GENERALIZATION - GUIDING PRINCIPLE (user, 2026-08-20):
+   "scifi copierà quella di pixel se è generica... scifi verrà cambiato e
+   si adatterà a pixel" - SciFi's own classes will be refactored to match
+   Pixel's shape later, not the reverse. So when auditing common_scripts
+   itself, ignore whether scifi_scripts currently matches a given
+   interface/shape - that is NOT a reason to keep something pixel-only.
+   Extract the generic base/rename away the pixel-specific label now,
+   ready for scifi to plug into later, exactly like Setup/Folders/
+   OperationParameters were done here even before a second real consumer
+   existed for them.
+
+SCOPE BOUNDARY (still holds): scifi_scripts itself is NOT touched during
+this phase unless explicitly asked - "lascia stare per ora scifi_scripts"
+- even when a common_scripts change breaks a current scifi_scripts caller
+  (e.g. feb_crate.py's build_feb_bringup_sequence() was merged into a
+  single feb-object-based function per this same guiding principle,
+  knowingly breaking scifi_scripts/actions/bringup_declaration.py's own
+  explicit-args call to it - user: "non fixare scifi. lo faremo poi").
+  scifi_scripts/detector/feb.py's LV_EQUIPMENT_NAME duplicate literal is
+  the other known, deliberately-deferred instance of this.
+
+PROCESS: every common_scripts edit verified via pixel's test1-6.py smoke
+suite + the 14-file scifi_scripts test suite in
+Docs/devolpment/code/tests/ (expected/accepted regressions from (3)
+above noted explicitly, not silently absorbed into the baseline). All
+work committed LOCALLY ONLY per standing no-push rule; as of 2026-08-20
+the user also asked to stop auto-committing - edits are made/verified
+but left uncommitted unless asked.

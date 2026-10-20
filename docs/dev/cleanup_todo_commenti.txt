@@ -1,0 +1,279 @@
+Cleanup TODO/commenti sparsi - common_scripts + pixel_scripts
+====================================================================
+Ricognizione fatta il 2026-08-25 sul branch task/Cleanup (creato su
+tutti e 3 i repo, checkout da main gia' aggiornato dopo il merge delle
+PR di common/pixel/scifi). SOLO INDAGINE, nessuna modifica fatta -
+work in progress, da riprendere in sessione futura.
+
+Scope: common_scripts + pixel_scripts (scifi_scripts non incluso in
+questo giro). Esclusi i file di test.
+
+Metodo: grep case-insensitive di TODO/FIXME/XXX + altri marker sospetti
+("???", UNVERIFIED, "not sure", "I guess", placeholder, hack,
+hardcoded) su tutti i .py non di test. 27 TODO totali (7 common_scripts,
+20 pixel_scripts) in 10 file per repo.
+
+
+====================================================================
+1. CONCURRENCY - da NON toccare ora, gia' marcati per un refactor futuro
+====================================================================
+Tutti dicono esplicitamente "verra' tolto/riscritto quando arriva la
+concorrenza" - lasciarli finche' quel lavoro non parte davvero, non e'
+pulizia di commenti nel senso classico.
+
+- common_scripts/operation/bringup.py:6
+  "#TODO this entire thing we can get rid of. Concurrency will be
+  implemented."
+- common_scripts/operation/operation_base.py:88
+  "#TODO: this is deprecated, concurrency will be implemented, so this
+  will be removed" (su run_sequence_for_selected_partitions())
+- common_scripts/operation/outcome_message.py:7-8
+  due TODO su come vengono comunicati i messaggi (ODB standing message
+  vs step-by-step MIDAS messages) - non esplicitamente "concurrency"
+  ma stessa area, da rivedere insieme
+- common_scripts/operation/outcome.py:4
+  "#TODO: this could be moved to operations_base?"
+- pixel_scripts/actions/poweractions.py:5
+  "#TODO use concurrency here"
+
+
+====================================================================
+2. DOMANDE PER UN ESPERTO HARDWARE - non decido io, serve dominio
+====================================================================
+Valori numerici o soglie marcati come incerti/non verificati contro
+la specifica hardware reale. Da portare a chi conosce l'elettronica,
+non "puliscono" con una semplice modifica di codice.
+
+- common_scripts/power/supply.py:231
+  minimum_voltage_variation = 0.01 "Unverified against HVBoxN hardware
+  spec - no resolution/step field found in ODB (checked live)"
+- common_scripts/operation/bringup.py:132
+  tolleranza HV target (< 1.0) "UNVERIFIED tolerance"
+- pixel_scripts/pixel_globals/operation_parameters.py:16
+  target_hv default 40.0 "UNVERIFIED placeholder"
+- pixel_scripts/calibrations/calibrationbase.py:28
+  max_hv_current = 150*0.9 "Safety factor #TODO: from ODB? some are
+  from watchdog..."
+- pixel_scripts/calibrations/smoketest.py:37,66
+  time.sleep(2) "#TODO: how long?" (x2, stesso dubbio in due punti)
+- pixel_scripts/calibrations/smoketest.py:78
+  "#TODO: max current jump? should it fail?"
+- pixel_scripts/calibrations/smoketest.py:93
+  "#TODO: decision: shall we check one is on and start from there or
+  check all off and turn on one"
+
+
+====================================================================
+3. TODO PROBABILMENTE GIA' OBSOLETI - da verificare e chiudere
+====================================================================
+Sembrano gia' risolti dal rework fatto in queste sessioni - verificare
+sul codice attuale prima di toccare, ma sono i candidati piu' rapidi.
+
+- pixel_scripts/actions/actionbase.py:11 E
+  pixel_scripts/calibrations/calibrationbase.py:10
+  STESSA domanda duplicata in due file: "is it necessary now that in
+  the OperationFactoryBase this is a map?" - guardando
+  common_scripts/operation/operation_factory.py, OperationFactoryBase
+  usa gia' una dict/map (operation_map) per il dispatch - la risposta
+  sembra gia' "si', non serve piu'" ma da confermare cosa il commento
+  si riferiva prima di toglierlo.
+
+- pixel_scripts/core/feb.py:106
+  def add_chip(self, chip, client) -> bool: #TODO: client not needed
+  anymore - probabile parametro morto, verificare che nessun
+  chiamante lo usi davvero e toglierlo dalla firma.
+
+- pixel_scripts/core/power_partition.py:88 E
+  common_scripts/power/partition.py:5
+  STESSO identico TODO in entrambi i repo: "#TODO: can it be done via
+  static methods?" (riferito a metodi della classe builder) -
+  probabilmente la stessa domanda mai risolta, copiata quando il
+  codice e' stato duplicato/spostato tra i repo.
+
+- pixel_scripts/core/power_partition.py:132
+  "#fixed length for Vertex... TODO: outer layers?" - nota gia' vista
+  durante la review della PR (power/partition.py originale in
+  common_scripts aveva lo stesso commento) - riguarda il supporto
+  futuro ai layer esterni del pixel detector, non e' bloccante.
+
+- pixel_scripts/core/detector.py:86
+  "#TODO: should we use the FEB type instead?" (nel calcolo di
+  links_per_chip da tot_chips==36) - verificare se c'e' gia' un campo
+  FEB type leggibile dall'ODB.
+
+- pixel_scripts/core/chip.py:14
+  "#TODO: vectorise as Marius requested!" - richiesta esplicita di
+  Marius, quindi non e' una domanda aperta ma un task noto non ancora
+  fatto - da tenere ma marcare come "richiesto da Marius", priorita'
+  probabilmente piu' alta degli altri.
+
+- pixel_scripts/calibrations/ivscan.py:25
+  "return True #TODO: change when we have connected" - stub, verificare
+  se IVScan e' ancora un placeholder non funzionante.
+
+- pixel_scripts/calibrations/ivscan.py:51 e
+  pixel_scripts/calibrations/smoketest.py:131
+  entrambi "#TODO: extra checks?" - generici, valutare se aggiungere
+  qualcosa o rimuovere il commento vago.
+
+
+====================================================================
+4. GAP FUNZIONALI VERI dietro il TODO (non solo un commento da pulire)
+====================================================================
+- pixel_scripts/actions/actionfactory.py:30-31
+  get_action_to_perform_from_odb() ritorna SEMPRE la stringa hardcoded
+  "Turn_On", con "#TODO: read from ODB, and check it is a valid
+  action" - la action da eseguire non viene mai davvero letta
+  dall'ODB. Gap funzionale reale, non solo un commento.
+- pixel_scripts/calibrations/calibrationfactory.py:25
+  odb_path di default per la calibrazione corrente ha "#TODO: from
+  somewhere else" - stesso tipo di incertezza sulla vera fonte del
+  path.
+
+
+====================================================================
+5. SCARTI DI DEBUG - da rimuovere, non richiedono decisioni
+====================================================================
+- pixel_scripts/core/chip.py:246
+  print("??? updating parent feb mask") - stampa di debug con
+  prefisso "???", chiaramente uno scarto, va tolta.
+
+
+====================================================================
+STATO 2026-08-26 - pixel_scripts + common_scripts: PASSATO
+====================================================================
+common_scripts: a posto. Dei 7 TODO originali, uno risolto
+(power/partition.py:5, static methods -> no), gli altri 4 sono tutti
+categoria 1 (concurrency) - in attesa del merge di Luigi, poi si
+rivede cosa cambia.
+
+pixel_scripts: passato. Riepilogo di cosa e' stato fatto oggi:
+- Categoria 3 (probabilmente obsoleti): tutti risolti - TODO
+  lasciato + commento "RESOLVED 2026-08-26" sotto, in
+  actionbase.py, calibrationbase.py, core/feb.py,
+  core/power_partition.py. core/chip.py:246 (debug scrap) rimosso.
+  core/detector.py:86 (FEBType) indagato con l'ODB dump reale ma
+  INCONCLUSIVO (nessun FEB nel dump ha tot_chips==36) - lasciato
+  l'euristico attuale, commento aggiornato di conseguenza.
+- Categoria 4 (gap funzionali veri): entrambi implementati -
+  actionfactory.py ora legge davvero dall'ODB (+ perform_action_from_odb
+  con guardia ValueError, come scifi_scripts); calibrationfactory.py
+  ha il path costruito da odb_entry_path invece che hardcoded, e
+  perform_calibration() ora ha la stessa guardia ValueError/NOT_READY
+  di scifi_scripts.
+- ivscan.py (wait_for_hv_voltage no-op) e i 2x "extra checks?"
+  (ivscan.py, smoketest.py): bug/gap reali, segnalati ma
+  volutamente NON toccati.
+- Categoria 2 (domande hardware) e core/chip.py:14 (richiesta
+  Marius): non modificati, restano in attesa di un esperto/Marius.
+- Categoria 1 (concurrency, sia qui che in common_scripts): NON
+  toccata apposta - si aspetta il merge di Luigi, poi si rivedono
+  i cambiamenti insieme.
+
+CHIUSO 2026-08-26: la categoria 2 (domande hardware) non e' rispondibile
+in questa sessione - serve un esperto (Marius/Yifen), non e' una
+decisione che si puo' prendere leggendo il codice. Sessione di cleanup
+su pixel_scripts/common_scripts considerata chiusa per ora: quello che
+restava aperto resta aperto (categoria 2, chip.py:14 Marius,
+ivscan.py/smoketest.py bug segnalati, concurrency in attesa Luigi).
+
+INVESTIGATI ULTERIORMENTE 2026-08-26 (nessuna implementazione, tutti
+bloccati su dati/decisioni esterne - commenti "CHECKED 2026-08-26"
+aggiunti nel codice):
+- core/detector.py:86 (FEBType): AGGIORNATO 2026-08-26 - costruita la
+  struttura reale per usare FEBType (letto da config["FEBType"][num],
+  mappato tramite il nuovo dict di classe
+  PixelDetector.FEBTYPE_LINKS_PER_CHIP), ma la mappa e' lasciata vuota
+  di proposito - il mapping FEBType->links_per_chip non e' noto (nessun
+  FEB da 36 chip per verificarlo). Fallback automatico all'euristica
+  tot_chips==36 finche' qualcuno non riempie la mappa.
+- core/chip.py:14 (Marius, vectorise DACs): controllato l'ODB reale
+  (/Equipment/PixelsCentral/Settings/BIASDACS) - e' ancora il layout a
+  dict per config_id, non quello vettorizzato che Marius vuole. Cambiare
+  il codice ora romperebbe tutte le letture/scritture DAC. Bloccato su
+  una migrazione dello schema ODB reale, non su un fix di codice.
+- core/power_partition.py:132 ("outer layers?"): controllato
+  CosmicRun/Setup/DAQ/VTX_Map e .../Power/Map nell'ODB reale - oggi
+  esistono solo partition L1/L2, tutte lunghezza fissa 12 char
+  (es. VTX_US_L1_M1). Nessun dato di layer esterni (L3/L4) esiste per
+  verificare se il confronto ladder_name[:12]==partition_id regge anche
+  li' (es. con moduli a doppia cifra). Inconclusivo finche' non
+  compaiono dati reali di outer layer nell'ODB.
+- calibrations/ivscan.py (wait_for_hv_voltage no-op) e i 2x
+  "finalise(): #TODO: extra checks?" (ivscan.py + smoketest.py): non
+  sono domande a cui posso rispondere leggendo altro codice - serve
+  decidere timeout/soglie di retry (stessa natura delle domande gia'
+  in categoria 2, es. smoketest.py "how long?"). Nessun codice toccato.
+
+Prossimo passo richiesto 2026-08-26: controllo esteso ai commenti
+"normali" (non solo TODO/FIXME/XXX) su tutto pixel_scripts +
+common_scripts, per cercare altro materiale sospetto/obsoleto non
+coperto dal grep dei marker espliciti - vedi risultato sotto.
+
+====================================================================
+6. TROVATO NEL CONTROLLO COMMENTI "NORMALI" 2026-08-26 (non solo TODO)
+====================================================================
+scifi_scripts non incluso (gia' confermato pulito). Nessuna modifica
+al codice fatta - solo indagine, come per il resto di questo doc.
+
+- pixel_scripts/core/daq.py:147-157
+  PixelDAQControl.get_lvds_error_rate_for_chip_list: il ramo else del
+  merge presuppone che la chiave manchi in out2[chip_n] ma poi ci
+  accede comunque (out2[chip_n][link_n]) - se mai eseguito darebbe
+  KeyError invece di gestire il caso. Verificato che oggi e' dead code
+  in pratica (out1/out2 hanno sempre le stesse chiavi, costruite dallo
+  stesso chip_list), ma la logica difensiva dietro e' rotta, non e'
+  solo un commento vecchio. Da tenere d'occhio se la costruzione di
+  out1/out2 cambia in futuro.
+
+- common_scripts/power/supply.py:167
+  MPDCPowerSupply.minimum_voltage_variation = 0.01 # Correct? - stesso
+  dubbio gia' tracciato per HVBoxNPowerSupply (categoria 2, riga 231),
+  ma per MPDC. Va aggiunto alla lista delle domande hardware.
+
+- pixel_scripts/core/feb.py:23-24
+  self.__odb_switch_path / self.__odb_pixel_path, marcati "#Needed?" -
+  CONFERMATO codice morto, nessun uso in tutto il repo (controllato
+  anche la forma name-mangled _PixelFeb__odb_switch_path/
+  _PixelFeb__odb_pixel_path). RIMOSSO 2026-08-26 (le due righe erano
+  l'unico item di questo giro non bloccato da nulla).
+
+- pixel_scripts/core/detector.py:65 e :102 (duplicato in
+  create_febs_from_config e create_febs_from_odb)
+  global_start_linkid += tot_chips*links_per_chip ### This or 36? -
+  domanda di design genuina mai risolta (stride fisso 36 per FEB vs.
+  valore calcolato, che per un FEB da 9 chip sarebbe 27) - sfuggita al
+  grep originale (niente "TODO", solo "###"+"?").
+
+- pixel_scripts/calibrations/calibrationbase.py:73-74
+  Un vero #TODO sfuggito al conteggio originale di 27: "if there are
+  sleep statements in these functions, it will be sequential, so we
+  should have a way to parallelise over the power partitions" - stessa
+  famiglia della categoria 1 (concurrency), va aggiunto li', non e' un
+  punto nuovo da decidere ora.
+
+- common_scripts/operation/operation_base.py:96
+  ActionBase.check_current_jump: "if curr_before - curr_after > 0.1:
+  #tolerance?" - soglia magica non verificata, stessa natura del
+  dubbio gia' tracciato in smoketest.py ("max current jump? should it
+  fail?", categoria 2) - probabilmente la stessa domanda aperta che
+  riaffiora in due punti diversi del codice.
+
+Tutto il resto controllato (rename Pixel*/SciFi* - nessun nome di
+classe vecchio rimasto appeso nei commenti, coerenza get_id()/dict-key
+in power/group.py e operation_base.py, docstring di ODBCommand,
+results/saver.py, gli altri commenti-dubbio in power/supply.py) risulta
+corretto - nessun altro commento stantio, ridondante o sbagliato
+trovato.
+
+====================================================================
+NOTE
+====================================================================
+- Non ancora controllato scifi_scripts per lo stesso tipo di TODO/
+  commenti sparsi - da fare in un giro successivo se si vuole
+  estendere il cleanup a tutti e 3 i repo.
+- Non ancora controllati i commenti "normali" (non TODO) per
+  ridondanza/obsolescenza - solo i marker espliciti sopra.
+- Branch task/Cleanup gia' creato e checked out su tutti e 3 i repo
+  (common_scripts, pixel_scripts, scifi_scripts), partendo da main
+  aggiornato post-merge delle PR di common/pixel/scifi.

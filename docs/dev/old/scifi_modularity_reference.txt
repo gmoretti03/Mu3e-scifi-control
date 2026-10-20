@@ -1,0 +1,136 @@
+SCIFI MODULARITY - REFERENCE FOR THE ODB CONTROL PAGE
+====================================================================
+Reference for building the SciFi custom control/monitoring page:
+physical structure, ODB tree layout, and naming conventions. Structural
+facts only - stable regardless of how much of the detector is currently
+assembled/connected.
+
+Sources: Mu3e Spec Book chapter 6 (physical hardware design) and the
+current SciFi DAQ software (frontend C++, PySequencer scripts),
+cross-checked against each other and against live ODB.
+
+
+1) PHYSICAL STRUCTURE
+--------------------------------------------------------------------
+  Fiber ribbon -> SiPM array (128 channels)
+    -> SMB (SciFi Module Board) - reads 1 SiPM array, hosts 4 MuTRiG
+       ASICs (32 channels each = 128 channels)
+    -> DAB (Detector Adaptor Board) - passive interconnect, interfaces
+       2 SMBs to 1 FEB. Not visible anywhere in ODB - physical wiring
+       only, not something the page needs to represent as its own
+       element.
+    -> FEB (front-end board)
+
+Counts, final Phase I geometry:
+  - 24 SMBs: 12 upstream (US) + 12 downstream (DS), each side numbered
+    0-11
+  - 12 super-modules: 6 US + 6 DS (numbered 0-5), each holding 2 SMBs
+    mechanically
+  - 12 FEBs total (1 per super-module, 6 US + 6 DS)
+  - 8 ASICs per FEB (2 SMBs x 4 ASICs)
+  - 32 channels per ASIC (fixed)
+  - 256 channels per FEB, 3072 channels total in the full detector
+
+Unique 12-bit physical channel ID:
+  bit 11    : 0 = US, 1 = DS
+  bits 10-7 : SMB number, 0-11
+  bits 6-5  : ASIC number within SMB, 0-3
+  bits 4-0  : channel number within ASIC, 0-31
+
+
+2) ODB TREE - READOUT / ASIC CONFIGURATION
+--------------------------------------------------------------------
+One equipment-tree familiy exist:
+  - SciFiFibre / LinksFibre - real production (mu3ebe)
+
+/Equipment/Links<Suffix>/Settings/ - one entry per FEB (array index =
+local FEB position, 0-11 for the Fibre tree):
+  FEBType[]        - equipment type; SciFi FEBs have type 3 ("Fibre")
+  LinkFEB[]         - this FEB's GLOBAL id, unique across the WHOLE
+                       detector (not just SciFi) - e.g. 144-155 for the
+                       Fibre tree. IMPORTANT: use this value, not the
+                       local array index, whenever indexing a
+                       whole-detector-wide array (see FEBCrates below)
+  FEBName[]         - human-readable name, e.g. "US SM 0", "DS SM 5"
+  NumASICsMax[]     - how many of this FEB's 8 possible ASIC slots are
+                       actually populated (0-8)
+  ASICMask[]        - bitmask, one bit per ASIC (bit i = 1 means ASIC i
+                       enabled)
+  Mapping/FEB<LinkFEB value>/  - per-FEB subtree, KEYED BY THE GLOBAL
+                       LinkFEB value (not the local array index):
+                       ASICChipIDs[], LinkChipIDs[], and related
+                       mapping arrays, one entry per ASIC (0-7)
+
+/Equipment/SciFi<Suffix>/Settings/ - ASIC-level configuration:
+  Daq/is_mutrig_3            - single flag (not per-FEB/per-ASIC):
+                                whether this deployment's MuTRiG chips
+                                are version 3 (vs version 2)
+  ASICs/Global/*             - per-ASIC global settings
+  ASICs/TDCs/*                - arrays sized to the FEB's total ASIC count
+  ASICs/Channels/*            - arrays sized to (ASIC count x 32),
+                                includes threshold (tthresh), per-channel
+                                mask, etc.
+/Equipment/SciFi<Suffix>/Commands/  - MutrigConfig, MutrigConfigAllOff,
+                                       TestPulsesTDC
+/Equipment/SciFi<Suffix>/Variables/FCCR
+
+Naming metadata (US/DS, super-module) is layered onto these flat arrays
+via name strings (FEBName[], HV/LV Names[] - see below), not a separate
+equipment-tree branch.
+
+
+3) ODB TREE - HV (SiPM bias voltage)
+--------------------------------------------------------------------
+Path: /Equipment/HV/Settings and /Equipment/HV/Variables
+  - Single tree SHARED by the whole detector (not SciFi-specific, no
+    Labor/Fibre split) - SciFi's channels have to be picked out by name.
+  - Channel names live in HV/Settings/Names[] - SciFi's HV channels are
+    identified by the SUBSTRING "SciFi CH" appearing anywhere in the
+    name (not a prefix match) - e.g. a name like "US Top SciFi CH3".
+  - Per-channel fields: Settings/Output On[ch], Variables/Demand[ch],
+    Variables/Current[ch]
+
+
+4) ODB TREE - LV (ASIC/SMB low voltage)
+--------------------------------------------------------------------
+Path: /Equipment/DCDCCrates/Settings and /Equipment/DCDCCrates/Variables
+  - Single tree shared by the whole detector, same story as HV.
+  - Channel names live in DCDCCrates/Settings/Names[] - SciFi's LV
+    channels are identified by names starting with the PREFIX "SMB_"
+    (e.g. "SMB_US_2-3").
+  - Per-channel fields: Settings/Channel On[ch], Variables/Current[ch]
+
+
+5) ODB TREE - FEB POWER (crate/slot control, distinct from SMB LV)
+--------------------------------------------------------------------
+Path: /Equipment/FEBCrates/Settings and /Equipment/FEBCrates/Variables
+  - Whole-detector-wide, covers every FEB in the experiment (all
+    subdetectors), sized for up to 192 FEBs total (8 crates x up to 15
+    slots each).
+  - FEBCrate[], FEBSlot[] - one entry per FEB, INDEXED BY THE GLOBAL
+    LinkFEB VALUE (see section 2 above), not by any subdetector-local
+    FEB index. Value 255 means "unmapped".
+  - FEBPower[] - sized to crates x max-slots-per-crate (120 = 8x15);
+    the actual bit to flip for a given FEB is at index
+    (crate * 15 + slot), after looking up that FEB's crate/slot via
+    FEBCrate[]/FEBSlot[] above.
+  - Variables/CrateControllerConnected[] (per crate) - whether the
+    crate controller is actually reachable; worth checking before
+    treating a FEBPower write as meaningful.
+
+
+6) NAMING CONVENTIONS SUMMARY
+--------------------------------------------------------------------
+  - "US"/"DS" (upstream/downstream) and super-module number (0-5) are
+    the human-facing geometric identity of a FEB - encoded in
+    FEBName[] (e.g. "US SM 0") and, separately, in each subdetector's
+    own SMB numbering (0-11 per side, spec-book side).
+  - HV and LV channel identity is name-based (substring/prefix match
+    against a shared whole-detector Names[] array), not index-based -
+    always resolve SciFi's channels by matching names, never assume a
+    fixed index range.
+  - The FEB's identity has TWO different index spaces to keep straight:
+    a local one (position within SciFi's own Links<Suffix> arrays,
+    0-11) and a global one (LinkFEB[] value, unique across the whole
+    detector) - whole-detector-wide arrays (FEBCrates/*) need the
+    global one.

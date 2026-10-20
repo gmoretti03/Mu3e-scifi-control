@@ -1,0 +1,235 @@
+PIXEL BRING-UP SEQUENCE, FORMALISED AS DATA
+====================================================================
+Companion to docs/old/chain_and_monitoring.txt section 14 (SciFi's own
+LV/HV/FEB bring-up sequences) - same step-kind vocabulary, same table
+shape, applied to pixel/VTX. Written 2026-08-06 after reconstructing
+the real order from the legacy sequencer (no such single document
+existed for pixel before this - see "WHY THIS DOC EXISTS" at the end).
+
+PLANNING ONLY - no code changed to produce this. The point is to get
+the two subsystems' bring-up procedures into the SAME shape before
+deciding what moves into common_scripts, per chain_and_monitoring.txt
+14's own conclusion ("the engine is subsystem-agnostic and belongs in
+common_scripts - pixel has the same problem").
+
+SOURCES
+--------------------------------------------------------------------
+- online/online/userfiles/sequencer/pixels/legacy_2025/cosmic_run_24/
+  VTX_basic_functions.msl, subroutines VTX_turn_on_power_partition
+  (lines 21-67), VTX_reach_target_HV_power_partition (69-88),
+  VTX_turn_off_power_partition (92-114) - the real, currently-in-use
+  ordering. This is GROUND TRUTH, cross-checked against nothing else -
+  no live pixel ODB dump was reviewed while writing this (unlike
+  SciFi's sequences, which were checked against a real dump). STATE
+  lines below are therefore omitted, not guessed.
+- sequencer_scripts/pixel_scripts/actions/poweractions.py (ActionPower,
+  ActionPowerOn) and core/power_partition.py - the new object-model
+  port, checked step-by-step against the .msl above.
+- sequencer_scripts/pixel_scripts/globals/setup.py:17-19 - confirms the
+  three equipment trees (PowerDistStaging, DCDCCrates, HV) are the
+  SAME shared trees already named in common/services.py and in SciFi's
+  own sequences - not a coincidence, real shared hardware.
+- sequencer_scripts/common_scripts/common/odb.py:20-29
+  (find_channel_number_from_power_partition_name) - channel index for
+  every step below is a NAME lookup into the equipment's own
+  Settings/Names array, not a fixed index - pixel's set of partitions
+  is config/ODB-driven (core/detector.py's create_partitions_from_odb),
+  unlike SciFi's small fixed channel list.
+
+STEP KINDS (same three as chain_and_monitoring.txt 14)
+  verify-program   a MIDAS program must be running
+  verify-value     something must already be true; no write of ours
+  write-verify     write, then read back and confirm it stuck
+
+EVERY STEP CARRIES: name - scope (which power partition / channel,
+found by name lookup, never a constant) - precondition - action -
+verification with a timeout - a shared-equipment flag.
+
+SCOPING DECISION (flag for confirmation, not assumed silently):
+bring-up = POWER ONLY, same cut as SciFi's own three sequences (which
+stop at "FEBPower <- 1", not at "FEB is configured"). Everything chip-
+level - build ASIC/link masks, set default DACs, configure chips,
+reset PLL / reset bias block, the power-mode ramp
+(Minimum->SC->SC_Analog->SC_LineDriver->Full) - is a SEPARATE phase
+that already lives in the Action/Calibration layer (ActionPowerOn's
+own tail end already does part of it: unmask + PowerMode=Minimum +
+configure). Keeping bring-up power-only is what makes it comparable,
+step-for-step, to SciFi's LV/HV/FEB sequences.
+
+--- LV+HV, PER POWER PARTITION (VTX_turn_on_power_partition) --------
+1 write-verify    PowerDistStaging/Settings/Output On[ch] <- 1
+                  ch = MPDC channel for this partition (name lookup)
+                  wait 5s, then verify Output On == True
+                  ("check_mpdc_channel_on")
+
+2 write-verify    DCDCCrates/Settings/Adjust[ch] <- -9
+                  (trim set to minimum BEFORE turning LV on - -9 is
+                  DCDCPowerSupply.minimum_voltage_adjust,
+                  common/power_supply.py:157)
+                  precondition: step 1 verified
+
+3 write-verify    DCDCCrates/Settings/"Channel On"[ch] <- 1
+                  wait 5s, then verify "Power Good"[ch] == True
+                  ("check_if_dcdc_power_good")
+                  precondition: step 2 done
+
+4 write-verify    HV/Variables/Demand[ch] <- 10
+                  ("10V is when the HV boxes operate stable" - VTX_
+                  basic_functions.msl:43 comment)
+                  wait 2s
+                  precondition: step 3 verified
+
+5 write-verify    HV/Settings/Output On[ch] <- 1
+                  wait 5s
+                  precondition: step 4 done
+
+6 write-verify    LOOP: HV/Variables/Demand[ch] <- 10 + 10*n, wait 3s
+                  per step, until Demand == target (VTX_HV_target,
+                  from ODB - user/calibration-set, not a constant)
+                  RE-CHECKS steps 1 and 3's verifications before each
+                  loop iteration (VTX_reach_target_HV_power_partition
+                  re-reads check_mpdc_channel_on and
+                  check_if_dcdc_power_good every time, not just once)
+                  precondition: step 5 done
+
+  SHARED-EQUIPMENT FLAG: none of steps 1-6 touch equipment shared
+  ACROSS power partitions - PowerDistStaging/DCDCCrates/HV channels
+  here are all per-partition. The shared-equipment gate (TDK,
+  DCDCCrates at CRATE level - common/services.py) is checked
+  separately, once, before any partition's sequence runs at all
+  (already true today: ActionFactory.check_shared_equipment() /
+  CalibrationFactory.check_shared_equipment()) - it is a PRECONDITION
+  of the whole sequence, not one of its steps.
+
+TURN-OFF is steps 1-5 reversed (VTX_turn_off_power_partition,
+lines 92-114): HV demand -> 10V, wait, HV Output On -> 0, wait, DCDC
+Adjust -> -9, wait, DCDC Channel On -> 0, wait, MPDC Output On -> 0.
+Note it does NOT reverse step 6 explicitly - turn-off always drops HV
+straight to 10V first regardless of what the ramp had reached, then
+proceeds - power-down does not need to "ramp down" symmetrically.
+
+--- GAPS FOUND, comparing the .msl above to the CURRENT pixel_scripts
+    port (ActionPowerOn, actions/poweractions.py:97-135) -------------
+These are real, found by this reconstruction - not fixed here
+(planning only, per the instruction for this doc).
+
+  GAP 1 - missing step 1 entirely. ActionPowerOn.perform() goes
+  straight to "set minimum LV voltage" / "turn on LV" - it never calls
+  PowerPartition.turn_on_power_distribution(), even though that method
+  already exists (core/power_partition.py:76-80) and is exactly what
+  step 1 needs. Looks like a dropped step in the port, not a deliberate
+  cut - nothing in the code or in todo.txt/calibrations_plan.txt flags
+  this as intentional.
+
+  GAP 2 - missing step 6 entirely. ActionPowerOn sets HV to a flat 10V
+  and turns it on (matching steps 4-5), then stops - there is no
+  equivalent of VTX_reach_target_HV_power_partition's ramp-to-target
+  loop anywhere in pixel_scripts today (no Action class for it, no
+  method on PowerPartition for it). A calibration that assumes HV is
+  already at its real operating voltage after ActionPowerOn would be
+  wrong.
+
+  Both gaps sit in the "bring-up" phase specifically - the very thing
+  this doc is formalising - which is exactly the value of writing the
+  sequence down as data: these two silently-missing steps could not
+  have been "grepped for" before there was a canonical list to check
+  the code against.
+
+BOTH GAPS CLOSED 2026-08-06, via common_migration_plan.txt step 4 -
+common/bringup.py (Step/BringUpSequence engine) + pixel_scripts/actions/
+bringup_declaration.py (this partition's declaration) + poweractions.py
+rewritten to use it (ActionPowerOn for bring-up, NEW ActionPowerOff for
+power-down - pixel had no power-off Action at all before this).
+
+REFINEMENT DURING IMPLEMENTATION: the table above lists 6 steps, but
+steps 2 (trim to minimum) and 4 (set HV to 10V) turned out not to be
+independent reversible conditions once actually built - the legacy
+turn-off sequence does the SAME trim-to-minimum and SAME set-to-10V
+before turning LV/HV off (VTX_turn_off_power_partition), not their
+opposite. They are safety pre-actions of their neighbouring on/off
+toggle in BOTH directions, not steps with their own on/off state. The
+real implementation has 4 Steps, each owning both directions:
+  1 power_distribution_on   (closes GAP 1)
+  2 lv_on                   (trim-to-minimum folded into both turn_on
+                              and turn_off)
+  3 hv_on_at_10v             (set-to-10V folded into both turn_on and
+                              turn_off, matching "10V is when the HV
+                              boxes operate stable")
+  4 hv_ramp_to_target        (closes GAP 2 - turn_on runs the whole
+                              10V-step ramp, re-checking power_
+                              distribution_on/is_lv_on before each
+                              increment; turn_off drops demand to 10V)
+Power-down runs these 4 in reverse - confirmed working end to end
+(dry-run): power-down starting from hv_ramp_to_target correctly finds
+"nothing to undo" if the ramp never completed, then correctly writes
+Demand<-10/Output On<-0 for hv_on_at_10v.
+
+NOT FIXED, noted only: this doc's own step 3 said verify via "Power
+Good[ch] == True" (a hardware health signal), but the real is_lv_on()
+used for verification (both in bringup_declaration.py and in the
+pre-existing pixel_scripts code before this change) checks the
+"Channel On" bit itself, not Power Good - a weaker check. Not part of
+GAP 1/GAP 2, not touched here.
+
+target_HV is a new hardcoded placeholder in globals/operation_
+parameters.py (40.0, UNVERIFIED) - the legacy script reads this
+per-partition from ODB (VTX_HV_target); wiring real per-partition ODB
+parameters is out of scope here (same "TODO: read from ODB" status as
+every other parameter in this codebase today).
+
+--- WHAT FALLS OUT OF WRITING THIS AS DATA (mirrors chain_and_
+    monitoring.txt 14's own conclusion, now confirmed on a second
+    subsystem) -----------------------------------------------------
+  Pixel and SciFi's sequences are now the SAME SHAPE: an ordered list
+  of {name, kind, scope-by-name-lookup, precondition, action,
+  verification+timeout, shared-flag} steps, ending in "power is on and
+  stable" and stopping before any chip/FEB configuration. That means
+  the bring-up ENGINE (iterate the list, stop at the first failing
+  step, support dry-run-as-log, support running the reversed list for
+  power-down) can be ONE piece of code in common_scripts, with two
+  small per-subsystem DECLARATIONS (this list for pixel, section 14's
+  three lists for SciFi) - exactly the split chain_and_monitoring.txt
+  14 already proposed, now backed by a second real example instead of
+  a guess that pixel "has the same problem".
+
+  Engine responsibilities (subsystem-agnostic, so belongs in common):
+  - run the list top to bottom, stop at first failed verification
+  - report "which step, which partition/channel" on failure - this is
+    what a bring-up UI/ladder would show as "where am I blocked"
+  - dry-run mode: print what each step WOULD write instead of writing
+    (same convention already in common/odb.py's ODBCommand, common/
+    setup.py's can_send_commands_to_odb - the engine should reuse that
+    flag, not invent a second one)
+  - power-down = same list, reversed
+  - idempotency is a property of EACH STEP's precondition (a step
+    whose precondition is already satisfied is a no-op) - the engine
+    doesn't need special-case logic for "already partially up", the
+    declarations already read/verify before writing everywhere
+
+  Per-subsystem declaration responsibilities (stay in pixel_scripts /
+  scifi_scripts respectively):
+  - the actual step list (this file's LV+HV table / chain_and_
+    monitoring.txt 14's LV/HV/FEB tables)
+  - how "scope" resolves to a real channel index (name lookup here,
+    already common/odb.py's find_channel_number_from_power_partition_
+    name() for pixel - SciFi mostly hardcodes indices today, a gap
+    worth noting for symmetry but not for this doc to solve)
+
+NOT DECIDED HERE (needs a conversation, not a default):
+  - exact shape of a "Step" object/dataclass for the engine
+  - whether check_shared_equipment() (already common) becomes one
+    special step type, a precondition attached to the whole sequence,
+    or stays a separate call the way it is today
+  - whether GAP 1 / GAP 2 get fixed now that they're visible, or stay
+    open tracked items - explicitly NOT this doc's call
+
+WHY THIS DOC EXISTS
+--------------------------------------------------------------------
+Before today, pixel's bring-up order lived only as: (a) the .msl
+subroutines above, called by an operator through the MIDAS sequencer
+GUI in an order that is nowhere written down as a single list, and
+(b) a partial, silently-incomplete port of the same order into
+ActionPowerOn. Neither is a place you could point at and ask "does the
+code do all of this, in order" - which is exactly how GAP 1 and GAP 2
+went unnoticed. This file is that place, for pixel, matching the one
+that already exists for SciFi.

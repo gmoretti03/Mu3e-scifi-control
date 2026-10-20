@@ -1,0 +1,413 @@
+HACKATHON - CONCEPTS AND DESIGN RATIONALE
+====================================================================
+Everything conceptual/brainstormed behind the pixel_scripts/common_scripts
+architecture and the still-undecided scifi_scripts direction. NOT a
+change log - see implementation.txt for what was actually done to the
+code. NOT scifi-specific action items either - see structure_scifi.txt
+for that. This file is the "why", collected from two sources: the
+2026-07-16 hackathon (live discussion + Luigi Vigani's "Operation
+Scripts" presentation, 43 slides, PDF kept in scifi_scripts/) and the
+2026-07-17 morning meeting (custom page brainstorm, dictated live).
+
+
+1. THE common/ PROMOTION RULE
+----------------------------------------------------------------------
+Same rule already documented in scifi-userfiles/README.md's "Rules for
+this repo" section, reused as the working principle for
+common_scripts/common/ too: common/ is for code that is genuinely
+IDENTICAL everywhere it's used TODAY, not code that "will probably be
+reused." Nothing gets promoted on a guess - only once a second real
+caller needs the exact same code. Applied strictly, including to things
+that "felt" generic but had no confirmed second caller yet (see section
+5 below).
+
+
+2. BOTTOM-UP CODE STRATEGY (Operation Scripts, slides 5-6)
+----------------------------------------------------------------------
+Despite the name "scripts", more than "scripting" is needed. Last
+year's MSL scripts (simple ODB commands, no classes/objects) didn't
+scale: needed special commands to handle references across equipment,
+readability/support issues, e.g. all channels and power-partition info
+living in separate vectors with manual index-finding everywhere.
+
+Python's answer: bottom-up, not top-down.
+  Top-down (rejected): start from "I need to run this calibration",
+  work backwards to what ODB writes it needs, code a turn_on()
+  function, eventually loop over power supplies.
+  Bottom-up (adopted): first describe the detector/hardware itself,
+  sort out all connections between pieces of equipment, figure out
+  what could/should be done for each, THEN code each calibration using
+  what's already described.
+
+Use inheritance as much as possible for pieces of code common across
+different objects. Every time something new is implemented, ask: would
+this help somewhere else? At which level (whole object? one method?)?
+
+
+3. DETECTOR DEFINITIONS (Operation Scripts, slides 7-11)
+----------------------------------------------------------------------
+Detector topology, pixel side (explicitly noted as "can be applied to
+Sci*" for the shared pieces):
+  Power Generator (TDKs) -> Power distribution/channel (MPDC) -> DCDC
+  converter -> Chips (grouped on a module) -> DAB+FEB.
+  Separately: HV box -> chips (HV path is parallel to the DCDC/LV path).
+
+DEFINE Power Partition = one power distribution channel + one DCDC
+converter + one HV box channel + all chips connected to them. This is
+THE base element of the pixel detector - same as last year. Known
+wrinkle: for Layer 2 there is no 1-1 match between power partition and
+DAB (worth remembering if this model is ever reused elsewhere).
+
+Code objects, 2 top-level objects for all operations:
+  - Detector: a dict of Power Partitions + an array of FEBs (FEBs have
+    an array of Chips, but each Chip exists as exactly one instance -
+    produced by the detector, linked to a parent FEB afterwards).
+  - DAQControl: represents the DAQ itself. All commands/variables
+    centralised - e.g. there's no single "configure this one chip"
+    method, only "configure all, then follow a mask".
+
+Motivation for the layering (slide 12): "is a power partition on" is
+NOT the same question as "is one power supply on" - a power partition
+being on means LV supply is on AND HV supply is on AND power
+distribution is on. Centralising this in the PowerPartition object
+means calling code never needs to know what "on" means for that
+partition, just what the partition itself says.
+
+Config sourcing (slides 15-16): a local config/detector.json (minimal
+description: FEBs by ID with chip counts, Power Partitions by ID with
+supply types/equipment names and a chip array with positional
+IDs/FEB linkage) lets this run on a laptop with no ODB access at all.
+In the real experiment everything comes from ODB instead (sourced from
+multiple locations - some in DAQ Equipments, some in the OLD ODB
+structure kept only because the custom page still needs it) via
+create_febs_from_odb / create_partitions_from_odb. Not considered
+ideal, but minimal changes to ODB - "I do not think there is anything
+to do more" (Vigani's own assessment).
+
+Chip IDs (slide 17) - "an ongoing joke", solved by just defining
+different IDs for different purposes, one has to know which is which:
+  - Positional ID: human-readable, position-based (e.g.
+    VTX_US_L1_M1_L1_C1).
+  - Position in FEB: internal ID the FEB uses to pick DAB-STP/address.
+  - Config ID: global position inside the DAQ, used during
+    configuration (FEB number + position inside FEB); also used for
+    DACs.
+  - Readback ID (aka Hit ID / analysis ID, name negotiable): the ID
+    the firmware inserts into hit data when recording.
+
+Code principles (slide 18): the power partition is the base element of
+the pixel detector (same as last year). Open question raised here,
+never answered in this document: "Sci* wants to do the same?" - see
+structure_scifi.txt for how that question was actually resolved in
+practice (differently).
+NEW (to be agreed): besides selecting which power partitions to
+operate on, the user can ALSO select which chips - a DIFFERENT concept
+than the ASIC mask the DAQ uses. The ASIC mask decides which chip gets
+configured AT A GIVEN TIME (can exclude chips for parallelisation, for
+instance); the user selection decides which chips undergo a given
+operation at all (can exclude chips that are just not working). The
+two sets are not necessarily the same. Selecting chips was cumbersome
+last year and updating the mask was an issue.
+
+Inheritance trees actually used (slide 21), pixel side:
+  PowerSupply -> LVPowerDistribution -> MPDCPowerSupply
+  PowerSupply -> LVPowerSupply -> DCDCPowerSupply (+ Hameg for test
+    setups, not yet built)
+  PowerSupply -> HVPowerSupply -> HVBoxNPowerSupply (+ Keithley for
+    test setups, + HVBoxP for Sci*, neither yet built)
+  Explicitly flagged: "more and more complicated are foreseen" - review
+  the rest of the code structure before diving further into these
+  classes and their open questions.
+
+
+4. OPERATIONS: THREE CATEGORIES (Operation Scripts, slides 23-27)
+----------------------------------------------------------------------
+  - Actions: quick, sets the detector into a defined state (turn
+    on/off, reset PLLs/biasblock, write TDACs). User can run these
+    when needed; some need agreement with the detector responsible
+    (turn on/off), some are just recommended by the user manual
+    (resets,...).
+  - Calibration: longer, finds optimal operating parameters (link
+    error minimisation, BLPix/VNoutPix optimisation). Must be agreed
+    upon, possibly with the run coordinator, since it can take time
+    away from other subsystems.
+  - Tuning: special calibrations, same principle but with pixel DACs.
+    (Left as an open question in the presentation: "I guess the same
+    as calibration. Or is just tuning a calibration?")
+
+Implementation shape:
+  Actions: one method, perform() - no parameters, returns an
+  ActionResult enum (expected outcome: success, others should be
+  flagged). One method called on the result, post_perform() - by
+  default just saves the result, can be overridden for post-checks.
+  Calibrations: three methods, ALWAYS called, meant to be overridden:
+    prepare() - checks the detector is in the right setup (partitions
+      on,...), expected SUCCESS, can be "not ready" (calibration ends
+      here).
+    execute() - the bulk of the calibration, changes to the detector
+      happen here, expected SUCCESS, can be "failure" or a more
+      specific failure mode (calibration ends here too). Any failure
+      should be caught as fast as possible.
+    finalise() - called at the end, checks the extracted/optimised
+      parameters make sense, also expects SUCCESS.
+  Open ToDo (slide 24): should actions and calibrations share a common
+  base class? So far they live in different folders, structured
+  similarly but not formally unified.
+
+Calibration parameters (slide 28) - NOT implemented yet as of the
+presentation. Last year's strategy: one parameter set PER power
+partition (motivated by different resistivities needing different IV
+scan ranges last year), saved in separate ODB folders per partition
+(not by the script itself), plus one "defaults" folder the user
+doesn't touch directly, with a reset-to-default button/option per
+partition or for all. Alternative being considered: one shared
+parameter set for ALL partitions - simpler, but risky (any partition
+that's actually different forces redoing it), and if adopted the
+parameters could just be passed to the pysequencer directly instead of
+living in per-partition ODB folders. Explicitly flagged as a decision
+to make NOW (as of the presentation), not deferred - if the "same as
+last year" route is chosen, someone would need to reproduce last
+year's approach including its custom-page integration; if a different
+route is chosen, a new way to define/move these to sequencer parameters
+needs implementing.
+
+
+5. THE common/ FILES, CONCEPTUALLY (Operation Scripts, slides 29-36)
+----------------------------------------------------------------------
+globals/ (pixel-specific, not common/): folders.py is just output
+folder locations (could be pulled from ODB); setup.py holds debugging
+switches (is there a real power supply connected? a full detector ODB?)
+- as of the presentation these had to be changed by hand or passed as
+pysequencer parameters, "but it can be changed" (this is exactly what
+got extracted into common/setup.py the next day). Also flagged: the ODB
+entry path holding most of this is still called "/CosmicRun" - "better
+name?" - and if it's ever renamed, the custom page has to change too
+("!!!" in the original). operation_parameters.py is explicitly "a try,
+this is a ToDo".
+There is ALSO a separate concept of a set of ODB-defined parameters
+needed for operation generally, common to Actions/Calibrations/custom
+page monitoring/watchdog (e.g. target VDD on DCDC) - some per-power-
+partition, some global. Presentation floats the idea of a class that
+retrieves them all in one place, for use e.g. during calibration
+checks. Not built as of the presentation.
+
+utils/ (pixel-specific, not common/): odb.py (ODB communication -
+this is the direct ancestor of common/odb.py), results.py (saving
+results), positional_functions.py explicitly flagged as "not used,
+done differently, can be removed."
+
+ODBCommand (the concept behind common/odb.py): every ODB interaction
+follows one of a small number of shapes - write a value then maybe
+wait a fixed time, or wait until another key reaches a condition (with
+a max wait to avoid getting stuck); or just read; write+read together
+"can be a combo, but never seen [in practice]"; optionally something
+happens post-execution. One class formalises all of this. A power
+supply then just defines its own commands as a dict of string ->
+ODBCommand - "here everything you need to know is set" - and all
+commands get mapped onto the instance itself so e.g. self.turn_on()
+works (the concept behind common/command_mixin.py's
+map_commands_to_self, generalised beyond just power supplies -
+DAQBase/FEB reuse it too).
+
+Other ODBCommand-derived classes, and WHY (slides 34-36):
+  ODBBooleanCommand: value is a boolean, expected to hold a certain
+  "idle" value; the command always writes the OPPOSITE value, then
+  waits for it to revert - "this is the working principle of many
+  commands to DAQ (configure chips,...)".
+  ODBPowerSupplyReadCommand: read-only, automatically writes the
+  outcome into a dict on the power supply itself. Explicit motivation:
+  during last year's operations and QC, it was hard to agree on what
+  to read and each attempt produced a differently-shaped output
+  dictionary - "making consistency a nightmare". Coding what's
+  readable INTO the power supply class itself, then reading it all
+  with the same format no matter what, fixed this for good.
+  ODBPowerSupplyReadAndCheckCommand: same idea, plus a pass/fail check
+  on top. Complication flagged at the time: the resulting output
+  format ("readables_check") is itself complicated enough that a
+  dedicated class to analyse/summarise it was floated as a ToDo - not
+  built as of the presentation, still not built as of 2026-07-17.
+
+
+6. RESULTS STRATEGY (Operation Scripts, slides 37-38)
+----------------------------------------------------------------------
+Three destinations foreseen for calibration/action results:
+  - Local: ndjson on disk, like the existing QC tooling.
+  - ODB: some monitoring-facing ODB folder, already integrated into
+    last year's custom page - "someone should take care of it and I
+    can explain how".
+  - RunDB / CDB: for offline analysis later - contact Urs on how; Tiles
+    is believed to have already done something here.
+Strategy: follow the inheritance pattern used everywhere else. A base
+ResultSaver class defines append_step_result / save_final /
+save_step_results (meant to be overridden); one derived class per
+destination; a container class (ResultSaverMultiple) holds a dict of
+all active saving methods and calls them together in a loop. (This is
+the design behind pixel_scripts/utils/results.py, currently NOT
+promoted to common/ - see structure_scifi.txt/implementation.txt for
+why.)
+
+
+7. ONE MIDAS CLIENT, DEPENDENCY-INJECTED (Operation Scripts, slide 39)
+----------------------------------------------------------------------
+To talk to ODB you need an instance of the MIDAS client - and you need
+exactly ONE in the entire running code, created once and passed down
+to every class that needs it. If run by the sequencer, the entry
+script creates it and passes it in; if run as a standalone test script,
+Detector.__init__ creates its own (this is the code path that got
+tightened on 2026-07-17 to also respect is_odb_available - see
+implementation.txt).
+
+
+8. THE common_scripts/common/ PROMOTION - RATIONALE (2026-07-16)
+----------------------------------------------------------------------
+(What got moved and why - the actual file-by-file diff lives in
+implementation.txt; this section is only the reasoning.)
+
+odb.py: moved verbatim, zero pixel-specific content - directly IS the
+concept from section 5 above.
+
+setup.py: the 3 execution-mode flags (is_odb_available,
+can_send_commands_to_odb, run_from_sequencer) had to move together with
+odb.py, because odb.py's ODBCommand.execute() reads them - leaving them
+behind in pixel's globals.setup would have created two different module
+objects holding two different copies of the same flags, so setting
+globals.setup.is_odb_available would silently stop affecting what
+odb.py actually checks.
+
+power_supply.py, round 1: PowerSupply base + the two
+ODBPowerSupplyRead*Command classes moved - concrete types (DCDC/HVboxN)
+and the Factory stayed in pixel_scripts initially, no confirmed scifi
+equivalent yet at that point.
+power_supply.py, round 2 (explicit user request, after re-framing the
+promotion criterion as "usable by both scifi and pixel" rather than
+"already called by both"): LVPowerSupply/HVPowerSupply category
+classes plus the concrete DCDCPowerSupply/HVBoxNPowerSupply moved too,
+justified by reading scifi-userfiles/scripts/lv_power.py and
+hv_power.py's REAL source and confirming they talk to the exact same
+shared, unsplit DCDCCrates/HV equipment trees pixel_scripts uses.
+Deliberately NOT moved: PowerSupplyType enum, LVPowerDistribution,
+MPDCPowerSupply (power-distribution concept, no confirmed scifi
+equivalent - scifi's dry-run findings never mentioned anything like
+PowerDistStaging/MPDC), PowerSupplyFactory (directly instantiates
+MPDC's pixel-only branch).
+
+command_mixin.py: CommandMappable extracted because the exact pattern
+(execute_command + map_commands_to_self) was ALREADY duplicated 3x in
+pixel_scripts alone (PowerSupply, DAQBase, FEB) before this promotion -
+a genuine repeat-caller situation, not a guess. Two real bugs fixed
+while unifying: 2 of 3 original copies referenced self.equipment_name
+in their error message, an attribute only PowerSupply actually has
+(would have raised AttributeError if ever hit on DAQBase/FEB); and
+PowerSupply's original execute_command always returned True regardless
+of outcome (plus an extra debug print) while DAQBase/FEB's returned the
+real result - standardised on "return the real result" (2-of-3
+majority, explicit user decision).
+
+status_message.py: StatusMessage extracted from ActionMessage/
+CalibrationMessage, which were near-duplicates (same two ODB fields,
+same "Success" override logic, same debug print). "Success" is
+detected by checking the result enum member's .name == "SUCCESS" via
+getattr - deliberately duck-typed so common/ never needs to import any
+particular Result enum. Two dead instance attributes dropped in the
+process (confirmed unused via grep across both repos first).
+
+
+9. WHAT WAS EVALUATED AND DELIBERATELY NOT PROMOTED (2026-07-16)
+----------------------------------------------------------------------
+Two pieces are structurally generic (no pixel-specific ODB paths inside
+them) but had NO second real caller as of 2026-07-16, so stayed in
+pixel_scripts per the section 1 rule:
+  - utils/results.py's ResultSaver family: only couples to pixel via
+    type hints and by calling det.power_partitions, pp.is_selected(),
+    chip.get_positional_id(), det.get_all_user_selected_chips().
+    Moving it now would mean pre-committing scifi_scripts's
+    not-yet-designed core/ classes to that exact method vocabulary.
+  - core/daq.py's DAQSCReads/DAQSCReadsArray base classes (NOT the
+    concrete DAQLVDSErrorStats/DAQMupixSCReadBack, which hardcode
+    Mupix-specific SC variable names and stay pixel-only). Build ODB
+    paths generically via getattr(self, "odb_" + equipment + "_path"),
+    zero pixel-specific content, but again no scifi equivalent to
+    confirm the shape against.
+Both remain open candidates - see structure_scifi.txt.
+
+Also evaluated and confirmed genuinely NOT shareable: core/detector.py,
+core/power_partition.py, core/chip.py (pixel's DAC names/topology),
+actions/*.py and calibrations/{calibrationfactory,ivscan,smoketest}.py
+(pixel-specific sequences/dispatch), globals/folders.py and
+globals/operation_parameters.py (pixel-specific values). The
+prepare/execute/finalise shape in CalibrationFactory.perform_calibration
+(and more loosely ActionFactory.perform_action) IS the generic pattern
+from section 4 above, but it's written inline once, not duplicated 2x+
+- no second real caller, so not extracted either.
+
+
+10. CROSS-CHECK AGAINST scifi-userfiles/docs/HACKATHON.txt (2026-07-16)
+----------------------------------------------------------------------
+(HACKATHON.txt is gitignored personal notes, section 5 there has the
+full 2026-07-16 brainstorm, numbered 5.1-5.11.)
+
+Already satisfied by pixel_scripts's existing design, pattern only,
+still needs porting to scifi_scripts when that resumes: 5.3
+(prepare/execute/finalise), 5.5 (globals module), 5.7 (utils/ layout),
+5.10 (ResultSaver), 5.11 (dependency-injected MidasClient).
+
+Directly implemented in the 2026-07-16 promotion: 5.8 (an ODBCommand
+family "always in odb.py, not scattered across scripts", exactly the
+subclasses it names).
+
+Confirmed but not acted on: 5.1 asked "does pixel actually use
+DCDCCrates/HV?" as the precondition for a "same-day merge" of
+lv_power.py/hv_power.py - answer confirmed YES. The merge itself was
+not attempted: pixel's real power-on flow (poweractions.py's
+ActionPowerOn - step LV to minimum, turn on, wait; then HV to 10V, turn
+on, wait) is a staged OOP sequence, not scifi's flat "find every
+matching channel by name, turn them all on, check current" script - not
+a trivial 1:1 file merge even though the equipment classes are shared
+now.
+
+Separately verified (not itself a HACKATHON.txt item but directly
+relevant to whether any of this sharing is real): read
+midas/python/midas/sequencer.py directly - SequenceClient IS a real
+MidasClient via inheritance (does not override odb_get/odb_set/
+odb_exists), so common.odb/common.power_supply's classes can be handed
+a real PySequencer script's `seq` argument directly, no adapter needed.
+De-risks any future lv_power.py/hv_power.py merge attempt.
+
+Still just brainstormed, no design or code anywhere: 5.1 (per-channel
+selection beyond ASICMask), 5.2 (Feb/Asic/Channel classes - the actual
+open design work for scifi_scripts/core/, see structure_scifi.txt),
+5.4 (per-power-partition scan ranges in ODB), 5.6/5.9 (result
+destinations - ResultSaverODB is still an unimplemented stub).
+
+
+11. PIXEL CUSTOM CONTROL PAGE - MORNING BRAINSTORM (2026-07-17)
+----------------------------------------------------------------------
+Dictated live during a meeting, explicitly confirmed as "just an idea"
+for now, not a task - also written into
+scifi-userfiles/docs/SCIFI_DAQ.txt section 2.5 as a cross-reference
+for whenever SciFi designs its own control page (see that file's
+section 3 for SciFi's own two-page proposal).
+
+Layout/behaviour brainstormed:
+  - Turn on helium (dedicated action/button).
+  - Status bar with the two main long-running processes - sequencer and
+    run - each expandable to more detail.
+  - Watchdog status box - full info, not just pass/fail.
+  - Required programs box.
+  - Service status box - all power info (LV/HV/etc, the generic
+    equipment-level view, not per-power-partition).
+  - Geometrical view condensing the power partitions, each showing its
+    selection/mask state directly in the geometric view.
+  - Power sense split into three blocks: LV, HV, T (temperature).
+  - Everything populated live from MIDAS/ODB.
+  - ASIC masking reachable from the same page, not a separate tool.
+  - A "Monitoring" box placed right after "Slow Control" in the layout.
+  - Overall flow: mirrors the expert manual's step order - power on,
+    config, calibration, tuning, slow control - not just controls
+    exposed in isolation.
+
+This is pixel's independent take on the same "Page 2 - technical
+control page" problem SciFi is separately proposing (see
+SCIFI_DAQ.txt section 3) - worth comparing notes once SciFi's own
+proposal firms up, same "align, don't copy" spirit as the pixel/scifi
+VTX_Generic.html takeaway in SCIFI_DAQ.txt section 2.4.

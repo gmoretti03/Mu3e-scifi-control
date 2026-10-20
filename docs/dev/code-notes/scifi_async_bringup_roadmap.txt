@@ -1,0 +1,271 @@
+SCIFI ASYNC / CONCURRENT BRING-UP - ROADMAP
+===========================================
+Written 2026-09-01, planning-only (user asked "se volessi, cosa dovremmo
+fare?" then "salvalo").
+
+UPDATE 2026-09-01 (later, branch task/scifi_async on all 3 repos):
+  - STEP 1 DONE: generic async surface extracted to
+    common/power/group.py :: AsyncPowerRoutines (a mixin beside PowerGroup, not a separate file). PixelPowerPartition
+    is now (PowerGroup, AsyncPowerRoutines). Behaviour-neutral for Pixel
+    (MRO PixelPowerPartition -> PowerGroup -> AsyncPowerRoutines ->
+    object; common 11/11 + pixel smoke pass).
+  - STEPS 2-7 DONE anyway - user gave explicit "via libera" after seeing
+    the "don't pay off" recommendation below. Implementation, all on
+    branch task/scifi_async, uncommitted:
+      * scifi/core/power_partition.py: new SciFiPowerPartition(PowerGroup,
+        AsyncPowerRoutines); SciFiPowerPartitionBuilder default factory
+        switched to it.
+      * scifi/actions/poweractions.py: build_lv_power_groups /
+        build_hv_power_groups now build SciFiPowerPartition (sync path
+        unaffected - it only uses PowerGroup methods). New
+        build_lv_shared_prereq_sequence / build_hv_shared_prereq_sequence
+        (the detector-wide ordered steps, run once, sync BringUpSequence).
+        New lv_concurrent_units (per-FEB groups deduped by DCDC channel) /
+        hv_concurrent_units (per side group). Phase helper classes
+        _Lv/_Hv PowerOn/Off Phase(ConcurrentEvents) each with their own
+        runForPP. SciFiActionPowerOn/Off.perform() = shared prereq (sync)
+        -> asyncio.run(phase.runConcurrent(units)) for LV then HV; power
+        off is HV units -> LV units -> shared teardown reversed.
+      * common/power/group.py (AsyncPowerRoutines): turn_on_hv_and_verify /_hv_ramp_to
+        now gate on _lv_ok_or_absent() (LV check skipped when the unit
+        carries no LV supply - SciFi HV groups don't) instead of
+        _lv_verified_on(). Pixel-neutral (Pixel partitions always have LV).
+      * scifi/core/daq.py: no-op fake_configure() safety net.
+      * scifi/tests/test_async_bringup.py: new; drives the concurrent
+        Power_On/Off through the mock ODB, asserts SUCCESS, checks the
+        sync sequence still builds. scifi 9/9, common 11/11, pixel smoke
+        all pass.
+    Follow-up pass (2026-09-01, same branch) closed the test/robustness gaps:
+      * runForPP bodies wrapped so configureRequired.finish() always runs
+        (try/finally in _ConcurrentPhase) - performConfigure can't block if
+        a bring-up raises.
+      * power-off reordered: HV channels -> HV powerdist -> LV channels/PD
+        -> LV shared rails reversed.
+      * lv_concurrent_units(det, groups=None) - `groups` seam for tests;
+        test now forces two groups onto one DCDC channel and asserts the
+        dedup collapses them.
+      * _collapse tested directly + a monkeypatched failing unit asserts
+        the phase returns POWER_FAIL.
+      * scripts/{lv,hv,feb}_bringup_run.py: `import midas.client` deferred
+        into sequence(); logic extracted to poweractions.run_lv_bringup /
+        run_hv_bringup and febactions.run_feb_bringup; the test drives
+        those three helpers on the mock ODB and imports all three scripts
+        + runs define_params (they no longer need midas just to import).
+      * test_async_bringup.py: 9-part; scifi 9/9, common 11/11, pixel
+        smoke all still pass.
+      * common hygiene: DAQBase.fake_configure() no-op default added to
+        common/daq/control.py (SciFi's identical override removed; Pixel
+        keeps its own - it simulates a delay). concurrent_events.ConcurrentEvents
+        .runForPP base given `self` (was missing).
+      * NOT promoted (user's call): the concurrent-results collapse loop.
+        SciFi keeps it as poweractions._collapse with a TODO. Pixel's
+        poweractions.py repeats the same loop 4x inline - promote _collapse
+        to common/operation/concurrent_events.py together with that Pixel
+        refactor, in a separate PR.
+    KNOWN LIMITATIONS THAT REMAIN (the reasons it was recommended against):
+      * near-zero real speed-up - the shared prereq (TDK, DCDC enable/on,
+        crate mains, LDO, HV powerdist, frontend) is the bulk of the wall
+        time and still runs sequentially; only the per-unit PD/LV/HV
+        pulses overlap.
+      * two asyncio.run() per perform() (LV phase, HV phase) - same
+        pattern as Pixel's PixelActionPowerOn; if the sequencer ever
+        drives an action from inside a running loop this raises
+        RuntimeError. Not validated against a real SequenceClient.
+      * no real-ODB / dry-run test on mu3ebe (roadmap step 7's hardware
+        part, out of scope here).
+  - See "WHY STEPS 2-7 DON'T PAY OFF" below for the original reasoning.
+
+
+CONTEXT
+-------------------------------------------------------------------
+Same-day work (2026-09-01, branch task/Cleanup, uncommitted at time of
+writing) already did:
+  - common/power/group.py : the ~11 async power methods
+    (turn_on/off_*_and_verify, _pulse_to, _wait_until, _set_lv_adjust,
+    ramp_lv_vdd_and_verify, _hv_ramp_to, the 4 asyncio.Lock getters,
+    _WATCH_SETTLE, the _log_* helpers, _lv/_pd_verified_on,
+    _vdd_sense_exceeds_target) REMOVED from PowerGroup, moved onto
+    PixelPowerPartition (pixel_scripts/core/power_partition.py).
+    PowerGroup gained 3 protected accessors (_get_lv_supply /
+    _get_hv_supplies / _get_power_distributions) because name-mangled
+    self.__lv_supply is not visible from a subclass in another repo.
+  - common/operation/bringup.py : Pixel-only LV/HV recipe
+    (build_power_group_bringup_sequence + _lv_*/_hv_* helpers) DELETED
+    (zero callers). Stale "#TODO this entire thing we can get rid of.
+    Concurrency will be implemented." removed - concurrency WAS
+    implemented (in Pixel) and did NOT replace the engine.
+  - pixel/actions/poweractions.py : dead "import operation.bringup"
+    removed.
+
+The generic Step / BringUpSequence / StepKind engine in
+operation/bringup.py stays shared in common: it backs the Pixel FEB
+power path (Feb_Power_On/Off -> febactions.PixelActionFebPowerOn ->
+feb_crate.perform_feb_power_action -> build_feb_bringup_sequence) AND
+all of SciFi's sync power/FEB flow.
+
+Current SciFi power model (fully synchronous, no asyncio anywhere, no
+concurrency branch):
+  - scifi/actions/poweractions.py : build_lv_bringup_sequence(det)
+    [6 steps], build_hv_bringup_sequence(det, v) [3 steps]. These are
+    DETECTOR-WIDE step sequences, not per-partition. SciFiActionPowerOn.
+    perform() -> .bring_up(); SciFiActionPowerOff.perform() ->
+    .power_down() (sequence run in reverse, free).
+  - scifi/actions/febactions.py : build_shared_feb_bringup_sequence(det)
+    [3 steps] + per-FEB feb_crate.build_feb_bringup_sequence.
+  - scifi/scripts/{lv,hv,feb}_bringup_run.py : 3 PySequencer entry points.
+  - scifi/core/power_partition.py : SciFiPowerPartitionBuilder builds
+    partition objects with partition_factory defaulting to raw
+    group.PowerGroup (CHECK whether a SciFiPowerPartition(PowerGroup)
+    subclass exists - step 2 depends on it).
+
+
+WHY STEPS 2-7 DON'T PAY OFF (after reading the code, 2026-09-01)
+-------------------------------------------------------------------
+The roadmap's step 3 ("split SciFi bring-up into parallel units") is the
+load-bearing assumption. It does not hold:
+
+  - scifi/actions/poweractions.py build_lv_bringup_sequence(det) is ONE
+    linear BringUpSequence of 6 detector-wide steps: tdk_scifi_tile
+    verify -> dcdc_crates_enabled -> powerdist_crate_mains_on ->
+    dcdc_crates_on -> powerdist_smb_ldo_on -> lv_channels_on. HV is 3
+    more. Every step has wait_seconds=1, max_wait_seconds=5.
+  - dcdc_crates_enabled / dcdc_crates_on are BULK ODB array writes:
+    SciFiDetector.enable_all_dcdc_crates() writes
+    /Equipment/DCDCCrates/Settings/Enabled = [True]*n, turn_on_all_dcdc_crates()
+    writes Crate On = [True]*n. One write, the frontend brings up every
+    crate. There is no per-crate / per-partition channel to pulse the
+    way Pixel pulses one DCDC channel per partition.
+  - the remaining steps already loop over all lv_groups / hv_groups
+    in-process (fast ODB writes) then take ONE shared settle wait.
+  - the steps are strictly ordered (can't turn crates on before
+    enabling; can't turn LV channels on before the LDO). No reordering
+    freedom.
+  - worst-case LV bring-up ~= 6 * (1s + up to 5s) ~= 36s, typically
+    ~6-12s. HV ~= 18s worst. Nobody parallelises a 10-second ordered
+    sequence.
+  - SciFiPowerPartitionBuilder builds raw group.PowerGroup (no
+    SciFiPowerPartition subclass). The per-partition PowerGroups SciFi
+    does build are used for status/monitoring and the calibration
+    DCDC-crate-index checks, NOT as independent bring-up units.
+
+Contrast Pixel: each of ~8+ partitions independently runs
+PD -> LV -> VDD-ramp(interleaved with per-chip configure) -> HV, each
+tens of seconds. Sequential = minutes, concurrent = tens of seconds.
+That structure is why asyncio + ConcurrentEvents earns its keep there.
+SciFi has none of it.
+
+Building steps 2-7 for SciFi would add ConcurrentEvents +
+configureRequired/configureDone plumbing for ZERO overlap, lose the
+reversible BringUpSequence.power_down(), and lose the readable linear
+step list. All cost, no benefit. Do NOT do it unless SciFi's bring-up
+is first genuinely restructured into independent units (not currently
+possible with bulk DCDC-crate control) AND there is a measured time
+problem.
+
+
+WHY NOT NOW (original note, still valid)
+-------------------------------------------------------------------
+1. Little to parallelise today - SciFi bring-up is one detector-wide
+   sequence, not N independent units. Real parallelism needs the
+   restructure in step 3 first.
+2. No measured need - SciFi is far smaller than Pixel in channel count,
+   ~6 steps, nobody has reported bring-up time as a problem.
+3. MSCB serialisation (DCDC, Power Dist) applies to SciFi too - even
+   parallelised, the power writes still queue behind the locks; only
+   the waits/polls overlap.
+4. The shared machinery is not production-ready -
+   common/operation/concurrent_events.py is a stub (runForPP broken
+   signature, runConcurrent calls fake_configure()); the working
+   version is in pixel's unmerged feature/concurrency.
+5. Async power sequencing on real hardware is a real risk surface -
+   only worth it with a concrete operational pain point.
+
+Do it only if: SciFi bring-up becomes a MEASURED bottleneck (cosmic-run
+turnaround), AND the concurrent_events machinery is finished + proven on
+Pixel first. Let Pixel be the guinea pig.
+
+
+IF WE DO IT - ORDERED PLAN
+-------------------------------------------------------------------
+
+PREREQUISITE (not SciFi's job)
+  Finish common/operation/concurrent_events.py: merge pixel
+  feature/concurrency, harden it, prove it in a Pixel cosmic run.
+  SciFi builds on it, does not battle-test it.
+
+STEP 1 - refactor the shared async surface
+  The generic helpers just moved onto PixelPowerPartition (_pulse_to,
+  _wait_until, _set_lv_adjust, the locks, _log_* helpers,
+  _lv/_pd_verified_on, _vdd_sense_exceeds_target) are NOT Pixel-specific
+  in logic - only the turn_on_hv_and_verify / turn_on_lv_and_verify
+  bodies are.
+  -> Extract them into a common mixin, e.g.
+     common/power/group.py :: AsyncPowerRoutines (a mixin beside PowerGroup, not a separate file).
+  -> PixelPowerPartition changes from "owns the methods" to
+     PixelPowerPartition(PowerGroup, AsyncPowerRoutines). Zero
+     behaviour change for Pixel. This is NOT re-bloating PowerGroup -
+     it is an opt-in mixin.
+
+STEP 2 - SciFiPowerPartition(PowerGroup, AsyncPowerRoutines)
+  Check first whether SciFi already has a PowerGroup subclass (builder
+  currently uses raw group.PowerGroup). Create it if missing. Implement
+  SciFi's turn_on/off_*_and_verify bodies - SciFi specifics (HVBoxP not
+  HVBoxN, LV crate layout, tile TDK) - SAME SHAPE as Pixel, different
+  body.
+
+STEP 3 - split SciFi bring-up into parallel units  (the real design work)
+  Today build_lv_bringup_sequence(det) is one detector-wide sequence.
+  For concurrency to mean anything:
+    - shared-prerequisite phase (TDK health, powerdist crate mains) -
+      run ONCE, reuse the existing Step / BringUpSequence.
+      Precedent: build_shared_feb_bringup_sequence.
+    - per-partition phase - async def runForPP(self, pp, ...) doing one
+      partition's PD -> LV -> HV, spawned in parallel over all
+      partitions.
+  The hard decision is the boundary between "shared, once" and
+  "per-partition, parallel".
+
+STEP 4 - rewire the SciFi action classes
+  SciFiActionPowerOn / SciFiActionPowerOff:
+  from  (SciFiActionBase)                    + .bring_up()/.power_down()
+  to    (SciFiActionBase, ConcurrentEvents)  + async def runForPP
+        + perform() = asyncio.run(self.runConcurrent(...))
+  Mirror PixelActionPowerOn exactly.
+
+STEP 5 - configure interleaving  (NEEDS SciFi input)
+  Pixel threads configureRequired / configureDone events through
+  runForPP because the VDD ramp interleaves with chip configuration.
+  Does SciFi need to configure MuTRiG between LV steps?
+    yes -> same event dance
+    no  -> runForPP is simpler, no configure coroutine.
+
+STEP 6 - what does NOT change
+  - operation/bringup.py STAYS: used by the shared-prerequisite phase
+    and by scripts/{lv,hv,feb}_bringup_run.py (manual/partial bring-ups
+    for debug - keep them synchronous).
+  - power-down: lose the "sequence reversed for free" property of
+    BringUpSequence. runForPP for power-off hand-writes the reverse
+    order (HV -> LV -> PD), same as Pixel. Cost accepted.
+
+STEP 7 - tests + validation
+  Async bring-up tests with fake supplies (precedent: pixel's
+  test_parallelisation*.py). Dry-run mode must work. Then a real-
+  hardware bring-up with someone watching, beam off.
+
+
+EFFORT
+-------------------------------------------------------------------
+Steps 2-5: a few days of focused work + review.
+Prerequisite: a dependency owned elsewhere (Pixel concurrency merge).
+Step 7: hardware time, beam off.
+Not something to slip in quietly.
+
+
+RELATED
+-------------------------------------------------------------------
+  Docs/devolpment/code/pixel_bringup_sequence.txt
+  Docs/devolpment/code/scifi_scripts_alignment_plan.txt
+  memory: project_bringup_engine_stays_common
+  memory: project_concurrency_merged_to_common_main
+  memory: project_scifi_will_conform_to_pixel
+  sequencer_scripts/pixel_scripts/parallelisation.txt

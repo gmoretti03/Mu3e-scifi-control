@@ -1,0 +1,1023 @@
+SCIFI TOPOLOGY - PHYSICAL + ODB/SOFTWARE REFERENCE
+====================================================================
+Answers todo.txt section 3 ("Search and understand ALL of SciFi's real
+modularity/topology, with precise names as used in the real ODB/
+hardware - DAB, FEB, ASIC, Channel"). Two independent sources,
+cross-checked against each other:
+
+  (A) Docs/papers/Mu3eSpecBook.pdf, chapter 6 (SciFi) - physical
+      hardware design, revision 0xae2df1b, 2026-04-20. Local PDF, user-
+      pointed.
+  (B) Live-repo research pass (2026-07-20) over local checkouts of
+      online/ (C++ frontends, wiki/) and scifi-userfiles/ (Python +
+      old docs) - the ODB/software-visible topology. online/ is a
+      known-stale checkout (see project memory) so treat runtime STATE
+      claims from it cautiously, but naming conventions/schema/constants
+      compiled into C++ source are much more durable than that caveat
+      implies.
+
+Where (A) and (B) independently agree on a number, that number is
+solid. Where they diverge or where only one source speaks to something,
+it's marked explicitly.
+
+
+0) TL;DR / STATUS RECAP (updated 2026-07-20, after live ODB check)
+--------------------------------------------------------------------
+Physical chain (solid, spec book + live ODB agree exactly):
+  SMB (4 MuTRiG ASICs, 32 ch each = 128 ch) --DAB (passive, no ODB
+  presence)--> FEB. 2 SMBs per FEB. 12 FEBs total (6 US + 6 DS) = 24
+  SMBs = 96 ASICs = 3072 channels, final Phase I geometry.
+
+ODB chain (solid): Fibre switching board -> FEB (LinkFEB[], global ID,
+144-155 for SciFi) -> up to 2 "modules" (=SMB) -> up to 8 ASICs
+(NumASICsMax[], flat 0-7) -> 32 channels (fixed).
+
+Live mu3ebe state right now (mid-assembly, 2026-07-20): all 12 FEB
+slots exist and are named for real; only 2 of 12 ("US SM 0", "US SM 1")
+have any ASICs actually configured, and even those look only half-wired
+(4 of 8 link chip IDs are still placeholder values).
+
+RESOLVED this session:
+  - SciFiCentral/ScifiCentral confirmed NOT to exist - SciFi ASIC
+    config only ever lives under SciFiFibre.
+  - ASICsPerModule contradiction resolved: field is populated (not
+    dead) but mislabeled - it holds the FEB total (8), not a true
+    per-module count (4).
+  - is_mutrig_3 confirmed a single scalar (=1 on mu3ebe today), not a
+    per-FEB/per-ASIC array.
+  - Mapping/FEB<N> confirmed keyed by global LinkFEB value, not local
+    feb_index (FEB144/FEB145 hold real data; FEB0/FEB1 are stale,
+    empty leftovers).
+
+CONFIRMED BUG this session, NOW FIXED (see section 4b for full
+evidence + verification): feb_power.py indexed FEBCrate[]/FEBSlot[] by
+local 0-11 feb_index, but those arrays are indexed by the global
+LinkFEB value (144-155 for SciFi) - it would have toggled power on
+hardware belonging to a different FEB, possibly a different
+subdetector's. Fixed in scifi_topology.py (get_scifi_febs() now
+returns link_feb per FEB) + feb_power.py (indexes by link_feb).
+Verified offline against the live odb.json dump: old vs new
+crate/slot differ for all 12 SciFi FEBs. Not yet exercised live on
+mu3ebe - first real run should still use dry_run=True.
+
+DECIDED 2026-07-20 by user ruling, not new evidence (see section 4 for
+detail): ODB ASIC-index <-> physical per-SMB ASIC index correspondence
+is now treated as SETTLED, deferring to the spec book as authoritative
+("lo specbook e' la bibbia"). scifi.js's nfebs=24 discrepancy: dropped,
+not being pursued. Equipment-name spelling drift: closed - "Labor" is
+out of scope going forward (working off odb.json's confirmed trees
+only), "Central" was already resolved (section 2.1).
+
+ANSWERED BY MARIUS 2026-07-20 (both routed to him earlier the same
+session, both replied to same day - see section 2.1 and section 3 for
+full detail):
+  - MuTRiG2/3: only ever MuTRiG3 in real deployments, MuTRiG2 is
+    legacy/dead code - no mixing, ever. Fully closed.
+  - LinksCentral: it's Pixel's own tree (its "Central" station), not a
+    SciFi/cross-detector aggregation tree - pure naming collision.
+    Fully closed, EXCEPT one new follow-up it surfaced:
+    MutrigConfiguration.html (a SciFi-facing tool) queries LinksCentral
+    for its topology, which now looks like it might be the wrong tree -
+    worth asking Marius directly (see docs/page/custom_page.txt section 4.3).
+
+
+1) THE PHYSICAL CHAIN (spec book, chapter 6)
+--------------------------------------------------------------------
+  Fiber ribbon -> SiPM array (128 ch, Hamamatsu S13552-HRQ)
+    -> SMB (SciFi Module Board, reads 1 SiPM array = 128 ch)
+      -> 4 MuTRiG ASICs per SMB, 32 channels per ASIC (4x32=128, checks out)
+    -> DAB (Detector Adaptor Board) - interfaces 2 SMBs to 1 FEB
+    -> FEB (front-end board)
+
+Counts (Phase I, final geometry):
+  - 24 SMBs total: 12 upstream (US, numbered 0-11) + 12 downstream
+    (DS, numbered 0-11)
+  - 12 super-modules: 6 US + 6 DS (numbered 0-5), each holding 2 SMBs
+    mechanically
+  - 1 DAB per super-module (2 SMBs -> 1 DAB -> 1 FEB) => 12 DABs, 12
+    FEBs total (6 US + 6 DS)
+  - 8 ASICs per FEB (2 SMBs x 4 ASICs)
+  - 32 channels per ASIC (fixed)
+  - 256 channels per FEB, 3072 channels total in the detector
+  - SMB3 (the version described in the spec book) hosts MuTRiG
+    **version 3** ASICs, specifically. No MuTRiG2 mentioned anywhere in
+    the spec book's SciFi chapter.
+
+Unique 12-bit physical channel ID (spec book Figure 6.2):
+  bit 11    : 0 = US, 1 = DS
+  bits 10-7 : SMB number, 0000-1011 (0-11)
+  bits 6-5  : ASIC number within SMB, 00-11 (0-3)
+  bits 4-0  : channel number within ASIC, 00000-11111 (0-31)
+  Example: channel 14 of ASIC 3 in SMB 7 upstream = 0 0111 11 01110
+
+DAB is purely passive interconnect (equalizers DS25BR440, level
+translators, no regulator) - it sits on/near the backplane between FEB
+and SMB. It is NOT itself an addressable ODB entity anywhere (confirmed
+independently by source B below) - treat it as physical/geometry
+documentation only, not something Feb/Asic/Channel classes need to
+model.
+
+
+2) THE ODB/SOFTWARE-VISIBLE CHAIN (live-repo research, 2026-07-20)
+--------------------------------------------------------------------
+The C++ slow-control/frontend code models one level the spec book
+doesn't name explicitly: "module" (= one SMB, in physical terms).
+
+  Switching board "Fibre" (switch_id=3, real production board)
+    -> FEB (up to 12, ODB-indexed via LinkFEB[]/FEBType[]==3)
+      -> up to 2 "modules" per FEB (MAX_MODULES[Fibre]=2 - one SMB each)
+      -> up to 8 MuTRiG ASICs per FEB total, flat-indexed 0-7 across
+         both modules (NumASICsMax[] <= 8) - NOT reset to 0-3 per
+         module in the ODB layer, unlike the spec book's physical
+         per-SMB ASIC numbering. Whether ODB ASIC index (module*4 +
+         asic_in_module) matches the physical per-SMB numbering 1:1 is
+         a reasonable assumption but NOT independently confirmed -
+         verify before relying on it in Asic class design.
+         STILL OPEN, sharpened 2026-07-23 (real-world evidence from a
+         Slack thread, Nicolas/bbuttwil/msakurai/mkoeppel, not our own
+         research): a real historical mismatch exists - in 2025 the
+         actual SciFi fibre cabling did NOT match the spec book
+         (mkoeppel: "things are not as in the specbook since the fibre
+         cabling ... was not correct"), and mu3eSort log values for
+         FEB<->SM correspondence (US SM1->FEB144, DS SM1->FEB145, in
+         their 1-indexed notation) didn't match specbook values either.
+         2025 impact was masked because only one side was ever in data.
+         For 2026 (bbuttwil: FEBs installed per specbook for the
+         upcoming campaign - the one that actually matters, October
+         2026), mkoeppel gave an independent derivation rule not
+         currently used anywhere in this codebase: 96 total ASICs
+         (48 US + 48 DS), FEBs mapped US-then-DS, per-FEB local ASIC id
+         = global_asic_id % 8, FEB id = global_asic_id's own offset.
+         CONFIRMED BY GREP 2026-07-23: this codebase (detector/*.py) has
+         NO "global asic id" concept anywhere - Feb objects are built by
+         trusting LinksFibre's own ODB array order for feb_index (0-11)
+         directly, with position_in_feb just an enumerate() over
+         NumASICsMax[feb_index], never cross-checked against any
+         independent global-index derivation. The US-then-DS array
+         order this code already assumes (feb_index 0-5 US, 6-11 DS,
+         link_feb 144-149/150-155) happens to match the SHAPE of
+         mkoeppel's rule, but this has never been verified against real
+         2026 data - it's the same untested assumption as the paragraph
+         above, just with fresh evidence that spec-book-vs-reality
+         mismatches have already happened once for this exact mapping.
+         NOT ACTED ON in code yet - the Slack thread was still open
+         (Nicolas hadn't confirmed the DS SM1/FEB145 reading) when this
+         note was written; don't build a global_asic_id abstraction
+         speculatively before the real 2026 numbering is confirmed one
+         way or the other.
+
+         CONFIRMED, 2026-08-12 (user, directly, AND independently
+         checked against the primary source - Docs/papers/
+         Mu3eSpecBook.pdf, section 6.4.2 "Numbering convention" + Fig.
+         6.2, pages 211-212): each SMB (=module) has a per-module
+         hardware ASIC numbering 0-3 ("Bits 6-5: ASIC number", a 2-bit
+         field), matching this codebase's own asic_in_module concept
+         exactly. (Note: spec book section "7.1.4 ASIC numbering",
+         page 222, same title, is NOT this - that one is SciTile's own
+         section, a different subsystem; double-checked to avoid citing
+         the wrong chapter.) No global_asic_id abstraction needed; the
+         existing enumerate()-over-NumASICsMax[feb_index] approach
+         stands confirmed against the spec book, not just
+         "shape-matches" mkoeppel's rule. Closes this open question.
+      -> 32 channels per ASIC (NMUTRIGCHANNELS, hardcoded constant in
+         Mutrig_FEB.h/Mutrig3Config.h)
+
+Every number above cross-checks exactly against source (A): 12 FEBs,
+8 ASICs/FEB, 32 ch/ASIC, 2 modules/FEB = 2 SMBs/FEB. Strong
+confirmation both sources describe the same real system.
+
+2.1) Equipment-tree name families (mutually exclusive per machine,
+     auto-detected by scifi_topology.py's detect_equipment_prefix())
+  - Labor (Geneva testbench): SwitchingLabor / LinksLabor / SciFiLabor
+    (source: OneSwitchingBoard.inc, switch_id=4 "SW Labor". Note: the
+    C++ variable holding this string is literally spelled
+    "ScifiLabor" (lowercase c/i) while the actual EQUIPMENT array entry
+    is "SciFiLabor" - a real spelling inconsistency inside one file,
+    not a typo in this doc.)
+  - Fibre (real production, mu3ebe): SwitchingFibre / LinksFibre /
+    SciFiFibre (source: FibreSwitchingBoard.inc, switch_id=3 "SW Fibre"
+    - this is the actual production frontend)
+  - Central: RESOLVED 2026-07-20 (Marius, direct answer). LinksCentral
+    is NOT a SciFi or cross-subdetector aggregation tree at all - it's
+    PIXEL's own link tree, for pixel's "Central" station (as opposed to
+    pixel's Recurl-US/Recurl-DS stations - matches switch_id
+    0=Central/1=Recurl-US/2=Recurl-DS/3=Fibre in link_constants.h).
+    Marius's own words: "LinksCentral -> this is for the central PIXEL
+    detector. It's confusing since SciFi is also central..." - i.e. the
+    name collision (SciFi also has a geometrically "central" region) is
+    a real, acknowledged source of confusion, not a hint that the tree
+    is shared. SciFi code should never need to query LinksCentral for
+    anything - CONFIRMED live 2026-07-20 that LinksCentral exists but
+    has no SciFi-specific ASIC subtree under it (SciFiCentral/
+    ScifiCentral don't exist in any spelling), consistent with this
+    being pixel's tree, not SciFi's.
+    OPEN FOLLOW-UP: MutrigConfiguration.html (a SciFi-facing manual tool,
+    "SciFi-ASICs" page - see docs/page/custom_page.txt section 2.3) queries
+    /Equipment/LinksCentral/Settings for its topology, not LinksFibre.
+    Given Marius's answer, that now looks like it might be the WRONG
+    tree for SciFi's purposes - or there's something about why it works
+    anyway that isn't understood yet. Don't assume it's fine; a direct
+    follow-up with Marius is warranted (see docs/page/custom_page.txt section 4.3).
+
+2.2) Concrete ODB field names (confirmed in real C++/JS source, not
+     just docs)
+  /Equipment/Links<Suffix>/Settings/
+      FEBType[], LinkFEB[], LinkMask[], NumASICsMax[], ASICMask[],
+      ASICsPerModule[], LVDSLinkMask[], LVDSLinkInvert[],
+      LVDSNumLinksMax[], FEBName[],
+      Mapping/FEB<N>/{LinkChipIDs, LinkMatrices, ASICChipIDs,
+        ASICSlowControlLinks, ASICSlowControlLinkAddresses}
+    (set up in switch_fe.cpp's setup_odb(), read in feblist.cpp's
+    FEBList::RebuildFEBList())
+
+  /Equipment/SciFi<Suffix>/Settings/
+      Daq/is_mutrig_3
+      ASICs/Global/*
+      ASICs/TDCs/<arrays sized to nasics>
+      ASICs/Channels/<arrays sized to nasics*32: tthresh,
+        tthresh_offset, mask, sipm, cml, ...>
+    (built by MutrigFEB::SetupDB() in Mutrig_FEB.cpp. NOTE: that same
+    file's header doc-comment claims a per-ASIC/per-channel subtree
+    layout, "/Equipment/SciFi/Settings/ASICs/%d/Channels/%d/Conf" -
+    that comment is STALE; the real implementation builds flat arrays
+    as shown above, not nested per-index subtrees.)
+
+  /Equipment/SciFi<Suffix>/Commands/
+      MutrigConfig, MutrigConfigAllOff, TestPulsesTDC
+  /Equipment/SciFi<Suffix>/Variables/FCCR
+
+  /Equipment/FEBCrates/Settings/
+      FEBCrate[192], FEBSlot[192], FEBPower[120],
+      CrateControllerMSCB[8], CrateControllerNode[8],
+      CrateControllerConnected[8]
+    (backend_pc/midas_fe/febcrate_control/febcratefe.cpp. This is a
+    whole-detector-wide physical crate/slot indexing scheme, separate
+    from each subdetector's local per-switching-board FEB numbering
+    above - the still-unconfirmed feb_index<->FEBCrate/FEBSlot mapping
+    flagged in todo.txt section 1 lives exactly at this seam.)
+
+2.3) US/DS and "ring" are naming metadata, not ODB tree levels
+  They appear only inside Names[] string arrays and FEB-name arrays,
+  e.g.:
+    - HV Names[]: "US Top SciFi CH3/CH4", "DS Top SciFi CH3/CH4"
+    - LV Names[]: "SMB_US_2-3", "SMB_DS_6-7"
+    - FibreSwitchingBoard.inc FEBNames[]: "US SM 1", "US SM 4",
+      "DS SM 1", "DS SM 4", "TBA" x8 (i.e. as of this frontend's last
+      edit, only 4 of 12 FEBs had real names assigned - the rest were
+      still placeholder "TBA", consistent with the detector still being
+      assembled)
+  Not a separate equipment-tree branch - just naming layered onto the
+  flat FEB/ASIC/channel arrays.
+
+
+3) MUTRIG2 VS MUTRIG3 - RESOLVED 2026-07-20 (Marius, direct reply:
+   "No only Mutrig3. The mutrig2 is legacy code..." - CLOSED, no
+   longer an inference)
+--------------------------------------------------------------------
+Source (A) describes SMB3 (final Phase I production board) as hosting
+MuTRiG version 3 ASICs specifically. Source (B) separately found
+wiki/SMB2.md describing an SMB2 (bench/lab-era board) hosting MuTRiG
+version 2 ASICs, plus live software evidence
+(Mutrig_FEB.cpp::SetupDB() branching on is_mutrig_3, MutrigConfiguration.html
+swapping field sets, wiki/mutrig_settings.md documenting the exact
+field diffs) that the DAQ software is fully generation-aware and
+switchable per equipment-tree prefix.
+
+Putting these together: MuTRiG2 vs MuTRiG3 most likely tracks SMB
+board VERSION (SMB2 = lab/bench setups, still MuTRiG2; SMB3 = final
+production, MuTRiG3), not a per-FEB or per-ASIC mix within one
+deployment. is_mutrig_3 being a single flag per equipment-tree prefix
+(not an array indexed per-FEB/per-ASIC) supports this reading - it
+looks designed to toggle for an entire testbench/deployment at once,
+not to describe simultaneous mixing.
+
+CONFIRMED 2026-07-20 by Marius directly: SciFi is only ever MuTRiG3 in
+real deployments. MuTRiG2 support in the software is legacy/dead code,
+not a live concern - no mixing, ever, within any real deployment. Any
+Feb/Asic/Channel class design work can safely assume MuTRiG3-only and
+treat is_mutrig_3/MuTRiG2 handling as something to not actively
+maintain (though not necessarily worth deleting outright, since it's
+existing working code, not broken - just not a design constraint to
+plan around going forward).
+
+
+4) OTHER CONTRADICTIONS / OPEN ITEMS FOUND DURING THIS RESEARCH
+--------------------------------------------------------------------
+  [x] RESOLVED 2026-07-20 (live ODB check, see section 4b): ASICsPerModule
+      usage contradiction - resolved, not stale-wiki, see 4b for the
+      real explanation (field holds the FEB total, not a per-module
+      count).
+  [dropped 2026-07-20, user decision] mhttpd/custom/scifi.js's
+      nfebs=24 vs the real 12 FEBs - not worth pursuing further, old
+      cosmic-test-beam-era code not being relied on for anything going
+      forward. Left here only so it isn't re-discovered and re-flagged
+      later without context.
+  [dropped/narrowed 2026-07-20, user decision] Equipment-name spelling
+      drift - the "Labor" family (ScifiLabor/SciFiLabor, Geneva
+      testbench) is out of scope going forward: user decision, this
+      project works off what's confirmed in odb.json (SciFiFibre/
+      LinksFibre/LinksCentral), not the Labor tree. The "Central"
+      spelling question is separately already resolved (section 2.1 -
+      neither SciFiCentral nor ScifiCentral exists at all, only
+      LinksCentral). So this item is fully closed, nothing left to
+      track.
+  [x] DECIDED 2026-07-20 (user decision, not new empirical evidence):
+      ODB ASIC-index mapping (module*4 + asic_in_module == physical
+      per-SMB ASIC number?) - user's ruling: "lo specbook e' la
+      bibbia, ha sempre ragione" (the spec book is the bible, always
+      right). Treat this mapping as SETTLED per spec book authority -
+      module 0 = physical ASICs 0-3, module 1 = physical ASICs 4-7,
+      matching source (A)'s per-SMB numbering. Documented as a
+      deliberate decision to stop chasing independent confirmation,
+      not as an empirically re-verified fact - if it ever matters for
+      something safety-critical (like the feb_power.py bug did),
+      revisit with an actual live check.
+  [x] RESOLVED 2026-07-20, as a CONFIRMED BUG not just a mapping gap,
+      AND FIXED: feb_index (local per-switching-board numbering) <->
+      FEBCrate[]/FEBSlot[] (whole-detector array) mapping - see
+      section 4b below for full evidence, fix, and verification.
+
+Both routed to Marius per the user's 2026-07-20 decision, and both
+ANSWERED by him the same day (see section 2.1 and section 3 for the
+answers, section 2.1 for the one new follow-up question it surfaced):
+  - MuTRiG2/3 simultaneous mixing (section 3 below) - CLOSED, MuTRiG3
+    only, no mixing.
+  - LinksCentral's exact relationship to *Fibre (section 2.1 above) -
+    CLOSED, LinksCentral is Pixel's own tree, unrelated to SciFi.
+
+
+4b) LIVE ODB CHECK, 2026-07-20 (user, manual read via mhttpd export +
+    jq on a full ODB dump - odb.json, NOT committed to git, see note
+    at end of this section)
+--------------------------------------------------------------------
+Real data from mu3ebe, mid-assembly. Confirms/resolves several items
+above, and surfaces one CONFIRMED BUG (not just a flagged risk).
+
+  - LinksFibre/Settings arrays are all length 12, FEBType all 0x3
+    (Fibre) - all 12 FEB slots exist and are named for real (FEBName[]:
+    "US SM 1","US SM 0","US SM 2","US SM 5","US SM 4","US SM 3","DS SM
+    0".."DS SM 5" - no "TBA" placeholders left, unlike the old
+    cosmic-era scifi.js/frontend snapshot referenced in section 4
+    above).
+  - Only 2 of 12 FEBs currently have any ASICs configured:
+    NumASICsMax/ASICsPerModule are 8 for LinkFEB 0x91 ("US SM 1",
+    array position/feb_index 0) and 0x90 ("US SM 0", feb_index 1);
+    all other 10 FEBs read 0. Expected for a mid-assembly detector -
+    matches the project's known "detector being assembled right now"
+    framing (docs/page/custom_page.txt section 0).
+  - ASICsPerModule for those 2 active FEBs = 8, i.e. IDENTICAL to
+    NumASICsMax (total per FEB), not 4 (which is what "per module"
+    should mean if a module = 1 SMB = 4 ASICs, per section 1 above).
+    RESOLVES the section-4 contradiction: the field isn't unused (the
+    wiki is stale) but it's also not really "per module" despite its
+    name - it's populated with the FEB total, duplicating NumASICsMax.
+    MutrigConfiguration.html summing it happens to produce the right
+    total only because of this mislabeling, not because the field
+    means what its name says.
+  - Mapping/FEB<N> IS keyed by the global LinkFEB numeric value (decimal),
+    not by feb_index: real data lives under "FEB144" and "FEB145"
+    (=0x90, 0x91), not "FEB0"/"FEB1" (those exist too but are empty
+    {} - stale leftovers from before real LinkFEB numbers were
+    assigned, never cleaned up).
+  - Mapping/FEB144 ("US SM 0") and FEB145 ("US SM 1") ASICChipIDs are
+    flat sequential 0-7 (e.g. FEB144: 0x08..0x0f) - consistent with,
+    but does not independently prove, the assumed module0=asic0-3/
+    module1=asic4-7 split (section 2 above, still technically
+    unverified for certain, though no evidence against it either).
+  - LinkChipIDs for both active FEBs show a suggestive pattern: first
+    4 entries are real distinct chip IDs, last 4 are an identical
+    placeholder value (0x0063) - i.e. right now only ~1 of each FEB's
+    2 possible modules (4 of 8 ASICs) appears to be physically wired
+    with a real link chip ID, even though NumASICsMax/ASICMask report
+    8 slots as logically available. Reads as further mid-assembly
+    evidence (half-populated FEBs), not a contradiction of anything
+    above.
+  - SciFiFibre/Settings/Daq/is_mutrig_3 = 1 (a single scalar, not an
+    array) - confirms the section-3 reading that this is one flag per
+    equipment-tree prefix, not a per-FEB/per-ASIC array. Consistent
+    with (doesn't prove or disprove) the "tracks SMB2-vs-SMB3 board
+    version, not live per-FEB mixing" inference in section 3.
+
+  CONFIRMED BUG (was previously just a flagged risk in todo.txt
+  section 1): feb_power.py's feb_index <-> FEBCrate[]/FEBSlot[]
+  mapping is WRONG, not just "unconfirmed". Evidence:
+    - LinksCentral/Settings/LinkFEB[0:9] = 0,1,2,...,9 (rest 0xff/
+      unassigned) - i.e. the global LinkFEB ID space starts at 0 for
+      Central's own FEBs.
+    - LinksFibre/Settings/LinkFEB values are 144-155 (0x90-0x9b) - a
+      DIFFERENT, non-overlapping slice of that same global ID space.
+    - FEBCrate[144:156]/FEBSlot[144:156] hold real, distinct,
+      non-zero data (crates 0/2/5/7, varying slots) - i.e.
+      FEBCrate[]/FEBSlot[] ARE indexed by the global LinkFEB value.
+    - scifi_topology.py's get_scifi_febs() never reads LinkFEB[] at
+      all - it only returns feb_index = local array position (0-11,
+      from enumerate(feb_types)).
+    - feb_power.py does febcrate[feb_index]/febslot[feb_index] with
+      that LOCAL 0-11 index directly against the GLOBAL-indexed
+      FEBCrate[]/FEBSlot[] arrays - i.e. for SciFi feb_index 0 it
+      reads FEBCrate[0]/FEBSlot[0], which actually belongs to
+      LinksCentral's FEB 0, not to SciFi's "US SM 1" (real LinkFEB
+      145).
+    Consequence: feb_power.py, run today against real SciFi FEBs,
+    would compute the WRONG power_index and could toggle power on a
+    crate/slot belonging to a different FEB entirely (possibly a
+    different subdetector's). This is a real, live bug, not a
+    hypothetical.
+
+    FIXED 2026-07-20 (user gave explicit go-ahead to implement, not
+    just flag): scifi_topology.py's get_scifi_febs() now also reads
+    LinkFEB[] and returns it as "link_feb" per FEB dict (alongside the
+    existing local "feb_index", kept for labels/other callers -
+    additive change, doesn't break scan_thr/'s existing feb_index
+    usage). feb_power.py now indexes FEBCrate[]/FEBSlot[] by
+    feb["link_feb"] instead of feb_index, with an added bounds check
+    (link_feb within array length) before indexing.
+
+    Verified offline (no mu3ebe access) by replaying both the old and
+    new indexing logic against the live odb.json dump: for ALL 12
+    SciFi FEBs, old (feb_index) vs new (link_feb) crate/slot differ
+    completely - e.g. feb_index 1 ("US SM 0"): old read (crate 1, slot
+    0), new reads (crate 0, slot 11) - confirms the bug was systematic,
+    not an edge case, and that the fix changes the result for every
+    FEB as expected. Not yet run live on mu3ebe (dry_run=True still
+    recommended for the first real run per README.md) - static/offline
+    verification only, real PySequencer dry-run still worth doing
+    before dry_run=False.
+
+  Housekeeping note: the full ODB dump used for this check
+  (docs/odb.json, ~46 MB) should NOT be committed to the Mu3e git repo
+  - it's a raw data snapshot, not documentation, and 46 MB of live
+  experiment state doesn't belong in version control alongside these
+  .txt notes. Move it out of docs/ (or add it to .gitignore) once
+  whatever's still being cross-checked from it is done.
+
+
+4c) LV/HV CHANNEL GRANULARITY vs FEB, 2026-07-21 (live ODB dump
+    odb_210726_091138.json + Mu3eSpecBook.pdf, for scifi_scripts/core/'s
+    power-management design - see scifi_code_design.txt)
+--------------------------------------------------------------------
+Question: can a future Feb class own "its" LV/HV supply directly (like
+pixel's PowerPartition owns one LV+one HV), or is the granularity
+different from FEB?
+
+  LV (DCDCCrates) - CONFIRMED 1:1 with FEB/super-module.
+    12 channels in ODB, Settings/Names: "SMB_US_0-1".."SMB_US_10-11" (6)
+    + "SMB_DS_0-1".."SMB_DS_10-11" (6) - exactly matches the 12 real
+    FEBs (LinksFibre FEBName[]: "US SM 0".."US SM 5", "DS SM 0".."DS SM
+    5", section 4b). Each LV channel powers one super-module's pair of
+    SMBs, i.e. one FEB. A future Feb class can own one LVPowerSupply
+    directly, one-to-one.
+
+  HV - NOT 1:1 with FEB. 32 channels in ODB (Settings/Names: "US Top
+    SciFi CH1".."CH8", "US Bottom CH1".."CH8", "DS Top CH1".."CH8", "DS
+    Bottom CH1".."CH8"), don't divide evenly against 12 FEBs or 24 SMBs.
+    Cross-checked against Mu3eSpecBook.pdf section 3.5.2 ("HV crate
+    mapping", Tables 3.12-3.15): 4 HV crates (US Top/US Bottom/DS
+    Top/DS Bottom), 2 SciFi HV+ boxes per crate (modules 30+31, 32+33,
+    34+35, 36+37), 4 channels per box = 8 boxes x 4 = 32 - matches the
+    ODB count exactly, confirms "Top"/"Bottom" in the Names[] strings is
+    a physical crate location, not a data-path/FEB grouping.
+
+    SPEC BOOK INTERNAL INCONSISTENCY, found in the same document: section
+    6.5.2 ("SMB power", point 9) states in prose "a full SciFi detector
+    uses 6 of these [positive HV] boxes, with a total of 24 channels" -
+    this contradicts section 3.5.2's own crate table (8 boxes, 32
+    channels) and the live ODB (32 channels).
+
+    CORRECTED 2026-07-21 (Marius, direct reply to "where's the HV
+    channel<->SMB/FEB mapping documented" - "In the specbook"): my first
+    read of this inconsistency was WRONG - I'd initially guessed 6.5.2's
+    "24 channels" prose was the stale one and 3.5.2's crate table (32)
+    was authoritative, reasoning from "table beats prose" alone without
+    checking further. Digging deeper per Marius's pointer found a THIRD,
+    independent, "Approved"-status source that settles it the other way:
+    section 3.7 ("Positive high voltage supply", point 9)'s own summary
+    table:
+        System   Channels   Boards   Crates US   Crates DS
+        SciFi    24         6        0.4         0.4
+    This matches 6.5.2's "24 channels/6 boxes" exactly, not 3.5.2's
+    32/8. Two independent, Approved-status sections now agree on 24/6 -
+    that's the real, INTENDED design number: 24 channels = exactly 1 per
+    SMB (24 SMBs total), a clean 1:1 mapping. The extra 2 boxes visible
+    in the crate table (3.5.2) and in the live hv_fe.cxx firmware
+    (modules 30-37 = 8 boxes, not 6) are most likely the 2 spare boards
+    the same section 3.7 (point 12) says get produced per subsystem "two
+    spare boards will be produced for each subsystem" - present in the
+    crate wiring/firmware as provisioned capacity, but not part of the
+    real 24-channel/24-SMB design.
+
+    Practical upshot: the mapping IS 1:1 (24 channels, 24 SMBs) by
+    design, matching LV's own 1:1-per-FEB cleanliness (LV is per
+    super-module/FEB, i.e. per SMB-pair; HV is finer, per single SMB).
+    What's STILL not given anywhere (spec book or live source): the
+    explicit ORDERED list of which of the 24 real channels (i.e. which
+    4-per-box slots, across which 6 of the 8 provisioned boxes) maps to
+    which specific SMB number - Marius's one-line reply pointed at the
+    channel COUNT table, not an explicit per-channel table, so that
+    finer ordering may still need a follow-up if/when it's ever actually
+    needed. NOT currently blocking scifi_scripts' scope (power/HV/LV
+    management, pre-calibrations - see todo.txt section B) - today's
+    hv_power.py/apply_vbr.py already operate on all/one HV channel by
+    ODB Names[] pattern or exact match, never by FEB/SMB, so no current
+    caller needs the exact ordering. Cross-checked separately against the
+    live hv_fe.cxx source (user pasted the real, current version
+    2026-07-21, confirming the local online/ checkout is stale - see
+    project_online_checkout_stale.md/project_mu3ebe_hands_off.md
+    memories): SciFi's HV channel names there are still all generic
+    placeholders ("US Top SciFi CH1".."CH8" etc.), unlike some of
+    Pixel's channels in the same file which already have real
+    per-module names ("VTX_US_L1_M1" etc.) - consistent with the
+    per-channel SMB assignment genuinely not having been written into
+    the live system yet, separate from the "which 24 of 32" question
+    above.
+
+  RESOLVED 2026-07-30 - the user supplied the ordered map directly.
+  What was "STILL not given anywhere" above is now given:
+
+    US Top     board 30  CH1-4   -  -  2  3     board 31  CH5-8  4 5 6 7
+    US Bottom  board 32  CH1-4   -  -  8  9     board 33  CH5-8  10 11 0 1
+    DS Top     board 34  CH1-4   -  -  2  3     board 35  CH5-8  4 5 6 7
+    DS Bottom  board 36  CH1-4  10 11  0  1     board 37  CH5-8  -  -  8 9
+
+  "-" = an empty channel. Numbers are SMB/module numbers, 0-11 per side.
+  ODB indices: US Top 20-27, US Bottom 72-79, DS Top 132-139, DS Bottom
+  188-195 (HV/Settings/Names, "SciFi CH" matches), so the first board of
+  a side is CH1-4 and the second CH5-8.
+
+  CHECKED: each side's populated channels cover modules 0-11 exactly
+  once - 24 populated channels for 24 SMBs, the 1:1 the spec book
+  asserts. A module's Feb is module >> 1, so the per-FEB HV grouping
+  that "no current caller needs" is now derivable whenever one does.
+
+  DS IS NOT A MIRROR OF US. Boards 36/37 carry what 32/33 carry on the
+  US side, in the opposite order. Deriving DS from US by symmetry gives
+  the wrong answer - the same trap that had already produced a wrong
+  DS half in the control page's crate-occupancy column.
+
+  ONE THING THIS CONTRADICTS, flagged not settled: the analysis above
+  concluded "24 channels / 6 boxes, the extra 2 boxes are the 2 spare
+  boards section 3.7 point 12 promises". The real map uses ALL EIGHT
+  boards (30-37) with 24 populated channels and 8 empty ones, spread 2
+  each over boards 30, 32, 34 and 37. So the spare capacity exists as
+  empty CHANNELS distributed across every side, not as two unused
+  BOARDS. The channel count (24) still matches the spec book; the board
+  count (6) does not match how it is actually wired. Worth reconciling
+  with whoever owns the spec book - the ODB and this map agree with
+  each other, the spec book's board count is the outlier.
+
+  DESIGN CONSEQUENCE for scifi_scripts/core/ (see scifi_code_design.txt):
+  Feb owns its LVPowerSupply directly (1:1, confirmed). HV stays a
+  separate, flat/independent concept - NOT a Feb attribute - since no
+  current caller needs a per-FEB HV mapping. That decision does NOT
+  change on the strength of the map above: the map makes a per-FEB
+  grouping DERIVABLE, it does not create a caller that wants one. The
+  control page uses it for a display column only
+  (docs/old/chain_and_monitoring.txt section 15).
+
+
+4d) DCDCCrates/FEBCrates - full readable/fault-flag inventory, found
+    2026-07-21 while auditing scifi_scripts/scripts/lv_power.py and
+    feb_power.py against the live ODB dump (docs/odb_210726_091138.json)
+    for "does this script check everything it possibly could"
+--------------------------------------------------------------------
+  DCDCCrates/Variables has far more than Current[]/Voltage Adjust[]
+  (the only two scifi-userfiles/lv_power.py ever checked): Alert,
+  Power Good, Over Temperature, Vin Under-voltage, Over Current, Vout
+  Over-voltage, Interlock (all boolean, 128 values/array - one per
+  DCDCCrates channel), plus Vdd MuPix (the real/"sense" effective
+  voltage - Voltage Adjust[] is only the setpoint echoed back, per
+  common/power_supply.py's own disclaimer comment), Temperature, Diode
+  Voltage/Temperature, Threshold Temp, SCUR, STMP. Of the boolean
+  flags, all are "False = healthy" except Power Good ("True = healthy",
+  inverted). None of the fault flags besides Alert were wired into
+  common/power_supply.py's DCDCPowerSupply before 2026-07-21 - extended
+  same day (common_scripts/common/power_supply.py, shared with pixel)
+  to add the missing ones as ODBPowerSupplyReadAndCheckCommand entries,
+  consumed generically by PowerSupply.read_all() (which already existed
+  but nothing in scifi_scripts called it until then).
+
+  FEBCrates/Variables/SCFC (160 values, Settings/Names SCFC gives the
+  layout) is a per-crate telemetry block NOT related to FEBPower[]'s
+  own write/readback path at all - 20 values per crate (8 crates):
+  Index, Voltage 20, Voltage 3.3, Voltage 5, CC Temperature, then FEB
+  0..14 Temperature (one entry per MAX_FEBS_PER_CRATE=15 slot). Gives a
+  per-FEB temperature reading (SCFC[crate*20 + 5 + slot]) plus the
+  crate's own power-rail voltages and crate-controller temperature -
+  none of this was read anywhere before 2026-07-21. No reference
+  "normal" value found anywhere for these (unlike LV/HV's own
+  UNVERIFIED-but-Scifi-monitor.html-sourced current defaults), so
+  scifi_scripts/detector/feb.py's get_power_monitoring() reports these
+  as informational telemetry only, no pass/fail threshold.
+  CrateControllerNode/CrateControllerBPMode (FEBCrates/Settings) are
+  addressing/mode config (hex node address, a mode flag), not health
+  signals - deliberately not read.
+
+  HV/Variables, by contrast, genuinely has nothing beyond Demand/
+  Voltage/Current - no Alert/Power-Good equivalent exists in the real
+  ODB for HV at all, so ScifiHv.check_status() (current, voltage,
+  Settings/Enabled[]) is already exhaustive for that equipment tree.
+
+
+5) WHAT THIS UNBLOCKS
+--------------------------------------------------------------------
+This was the direct prerequisite for designing scifi_scripts/core/'s
+Feb/Asic/Channel classes (scifi_code_design.txt section 2.2, HACKATHON.txt
+5.2) and for Page 1's geometry granularity (docs/page/custom_page.txt section 3).
+Suggested shape, informed by the above:
+  - Feb: up to 8 Asics, up to 2 "modules" (module = physical SMB, not
+    necessarily worth its own class unless the masking editor or
+    geometry view needs SMB-level granularity specifically)
+  - Asic: 32 Channels, generation-aware (mutrig2/mutrig3 field
+    differences per wiki/mutrig_settings.md) if per-FEB/per-ASIC
+    mixing turns out to be real (still open, section 3 above)
+  - Channel: identified by (US/DS, SMB 0-11, ASIC 0-3, channel 0-31)
+    physically, or (FEB, ASIC 0-7, channel 0-31) in ODB terms - the
+    mapping between the two is treated as settled (module 0 = ASIC
+    0-3, module 1 = ASIC 4-7, per the spec-book-authority decision in
+    section 4) so both can be exposed
+Not yet decided whether Dab needs to exist as a class at all - current
+finding says no (section 1 above), it's physical documentation only.
+
+
+6) DEFINITIVE FEB<->SUPERMODULE WIRING MAP (2026-07-31)
+--------------------------------------------------------------------
+User supplied two independent real-world sources: an installation
+elogbook (Chen Xie, per-SM entries as each was cabled, 2026-07-xx) and
+a master wiring reference table (US+DS, SM 0-5, FEB/DAB/uTP/SMB/HV
+columns). Cross-checked against the live ODB dump
+(docs/old/odb_300726_112101.json) - see below for the found bug.
+
+6a) MASTER TABLE (US + DS), the authoritative FEB<->SM assignment:
+
+  SM   US: FEB   DAB     uTP     SMB      HV              DS: FEB   DAB     uTP       SMB      HV
+  0    (not installed)                    LDO Ch2                  (not installed)             LDO Ch2
+  1    144       DAB003  0011    2/3      S30 CH3/CH4     Ch3      151     DAB005  0111        2/3      S34 CH3/CH4    Ch3
+  2    148       DAB016  0001    4/5      S31 CH1/CH2     Ch4      152     DAB001  1000        4/5      S35 CH1/CH2    Ch4
+  3    145       DAB018  0010    6/7      S31 CH3/CH4     Ch5      153     DAB015  10001       6/7      S35 CH3/CH4    Ch5
+  4    149       DAB019  0100    8/9      S32 CH3/CH4     Ch6      154     DAB020  11111       8/9      S37 CH3/CH4    Ch6
+  5    147       DAB006  1110    10/11    S33 CH1/CH2     Ch7      155     DAB009  0101        10/11    S36 CH1/CH2    Ch7
+
+  FEB column = absolute link_feb (LinksFibre/Settings/LinkFEB value,
+  144-155). SMB column = DCDCCrates channel index (2*sm_index,
+  2*sm_index+1 - matches detector/feb.py's own SMB naming formula
+  exactly, confirmed). HV column = HV/Settings/Names label. SM0 has no
+  FEB row in the master table (not yet installed as of this table);
+  by elimination (link 146 is the only one of 144-149 not claimed by
+  SM1-5) US SM0 = link 146.
+
+  DS FEB numbers (150-155) are simply sequential by SM index - no
+  permutation, matches ODB already.
+
+6b) INSTALLATION LOG (chronological, elogbook entries as each SM was
+  cabled) - crate/slot notation "C<n>S<n>F<n>" = crate (1-based) /
+  FEBSlot / fibre. Fibre is a separate physical connector number, not
+  the same as FEBSlot - do not confuse the two.
+
+  US SM1: C1 S11 F1, DAB003. HV S30 CH3/CH4 (CH4 connector's HV cable
+    was found broken and replaced during install).
+  US SM2: C3 S13 F4, DAB016(*). HV S31 CH1/CH2. (*) uTP cable was
+    initially misconnected at DAB016/C3 S13 F4, recovered after
+    reconnection.
+  US SM3: C3 S10 F6, DAB018. HV S31 CH3/CH4.
+  US SM4: C3 S14 F3, DAB019. HV S32 CH3/CH4.
+  US SM5: C3 S12 F5, DAB006, FEB147 (label given explicitly). HV S33
+    CH1/CH2. 2026-07-29: installed, then REMOVED same day for a bad LV
+    cable connection on the board (US side). 2026-07-30: re-installed.
+  DS SM1: C6 S3 F1, DAB005. HV S34 CH3/CH4.
+  DS SM2: C6 S2 F2, DAB001. HV S35 CH1/CH2.
+  DS SM3: C8 S0 F3, DAB015. HV S35 CH3/CH4.
+  DS SM4: C8 S1 F4, DAB020. HV S37 CH3/CH4.
+  DS SM5: C8 S2 F5, DAB009, FEB155 (label given explicitly). HV S36
+    CH1/CH2.
+
+  Crate(1-based) - 1 = ODB's FEBCrate[] value (0-based). Every one of
+  these 10 entries (US+DS, SM1-5) matches FEBCrate[link_feb]/
+  FEBSlot[link_feb] in the 2026-07-30 ODB dump EXACTLY, once indexed by
+  the CORRECT link_feb from 6a - see 6c, this was the key that resolved
+  an apparent mismatch.
+
+6c) BUG FOUND AND ITS SCOPE: LinksFibre/Settings/FEBName mislabels 4 of
+  the 12 US entries. FEBCrate[]/FEBSlot[]/FEBPower[] etc. (everything
+  indexed by link_feb, not by name) are ALL CORRECT - confirmed by 6b's
+  exact match once using 6a's correct link_feb per SM. Only the
+  human-readable name assigned to feb_index 1/2/4/5 is wrong, a 4-entry
+  cyclic swap among SM0/SM2/SM3/SM4 (SM1 and SM5, and all of DS, were
+  already correct):
+
+    feb_index   link_feb   FEBName (WRONG, as of 2026-07-30 dump)   correct
+    1           145        "US SM 0"                                "US SM 3"
+    2           146        "US SM 2"                                "US SM 0"
+    4           148        "US SM 4"                                "US SM 2"
+    5           149        "US SM 3"                                "US SM 4"
+
+  IMPACT: any page or script that identifies a Feb by NAME (e.g.
+  detector/feb.py's __parse_name() -> LV supply lookup, or this page's
+  SciFi_PowerLV.js active-channel-count lookup) currently associates
+  the wrong physical hardware for US SM0/SM2/SM3/SM4 - a shifter
+  turning off "US SM 2" from a name-driven control would act on the
+  physically-labelled SM4 position instead. Anything indexed by
+  link_feb directly (FEBCrate/FEBSlot/FEBPower/SFFE/SFLE/FEBFirmware)
+  is unaffected and safe as-is.
+
+  NOT YET FIXED ON THE REAL SYSTEM - this was found against a dump
+  dated 2026-07-30; whether the live mu3ebe ODB still has this FEBName
+  bug as of a later date needs re-checking before relying on it. The
+  custom SciFi control page's own code does not hardcode this table -
+  it reads FEBName (and crate/slot, always via link_feb) live from ODB,
+  so once the real FEBName array is corrected there, the page picks it
+  up automatically with no code change needed. The local dev ODB used
+  to build/test the page's Power tabs has been corrected to match 6a,
+  strictly for testing purposes - not a production fix.
+
+  6a's SM<->FEB assignment is CONFIRMED by the user directly (2026-07-31)
+  as the correct/authoritative one - not just an assistant inference
+  from cross-referencing. Independently re-confirmed the same day via a
+  third source, the real "Front-end Crates" DAQ page (screenshot,
+  timestamp 31 Jul 2026 10:32 UTC+2): all 12 SciFi FEBs' crate/slot
+  positions there match FEBCrate[]/FEBSlot[] exactly (that page's
+  "Slot N" is 1-indexed for display, i.e. FEBSlot+1 - not itself a
+  discrepancy). That page shows FEB numbers only, not SM names, so it
+  does not confirm/deny whether FEBName[] is still wrong on the live
+  system.
+
+  CONFIRMED STILL LIVE, 2026-07-31 10:58 UTC+2: user's own ODB-browser
+  screenshot of the real mu3ebe LinksFibre/Settings/FEBName shows the
+  exact same wrong values as the 2026-07-30 dump - [1]="US SM 0",
+  [2]="US SM 2", [4]="US SM 4", [5]="US SM 3" - i.e. this is not a
+  stale/already-fixed dump artifact, the bug is present on the live
+  production ODB right now. Not fixed by the assistant (out of scope,
+  see [[feedback_odb_read_only_scope]] in memory) - whoever has write
+  access to mu3ebe needs to apply the 6c correction.
+
+  ROOT CAUSE FOUND, 2026-08-14: checked the official Mu3e spec book
+  (Docs/papers/Mu3eSpecBook.pdf, section 4.1.9 "FEB position", item 54,
+  pages 94-95 - the "Crate / Slot / FEB number / Connects to" table) -
+  it has the EXACT SAME wrong assignment for the same 3 FEBs, nothing
+  else:
+    Crate 1, Slot 12, FEB 145 -> "Fibre Super-Module 0" (correct: SM3)
+    Crate 3, Slot 13, FEB 148 -> "Fibre Super-Module 4" (correct: SM2)
+    Crate 3, Slot 14, FEB 149 -> "Fibre Super-Module 3" (correct: SM4)
+  FEB 144 ("Super-Module 1") and FEB 147 ("Super-Module 5") are correct
+  in the spec book too, and every DS entry (150-155) is correct -
+  identical pattern to 6c and to the independently-supplied crate/MSCB
+  table checked in section 7. Crate/slot numbers in the spec book table
+  match 6b's installation log exactly for all 12 SciFi FEBs - only the
+  "Super-Module N" label is wrong, for the same 3 FEBs, every time.
+  This is a strong candidate for the actual root cause: the spec book's
+  own official reference table appears to be where the wrong SM
+  assignment originated, and whoever populated FEBName in ODB (and
+  whoever made the section-7 crate/MSCB sheet) most likely both
+  transcribed from this same wrong table. Not verified further (no way
+  to check the spec book's own edit history from here) - but this is
+  now three independent documents/systems (live ODB, the section-7
+  crate sheet, and the spec book itself) all showing the identical
+  3-FEB swap, which makes "independent unrelated typos" very unlikely.
+
+  STILL PRESENT IN THE NEWER SPEC BOOK REVISION, checked 2026-08-14:
+  Docs/devolpment/Mu3eSpecBook.pdf (footer date 2026-08-12, newer/
+  bigger file than Docs/papers/Mu3eSpecBook.pdf checked above) has the
+  identical wrong Super-Module labels for the same 3 FEBs - byte-for-
+  byte the same "Fibre Super-Module 0/4/3" for FEB 145/148/149. One
+  real difference between the two revisions: FEB 145's crate/slot
+  itself changed from "Crate 1, Slot 12" (old revision - did NOT match
+  6b's installation log) to "Crate 3, Slot 10" (new revision - MATCHES
+  6b's "US SM3: C3 S10" exactly). So between revisions, the crate/slot
+  positioning for this FEB was corrected to reality, but the Super-
+  Module NUMBER label was not - the two errors are apparently tracked/
+  edited independently in whatever process maintains this table, and
+  only one of them got fixed. FEB 144/147 and all DS entries remain
+  correct in both revisions, same as before.
+
+  FIXED ON PRODUCTION, 2026-08-12: user applied the 6c correction
+  directly to mu3ebe's real FEBName array. Not independently verified
+  by the assistant (mu3ebe hands-off) - if this ever needs re-checking,
+  compare LinksFibre/Settings/FEBName against 6a's correct mapping.
+
+  KNOCK-ON EFFECT ON THE feb_index STABILITY QUESTION (section 2's
+  mkoeppel/global_asic_id note above), 2026-08-12: with FEBName now
+  correct, resolving a FEB by NAME (search FEBName[] for e.g. "US SM
+  3", don't trust a fixed/cached feb_index) is a reliable technique
+  again - it wasn't before, because the name itself was the thing
+  wrong. SciFiDetector.find_feb_by_side_sm() (detector/scifi.py)
+  already works exactly this way - every calibration code path that
+  selects a Feb by side/SM (ScanThr's ASIC selection included) goes
+  through it, not through a raw feb_index. The separate question from
+  section 2 above - whether position_in_feb (ASIC ordering WITHIN one
+  FEB, 0-7) matches the real physical per-SMB numbering - is ALSO now
+  CONFIRMED, 2026-08-12 (user, directly): it's taken from the spec
+  book, not a coincidental array-order match - see section 2's own
+  updated note. Residual feb_index risk is now narrow: only a live
+  array-order change mid-operation (e.g. LinksFibre frontend
+  restarting during a scan), not a
+  general "position isn't trustworthy" concern.
+
+6d) LV (DCDCCrates) RULED OUT AS A SEPARATE BUG, 2026-08-11: user
+  physically tested today by powering up a FEB (identified by its
+  FEBName label) and observing which LV channel correlated, then
+  "corrected" the DCDCCrates channel labels against that FEB-label
+  reference. The correction the user derived is the mathematically
+  EXACT INVERSE of 6c's own FEBName permutation (SM0<->SM2<->SM4<->SM3
+  cycle either direction, SM1/SM5 fixed in both) - checked by hand,
+  confirmed. Conclusion, AGREED with the user: this is not a second,
+  independent hardware bug - FEBName was the (wrong) reference used for
+  the LV test, so the apparent LV mismatch is fully explained by 6c
+  alone. DCDCCrates/Settings/Names is correct as-is; no LV/DCDC fix
+  needed anywhere.
+
+  STATUS OF THE FIX, checked 2026-08-11 against the LOCAL test mhttpd
+  (localhost:8080, NOT mu3ebe): LinksFibre/Settings/FEBName there
+  ALREADY carries the corrected values ("US SM 1","US SM 3","US SM 0",
+  "US SM 5","US SM 2","US SM 4", DS SM 0..5 unchanged) - this matches
+  the "local dev ODB...corrected to match 6a" note earlier in this
+  section, confirmed still true. Also checked: nothing in scifi_scripts
+  or online/ hardcodes FEBName anywhere (SciFi_*.js, seed_cosmicrun_
+  scifi.py, seed_scanthr.py all read it live from ODB, per 6c) - the
+  ONLY place the wrong values still exist is the real production
+  mu3ebe ODB itself. The assistant cannot apply that fix directly
+  (mu3ebe is hands-off, no exceptions - see [[project_mu3ebe_hands_off]]
+  in memory) - ready-to-apply correction for whoever has mu3ebe write
+  access, on /Equipment/LinksFibre/Settings/FEBName (12-entry string
+  array, indexed by feb_index 0-11):
+    index 1 (link_feb 145): "US SM 0"  -> "US SM 3"
+    index 2 (link_feb 146): "US SM 2"  -> "US SM 0"
+    index 4 (link_feb 148): "US SM 4"  -> "US SM 2"
+    index 5 (link_feb 149): "US SM 3"  -> "US SM 4"
+  Indices 0,3,6-11 unchanged. Not yet applied as of this writing.
+
+  NOT changed: tests/test_mock_odb_data.py's own FEBNAME fixture (used
+  by the scifi_scripts unit test suite) still uses the old/wrong-
+  pattern names - deliberately left as-is, since several tests
+  (test_detector_construction.py etc.) assert against values derived
+  FROM this fixture; changing it is a real multi-file test-suite edit,
+  not a one-line data fix, and wasn't asked for. Flagged here in case
+  it's wanted later.
+
+7) FEC CRATE CONTROLLER + TDK MSCB MAPPING (user-supplied, 2026-08-14)
+--------------------------------------------------------------------
+Reference data only - nothing in scifi_scripts/common_scripts hardcodes
+any of these MSCB addresses, everything is read live from ODB
+(CrateControllerMSCB[crate] in common/power/feb_crate.py; TDKStaging
+channels resolved by NAME pattern in detector/hv.py's
+check_tdk_for_side(), not by MSCB). This section exists purely as a
+grounding reference, distinct from hv.py's own GROUP_MSCB_HOST (mscb464/
+465/472/473 - the HV/weather submasters, a completely separate MSCB
+range from the FEC crate controllers below - no overlap, no conflict).
+
+7a) TDK racks (Powerrack Staging, 4 racks total):
+
+  Slot  Address    Rack             Assignment    TDK units          MSCB
+  7     537/2/7    Rack #1 (Top)    SciFi & Tile  Mu3eTDK01/TDK02    mscb385:7
+  8     537/2/8    Rack #2          FEC           Mu3eTDK03/TDK04    mscb385:8
+  10    537/2/10   Rack #3          Pixel         Mu3eTDK05/TDK06    mscb385:10
+  11    537/2/11   Rack #4 (Bottom) Slow Control  power brick #1/#2  mscb385:11
+
+7b) FEC crate controllers (8 crates total, matches ODB's
+  CrateControllerMSCB[8] - crate index here is 1-based, matches 6b's
+  "C<n>" notation and section 1-based ODB crate value + 1):
+
+  Crate 1 (US, top left):      CC MSCB = mscb460:1
+  Crate 2 (US, top right):     CC MSCB = mscb461:1
+  Crate 3 (US, bottom right):  CC MSCB = mscb462:1
+  Crate 4 (US, bottom left):   CC MSCB = mscb463:1
+  Crate 5 (DS, top left):      CC MSCB = mscb468:1
+  Crate 6 (DS, top right):     CC MSCB = mscb469:1
+  Crate 7 (DS, bottom right):  CC MSCB = mscb470:1
+  Crate 8 (DS, bottom left):   CC MSCB = mscb471:1
+
+7c) Per-slot FEB ID / PDB serial / assignment, where populated (blank
+  slots omitted; "DAB PDB" column is a SEPARATE per-DAB MSCB address,
+  only present for the DS Tile module slots below - everything else's
+  PDB has no individually-addressed MSCB of its own):
+
+  Crate 1 (US, top left):
+    slot 7:  FEB 10,  PDB 0503-0001-000007, Central US Layer 3 1
+    slot 9:  FEB 15,  PDB 0503-0001-000039, Central US Layer 3 2
+    slot 10: FEB 146, PDB 0503-0001-000012, SciFi 2
+    slot 11: FEB 144, PDB 0503-0001-000008, SciFi 1
+    slot 13: FEB 4,   PDB 0503-0001-000047, US Layer 2 8-10
+    slot 14: FEB 0,   PDB 0503-0001-000048, US Layer 1 1-4
+
+  Crate 2 (US, top right):
+    slot 0: FEB 1, PDB 0503-0001-000014, US Layer 1 5-8
+    slot 1: FEB 2, PDB 0503-0001-000033, US Layer 2 1-3
+    slot 2: FEB 3, PDB 0503-0001-000017, US Layer 2 4-7
+
+  Crate 3 (US, bottom right):
+    slot 2:  FEB 13,  PDB 0503-0001-000041, Central US Layer 3 6
+    slot 3:  FEB 14,  PDB 0503-0001-000030, Central US Layer 3 5
+    slot 4:  FEB 12,  PDB 0503-0001-000045, Central US Layer 3 4
+    slot 5:  FEB 11,  PDB 0503-0001-000031, Central US Layer 3 3
+    slot 10: FEB 145, PDB 0503-0001-000036, SciFi 0
+    slot 12: FEB 147, PDB 0503-0001-000042, SciFi 5
+    slot 13: FEB 148, PDB 0503-0001-000040, SciFi 4
+    slot 14: FEB 149, PDB 0503-0001-000029, SciFi 3
+
+  Crate 4 (US, bottom left): no slots populated in this data.
+
+  Crate 5 (DS, top left):
+    slot 5:  FEB 123, PDB 0503-0001-000044, DS Tile module 1, DAB PDB 0491-0001-00009
+    slot 6:  FEB 124, PDB 0503-0001-000041, DS Tile module 2, DAB PDB 0491-0001-000007
+    slot 7:  FEB 125, PDB 0503-0001-000045, DS Tile module 3, DAB PDB 0491-0001-000006
+    slot 11: FEB 18,  PDB 0503-0001-000034, Central DS Layer 3 3
+    slot 12: FEB 8,   PDB 0503-0001-000018, DS Layer 2 4-7
+    slot 13: FEB 7,   PDB 0503-0001-000049, DS Layer 2 1-3
+    slot 14: FEB 6,   PDB 0503-0001-000016, DS Layer 1 5-8
+
+  Crate 6 (DS, top right):
+    slot 0: FEB 5,   PDB 0503-0001-000046, DS Layer 1 1-4
+    slot 1: FEB 9,   PDB 0503-0001-000032, DS Layer 2 8-10
+    slot 2: FEB 152, PDB 0503-0001-000028, SciFi 2
+    slot 3: FEB 151, PDB 0503-0001-000043, SciFi 1
+    slot 4: FEB 150, PDB 0503-0001-000021, SciFi 0
+    slot 5: FEB 16,  PDB 0503-0003-000055, Central DS Layer 3 1
+    slot 7: FEB 17,  PDB 0503-0003-000060, Central DS Layer 3 2
+    slot 9: FEB 126, PDB 0503-0003-000046, DS Tile module 4, DAB PDB 0491-0001-000001
+    slot 10: FEB 127, PDB 0503-0001-000058, DS Tile module 5, DAB PDB 0491-0001-000002
+    slot 11: FEB 128, PDB 0503-0001-000056, DS Tile module 6, DAB PDB 0491-0001-000004
+    slot 12: FEB 122, PDB 0503-0001-000057, DS Tile module 0, DAB PDB 0491-0001-000005
+
+  Crate 7 (DS, bottom right):
+    slot 12: FEB 21, PDB 0503-0003-000038, Central DS Layer 3 6
+
+  Crate 8 (DS, bottom left):
+    slot 0:  FEB 153, PDB 0503-0003-000069, SciFi 3
+    slot 1:  FEB 154, PDB 0503-0003-000068, SciFi 4
+    slot 2:  FEB 155, PDB 0503-0003-000067, SciFi 5
+    slot 11: FEB 19,  PDB 0503-0003-000061, Central DS Layer 3 4
+    slot 14: FEB 20,  PDB 0503-0003-000062, Central DS Layer 3 5
+
+  Cross-check against section 6a/6b (SciFi only): crate/slot/FEB
+  numbers match 6b's C<n>S<n> notation exactly for every SciFi entry
+  (e.g. FEB 144 = crate 1 slot 11, matches 6b's "US SM1: C1 S11"; FEB
+  145 = crate 3 slot 10, matches 6b's "US SM3: C3 S10") - the physical
+  wiring itself is fully consistent, no new contradiction there.
+
+  BUT the "SciFi N" labels in THIS table's own Assignment column are
+  NOT all consistent with 6a's CORRECT SM numbering - they reproduce
+  6c's bug pattern instead, for the same 3 US FEBs 6c already flagged
+  (145/148/149 - the swap - not 144/147, which were always correct
+  either way):
+    FEB 145 (crate 3, slot 10): this table says "SciFi 0" - 6a's
+      correct answer is SM3 ("SciFi 3"). Matches 6c's WRONG FEBName
+      value for this FEB ("US SM 0"), not the corrected one.
+    FEB 148 (crate 3, slot 13): this table says "SciFi 4" - 6a's
+      correct answer is SM2 ("SciFi 2"). Matches 6c's WRONG value
+      ("US SM 4").
+    FEB 149 (crate 3, slot 14): this table says "SciFi 3" - 6a's
+      correct answer is SM4 ("SciFi 4"). Matches 6c's WRONG value
+      ("US SM 3").
+    FEB 144 (slot 11, "SciFi 1") and FEB 147 (slot 12, "SciFi 5") both
+      match 6a correctly - consistent with 6c's own finding that SM1/
+      SM5 were never part of the swap.
+  Not asserting a cause (can't verify where this table originally came
+  from or when it was made), but the pattern is exact and worth noting:
+  this independently-supplied crate/MSCB reference has the SAME 3-FEB
+  mislabeling 6c found on the live ODB, in its own "Assignment" column
+  - plausibly the kind of source document FEBName was originally
+  transcribed from. Doesn't change 6a's status as the confirmed-
+  correct mapping (re-confirmed multiple ways already, see 6c) - just
+  flagging that this NEW document is not itself a reliable source for
+  SM numbering, only for crate/slot/PDB-serial/MSCB facts.
+
+7d) WEATHER STATION MSCB MAPPING (user-supplied, 2026-08-14)
+
+  Reference data only, same status as 7a/7b - nothing in scifi_scripts/
+  common_scripts references these MSCB addresses today (grepped, no
+  hits); ScifiHv.POWERDIST_HV_WEATHER_NAMES in detector/hv.py resolves
+  the WEATHER PowerDistStaging channel by NAME ("US WEATHER TOP" etc,
+  a PowerDist channel label), a completely different thing from a
+  weather station's own MSCB device address below - no overlap, no
+  conflict, both can be true at once.
+
+  4 MSCB submasters, each carrying 1-2 physical weather station (WS)
+  devices; each WS exposes temperature channels T0-T7 (only the
+  populated ones are named/wired below - unlabelled T-channels exist
+  but are blank/unused) plus Port2/Port3 T0/T1/RH/O2 sub-sensors (all
+  blank/not populated in what was supplied - presumably not wired yet):
+
+  MSCB466 (US Top):
+    WS100: T0 SCIFI_CR_TOP, T1 HE_INLET_VTX, T4 HE_INLET_OUTER_OnTrumpet,
+           T5 TL_US_OUT, T6 SCIFI_CR_BOTTOM (T2/T3/T7 unused)
+    WS101: T4 TL_US_IN (T0-T3/T5-T7 unused)
+
+  MSCB467 (US Bottom):
+    WS103: T0 US_SC_OUT, T1 US_SC_IN (T2-T7 unused)
+
+  MSCB474 (DS Top):
+    WS102: T0 SCIFI_CR_TOP, T1 DCDC_C_6, T4 DS_TL_OUT, T5 SCIFI_CR_BOTTOM
+           (T2/T3/T6/T7 unused)
+
+  MSCB427 (DS Bottom):
+    WS104: T1 TL_DS_IN, T4 DS_SC_IN (T0/T2/T3/T5-T7 unused)
+    WS105: T1 DCDC_C_8, T4 DS_SC_OUT (T0/T2/T3/T5-T7 unused)
+
+  Naming pattern in the raw labels (e.g. "US_TOP1_T0_SCIFI_CR_TOP"):
+  <side>_<position><ws-local-index>_<channel>_<what it measures> - the
+  "1"/"2" after TOP/BOTTOM distinguishes the two WS devices sharing one
+  MSCB (e.g. US_TOP1_* = WS100, US_TOP2_* = WS101), not a channel
+  number. "SCIFI_CR_TOP"/"SCIFI_CR_BOTTOM" appear on both the Top and
+  Bottom MSCB pairs (US and DS each) - these are the SciFi cooling rack
+  temperature probes, one relevant to a future SciFi-side reading if
+  ever wanted; the rest (HE_INLET_*, TL_*, DCDC_C_*, *_SC_IN/OUT) are
+  other subdetectors'/infrastructure's own probes on the same shared
+  MSCB submaster, not SciFi-specific.

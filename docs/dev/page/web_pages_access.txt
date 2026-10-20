@@ -1,0 +1,26 @@
+HOW TO REACH THE TWO SCIFI CUSTOM WEB PAGES
+============================================
+
+1) LOCAL (this laptop, simulated experiment)
+--------------------------------------------
+source /Users/gmoretti/Work/Mu3e/online/install/set_env.sh
+mhttpd -D
+
+Then open in browser:
+  http://localhost:8080
+  (direct link to the page: http://localhost:8080/?cmd=SciFi+Main)
+
+Note: if mhttpd fails with a "shared memory ... computer hostname"
+error, the machine's DHCP hostname changed since last time. Fix:
+  hostname
+  -> edit /Users/gmoretti/Work/Mu3e/online/online/.SHM_HOST.TXT
+     to match the current hostname, then retry mhttpd -D.
+
+
+2) MU3EBE (real PSI production machine)
+----------------------------------------
+ssh -L 8082:localhost:8080 mu3ebe.psi.ch
+
+Then open in browser (keep the ssh session open in a terminal):
+  http://localhost:8082
+  (direct link to the page: http://localhost:8082/?cmd=SciFi+Main)
